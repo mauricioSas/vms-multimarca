@@ -1,0 +1,103 @@
+{
+  "mediamtx": "v1.21.1",
+  "checks": {
+    "grabacion_desde_yaml": {
+      "ok": true,
+      "detail": {
+        "segmentos": {
+          "cam-a/main": [
+            "2026-10-05_01-14-11-307713+0200.mp4"
+          ],
+          "cam-b/main": [
+            "2026-10-05_01-14-11-310286+0200.mp4"
+          ]
+        },
+        "nota": "rutas solo en el YAML; nadie llamó a la API para crearlas"
+      }
+    },
+    "recarga_tras_renombrado_atomico": {
+      "ok": true,
+      "detail": {
+        "segundos_hasta_cam_c_con_video": 0.22
+      }
+    },
+    "recarga_por_ruta_no_toca_las_demas": {
+      "ok": true,
+      "detail": {
+        "cam-a readyTime igual": true,
+        "cam-a segmentos": [
+          "2026-10-05_01-14-11-307713+0200.mp4"
+        ]
+      }
+    },
+    "recarga_por_ruta_reinicia_la_cambiada": {
+      "ok": true,
+      "detail": {
+        "cam-b readyTime cambió": true,
+        "cam-b segmentos": [
+          "2026-10-05_01-14-11-310286+0200.mp4",
+          "2026-10-05_01-14-14-306801+0200.mp4"
+        ]
+      }
+    },
+    "ajuste_de_grabacion_en_caliente_sin_reiniciar_la_ruta": {
+      "ok": true,
+      "detail": {
+        "recordDeleteAfter_aplicado": "2d",
+        "rutas_reiniciadas": [],
+        "segmentos_nuevos": {
+          "cam-a/main": [
+            "2026-10-05_01-14-17-299316+0200.mp4"
+          ],
+          "cam-b/main": [
+            "2026-10-05_01-14-17-299038+0200.mp4"
+          ],
+          "cam-c/main": [
+            "2026-10-05_01-14-17-299291+0200.mp4"
+          ]
+        }
+      }
+    },
+    "vuelve_a_grabar_sin_backend_tras_sigkill": {
+      "ok": true,
+      "detail": {
+        "segundos_hasta_video": 0.23,
+        "segmentos_nuevos": {
+          "cam-a/main": 1,
+          "cam-b/main": 1,
+          "cam-c/main": 1
+        }
+      }
+    },
+    "registro_sin_contrasenas": {
+      "ok": true,
+      "detail": {
+        "contraseñas_encontradas": [],
+        "lineas_cam_d": [
+          "2026/10/05 01:14:37 INF [path cam-d/main] [RTSP source] started",
+          "2026/10/05 01:14:40 ERR [path cam-d/main] [RTSP source] bad status code: 401 (Unauthorized)"
+        ]
+      }
+    }
+  },
+  "hueco_al_cambiar_pathDefaults_s": {
+    "cam-a/main": [
+      0.792
+    ],
+    "cam-b/main": [
+      0.497,
+      0.792
+    ],
+    "cam-c/main": [
+      0.791
+    ]
+  },
+  "informativo_recordSegmentDuration": {
+    "rutas_reiniciadas": []
+  },
+  "informativo_record_false_en_una_ruta": {
+    "rutas_reiniciadas": []
+  },
+  "api_expone_source_con_contrasena": true,
+  "all_ok": true
+}

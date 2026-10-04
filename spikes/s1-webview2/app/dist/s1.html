@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>S1 · muro</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 12px system-ui, sans-serif; overflow: hidden; }
+  #grid { display: grid; width: 100vw; height: 100vh; gap: 2px; }
+  .cell { position: relative; background: #111; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .tag { position: absolute; left: 4px; top: 2px; background: rgba(0,0,0,.6); padding: 1px 4px; border-radius: 3px; }
+  #hud { position: fixed; right: 6px; bottom: 6px; background: rgba(0,0,0,.75); padding: 4px 8px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<div id="hud">Conectando…</div>
+<script src="s1.js"></script>
+</body>
+</html>

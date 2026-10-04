@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Solo las páginas locales de la prueba (tauri://localhost) pueden usar IPC",
+  "windows": ["*"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,21 @@
+# Visor mínimo de la prueba S1 (PLAN-V2 §4.7): Tauri 2 + WebView2 con 4 ventanas × 16 flujos WHEP.
+# No es producto: sirve para medir la decodificación por hardware en el PC Windows del laboratorio.
+[package]
+name = "s1-visor"
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Propietario"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.1", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = "symbols"

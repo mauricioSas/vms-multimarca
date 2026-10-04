@@ -1,0 +1,29 @@
+# Prueba de concepto S4 (PLAN-V2 §6.1): servicio de Windows «hola mundo» con windows-service-rs,
+# arrancador con puntero active.json, Job Object, cuenta virtual NT SERVICE\... y vuelta atrás.
+# No es producto: B1 lo convierte en native/vmshost. Fuera del workspace de native/ a propósito.
+[package]
+name = "s4-servicio-windows"
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Propietario"
+publish = false
+
+[[bin]]
+name = "vmshost-s4"
+path = "src/bin/vmshost.rs"
+
+[[bin]]
+name = "hola"
+path = "src/bin/hola.rs"
+
+[dependencies]
+vms-common = { path = "../../native/common" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3.27"
