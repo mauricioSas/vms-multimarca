@@ -6,10 +6,10 @@
       "detail": {
         "segmentos": {
           "cam-a/main": [
-            "2026-10-05_01-14-11-307713+0200.mp4"
+            "2026-10-05_01-51-31-234622+0200.mp4"
           ],
           "cam-b/main": [
-            "2026-10-05_01-14-11-310286+0200.mp4"
+            "2026-10-05_01-51-31-237330+0200.mp4"
           ]
         },
         "nota": "rutas solo en el YAML; nadie llamó a la API para crearlas"
@@ -26,7 +26,7 @@
       "detail": {
         "cam-a readyTime igual": true,
         "cam-a segmentos": [
-          "2026-10-05_01-14-11-307713+0200.mp4"
+          "2026-10-05_01-51-31-234622+0200.mp4"
         ]
       }
     },
@@ -35,8 +35,8 @@
       "detail": {
         "cam-b readyTime cambió": true,
         "cam-b segmentos": [
-          "2026-10-05_01-14-11-310286+0200.mp4",
-          "2026-10-05_01-14-14-306801+0200.mp4"
+          "2026-10-05_01-51-31-237330+0200.mp4",
+          "2026-10-05_01-51-34-236276+0200.mp4"
         ]
       }
     },
@@ -47,13 +47,13 @@
         "rutas_reiniciadas": [],
         "segmentos_nuevos": {
           "cam-a/main": [
-            "2026-10-05_01-14-17-299316+0200.mp4"
+            "2026-10-05_01-51-37-229233+0200.mp4"
           ],
           "cam-b/main": [
-            "2026-10-05_01-14-17-299038+0200.mp4"
+            "2026-10-05_01-51-37-227724+0200.mp4"
           ],
           "cam-c/main": [
-            "2026-10-05_01-14-17-299291+0200.mp4"
+            "2026-10-05_01-51-37-229189+0200.mp4"
           ]
         }
       }
@@ -74,22 +74,22 @@
       "detail": {
         "contraseñas_encontradas": [],
         "lineas_cam_d": [
-          "2026/10/05 01:14:37 INF [path cam-d/main] [RTSP source] started",
-          "2026/10/05 01:14:40 ERR [path cam-d/main] [RTSP source] bad status code: 401 (Unauthorized)"
+          "2026/10/05 01:51:57 INF [path cam-d/main] [RTSP source] started",
+          "2026/10/05 01:51:59 ERR [path cam-d/main] [RTSP source] bad status code: 401 (Unauthorized)"
         ]
       }
     }
   },
   "hueco_al_cambiar_pathDefaults_s": {
     "cam-a/main": [
-      0.792
+      0.695
     ],
     "cam-b/main": [
-      0.497,
-      0.792
+      0.499,
+      0.691
     ],
     "cam-c/main": [
-      0.791
+      0.693
     ]
   },
   "informativo_recordSegmentDuration": {

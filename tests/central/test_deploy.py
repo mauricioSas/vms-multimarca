@@ -341,7 +341,15 @@ def test_mediamtx_checksums_match_official_release() -> None:
 
 
 def test_third_party_notices_up_to_date() -> None:
-    """THIRD_PARTY_NOTICES.txt debe corresponder a los archivos de bloqueo actuales."""
+    """THIRD_PARTY_NOTICES.txt debe corresponder a los archivos de bloqueo actuales.
+
+    El archivo se genera en el entorno de desarrollo completo (con el extra [export]): copia los textos
+    de licencia de los paquetes instalados, que cambian según la plataforma de las wheels. CI instala
+    solo los locks de sede + pruebas, así que ahí se omite (lo comprueba el entorno de desarrollo)."""
+    from importlib.util import find_spec
+
+    if find_spec("rfdetr") is None:
+        pytest.skip("Solo en el entorno de desarrollo completo (extra [export]): los textos dependen de las wheels")
     from deploy.third_party_notices import main
 
     assert main(["--check"]) == 0, "Regenera con «python -m deploy.third_party_notices»"

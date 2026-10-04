@@ -22,7 +22,7 @@ secrets/
 credentials.enc
 
 # Binarios descargados (se obtienen con tools/fetch_mediamtx.py)
-bin/
+/bin/
 
 # Material de prueba pesado (se obtiene con tools/download_test_assets.py)
 tests/assets/*

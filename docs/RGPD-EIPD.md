@@ -67,6 +67,32 @@ puede desactivar (`VMS_LLM_PROVIDER=none`): el informe se genera solo con cifras
 revisar las condiciones del proveedor (ubicación del tratamiento, no uso de los datos para
 entrenamiento) e incluirlo como subencargado.
 
+### 2.5 Salud de cámara (v2): tratamiento mínimo
+
+Función de la v2 que comprueba que cada cámara sigue viendo lo que debe (tapada, desenfocada, movida,
+negra, congelada, infrarrojos…). **Mide la cámara, no a las personas.**
+
+| Aspecto | Detalle |
+|---|---|
+| Finalidad | Detectar averías y sabotajes de las cámaras para que la grabación sea útil (integridad y disponibilidad, art. 32 RGPD) |
+| Datos | Una **imagen de referencia por cámara** (día y noche) y medidas numéricas (brillo, nitidez, desplazamiento, puntuación 0-100). Las comprobaciones periódicas se hacen sobre una instantánea **en memoria** que se descarta al terminar |
+| Minimización | La referencia es la **mediana de unos 15 fotogramas** tomados durante unos minutos: quien pasa por delante desaparece de la imagen. Si aun así queda alguien (una persona quieta todo el rato), la interfaz lo avisa y recomienda fijar la referencia con la tienda cerrada. Se guarda además la imagen del **último aviso de sabotaje**, solo mientras el aviso esté abierto |
+| Lo que nunca se hace | Ni reconocimiento facial, ni identificación, ni búsqueda de personas, ni medidas sobre trabajadores. Los avisos (correo, webhook, Telegram), el latido y el informe de salud **no llevan imágenes** por defecto; la instantánea en el aviso de sabotaje es opcional, reducida y la activa el responsable |
+| Conservación | La referencia, hasta que se vuelve a fijar o se borra la cámara. Las medidas numéricas, 90 días |
+| Acceso | Solo administradores (ver la referencia queda en el registro de auditoría `audit.log`). La carpeta `ops\` tiene la misma protección que las grabaciones |
+| Base jurídica | La misma que la videovigilancia (interés legítimo / seguridad, art. 22 LOPDGDD): es un tratamiento accesorio que no añade finalidades nuevas |
+
+Para la EIPD: es una medida que **reduce** riesgos (cámaras que dejan de grabar sin que nadie lo sepa) y
+no amplía el tratamiento de imágenes: la referencia equivale a un fotograma de la grabación ya existente,
+sin personas.
+
+### 2.6 Exportación de evidencias y marcadores protegidos (v2)
+
+Entregar grabaciones a la autoridad (art. 22.3 LOPDGDD, 72 horas) con integridad comprobable: SHA-256 de
+cada archivo, manifiesto firmado y acta de cadena de custodia. Cada exportación exige **motivo** y queda
+en `audit.log`. Los tramos «protegidos» (que la retención no borra) exigen motivo y caducidad (90 días por
+defecto) y aparecen en el informe de salud: conservar más de un mes **solo** lo que acredita un hecho.
+
 ## 3. Medidas de seguridad (art. 32 RGPD)
 
 | Medida | Cómo |

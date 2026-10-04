@@ -109,3 +109,27 @@ def test_devices_js_is_split_from_panel_js() -> None:
 def test_default_config_round_trips() -> None:
     cfg = AppConfig()
     assert AppConfig.model_validate_json(cfg.model_dump_json()) == cfg
+
+
+def test_ops_models_round_trip_and_have_spanish_texts() -> None:
+    from datetime import datetime, timezone
+
+    from vms.ops.models import (HEALTH_CAUSE_ES, Advisory, AdvisoryTable, CameraHealth, EvidenceManifest,
+                                HealthCause, HealthCheck, OnboardingState, RetentionForecast)
+
+    assert set(HEALTH_CAUSE_ES) == {c.value for c in HealthCause}
+    now = datetime(2026, 10, 5, tzinfo=timezone.utc)
+    check = HealthCheck(camera_id="cam-00000001", score=0, status="critical", causes=[HealthCause.COVERED])
+    health = CameraHealth(camera_id="cam-00000001", score=0, status="critical", last_check=check)
+    assert CameraHealth.model_validate_json(health.model_dump_json()) == health
+    table = AdvisoryTable(generated_at=now, advisories=[Advisory(
+        id="ADV-2026-001", vendor="hikvision", model_regex="^DS-2CD", compare="build_date",
+        fixed_build_date="2021-06-28", cves=["CVE-2021-36260"], kev=True, reviewed="2026-10-05")])
+    assert table.model_dump(by_alias=True)["schema"] == 1
+    manifest = EvidenceManifest(product_version="2.0.0", export_id="ev-20261005-abcdef", created_at=now,
+                                created_by="admin", reason="Hurto en cajas", site={"id": "s0037"},
+                                range_utc=(now, now), range_local=("a", "b"), cameras=[], files=[],
+                                signing_key={"algorithm": "ed25519"})
+    assert manifest.model_dump(by_alias=True)["schema"] == 1
+    assert RetentionForecast(target_days=30, forecast_days=12.5, disk_total=1, disk_free=1, reclaimable=0).status == "ok"
+    assert OnboardingState(username="admin").wizard_completed is False

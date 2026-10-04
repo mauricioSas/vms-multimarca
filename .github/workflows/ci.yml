@@ -65,7 +65,8 @@ jobs:
           echo "Archivos cambiados:"; echo "$files"
           has() { [ "$files" = "__all__" ] || echo "$files" | grep -Eq "$1"; }
           code=false; native=false; s3=false; s4=false
-          if [ "$files" = "__all__" ] || echo "$files" | grep -Evq '^(docs/|.*\.md$)'; then code=true; fi
+          # pytest (Ubuntu y macOS) solo si cambia código Python/web, pruebas, dependencias o este flujo
+          if has '^(vms|analytics|central|tools|tests|deploy)/|^pyproject\.toml$|^requirements-.*\.txt$|^\.github/workflows/ci\.yml$'; then code=true; fi
           has '^native/' && native=true || true
           has '^spikes/s3-tuf/' && s3=true || true
           has '^(spikes/s4-servicio-windows/|native/common/)' && s4=true || true
@@ -118,10 +119,10 @@ jobs:
           path: bin
           key: mediamtx-v1.21.1-${{ runner.os }}-${{ hashFiles('tools/fetch_mediamtx.py') }}
       - run: python -m tools.fetch_mediamtx
-      - name: pytest (sin e2e pesados, orden aleatorio, cobertura)
+      - name: "pytest (sin e2e pesados, orden aleatorio, cobertura mínima 80 %; se sube por bloques, nunca se baja)"
         run: >
           python -m pytest -m "not e2e and not slow" -q -rs
-          --cov --cov-report=term --cov-report=xml:coverage.xml --junitxml=junit-ubuntu.xml
+          --cov --cov-report=term --cov-report=xml:coverage.xml --cov-fail-under=80 --junitxml=junit-ubuntu.xml
       - if: always()
         uses: actions/upload-artifact@v7
         with:
