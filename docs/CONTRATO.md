@@ -1,11 +1,13 @@
 # CONTRATO TÉCNICO — VMS Multimarca
 
-Fuente de verdad de interfaces entre módulos. Versión **1.0** · 4 de octubre de 2026.
+Fuente de verdad de interfaces entre módulos. Versión **2.0** · 5 de octubre de 2026 (fase 0 de la v2;
+la 1.0 es del 4 de octubre). Las secciones §1-§12 describen la v1 y siguen vigentes salvo donde una
+sección nueva diga lo contrario; **§13-§18 son la v2** (plan: [`docs/PLAN-V2.md`](PLAN-V2.md)).
 Si necesitas cambiar algo de aquí: hazlo de forma **mínima y compatible**, y anótalo en la
 sección **§12 Cambios** (fecha, quién, qué y por qué). Nunca cambies en silencio un nombre,
 un puerto, un campo JSON o una firma que otro módulo usa.
 
-Plan aprobado: `PLAN.md`. Código de referencia de este contrato: `vms/core/` (modelos,
+Plan aprobado: `PLAN.md` (v1) y `docs/PLAN-V2.md` (v2). Código de referencia de este contrato: `vms/core/` (modelos,
 interfaces, ajustes) y `vms/db/migrations/` (esquema SQL). **Si el texto y el código no
 coinciden, manda el código de `vms/core` y se corrige el texto.**
 
@@ -22,7 +24,7 @@ coinciden, manda el código de `vms/core` y se corrige el texto.**
 | Secretos | Nunca en código ni en JSON plano. Ajustes de proceso en `.env` (`VmsSettings`, `SecretStr`). Contraseñas de equipos en `CredentialStore` (keyring o archivo cifrado). Logs con `vms.core.logging_setup` (ocultan credenciales en URLs, query strings, cabeceras y tokens de Telegram). `CameraSource` no imprime sus URLs. |
 | Plataformas | Destino: **Windows 10/11** (PC de control, 4 monitores) y **Windows o Linux** (mini PC de tienda). Desarrollo y pruebas en macOS arm64. `pathlib` siempre; nada POSIX sin alternativa Windows (señales, permisos, rutas, `start_new_session` vs `CREATE_NEW_PROCESS_GROUP`). |
 | Calidad | Tipado, errores de dominio (`vms.core.errors`), logs, reconexión automática con backoff, **ninguna excepción silenciada sin log**, pruebas pytest. Si algo no se pudo probar, se dice. |
-| Git | No hacer commit ni push. |
+| Git | Los bloques **no** hacen commit ni push. El arquitecto y el integrador trabajan en la rama `v2` del repositorio privado (commits pequeños, push solo a `v2`). |
 
 ---
 
@@ -76,6 +78,10 @@ vms-multimarca/
 ```
 
 Prefijos de logger: `vms.vendors.*`, `vms.engine.*`, `vms.api.*`, `analytics.*`, `central.*`.
+
+**v2:** la estructura nueva (carpetas `native/`, `distribution/`, `updater/`, `infra/`, `vms/ops/`,
+`spikes/`…) y los dueños de cada carpeta y de cada archivo compartido están en
+[PLAN-V2 §6.2](PLAN-V2.md) y en el `LEEME.md` de cada carpeta. Prefijo de logger nuevo: `vms.ops.*` (B6).
 
 ---
 
@@ -141,6 +147,10 @@ Subcarpetas: `config/` (`config.json`, `config.json.bak`, `users.json`), `secret
 (`status.json`, `config-cache.json`, `spool/`).
 
 ### 3.3 `config.json` = `vms.core.models.AppConfig`
+
+> **v2 (§13.8):** `version` = 2 (migración automática desde la 1), los modelos persistentes conservan
+> campos desconocidos y hay campos nuevos con valor por defecto (`allow_basic`, `follow_ip`, `identity`,
+> `Camera.health`, `settings.notifications`, `settings.health`, `User.camera_scope`).
 
 Un único documento JSON con guardado atómico, copia `.bak` y recuperación (`ConfigStore`).
 En el backend **solo** se modifica con `ConfigRepository.update(fn)`, que serializa los
@@ -216,6 +226,9 @@ piden libres (`tests.conftest.get_free_port`, fixture `settings`).
 
 ### 4.3 Configuración generada y credenciales
 
+> **v2 (§13.10, tras S2):** el YAML pasa a ser la **fuente única de las rutas** (modo `attach`, el motor es
+> el servicio `VMSEngine`). Lo de abajo sigue valiendo para el modo `child` (desarrollo en macOS y Linux).
+
 - `<datos>/mediamtx/mediamtx.yml` se genera en cada arranque **sin ninguna credencial**:
   direcciones de §4.1, protocolos desactivados, `authInternalUsers` **sin usuario anónimo**:
   `vms-backend` (`api`, `playback`, `read`, `metrics`) y `vms-reader` (`read`), ambos solo desde
@@ -275,6 +288,9 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
 - `test_device` nunca lanza: devuelve `DeviceTestResult{ok, reachable, auth_ok, rtsp_ok, info, channels, message}`.
 
 ### 5.2 Motor — `vms.engine` [vendors-engine]
+
+> **v2 (§13.10):** `VMS_ENGINE_MODE=child|attach`. En `attach` el backend no lanza MediaMTX: escribe
+> `mediamtx.yml` con `atomic_write` y usa la API solo para leer estado y como proxy WHEP/reproducción.
 
 Clase prevista `MediaMtxEngine(settings: VmsSettings, paths: AppPaths)` que cumple `Engine`:
 `start()`, `stop()`, `apply(sources, recording, retention, recordings_dir)` (idempotente,
@@ -789,3 +805,580 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-04 | corrector final | §3.1 nuevas variables `VMS_HTTPS_PORT` (8643), `VMS_TLS_CERT_FILE`, `VMS_TLS_KEY_FILE` y orden `python -m vms tls-cert`: con certificado, HTTPS en `VMS_HTTP_HOST:VMS_HTTPS_PORT` y HTTP solo en `127.0.0.1:VMS_HTTP_PORT` (`vms.api.serve`). Sin certificado, todo igual que antes (con aviso en el registro si escucha fuera de loopback). |
 | 2026-10-04 | corrector final | Despliegue: los lock de sede (`requirements-vms/analytics/central.txt`) llevan SHA-256 de PyPI y los instaladores usan `--require-hashes` (comprobado con `pip download --require-hashes` para win_amd64 y manylinux x86_64). Windows: `Protect-Path` sobre toda la carpeta de datos; `models\weights` y `*.pth` no se copian. `THIRD_PARTY_NOTICES.txt` incluye RF-DETR, DINOv2 y COCO. |
 | 2026-10-04 | corrector final | §6.12 (encontrado por la prueba de sistema): los formularios de login y primer administrador (VMS y panel central) llegan con el botón desactivado y `method="post"`; el script lo activa al enganchar el envío. Antes, un clic antes de cargar el script enviaba el formulario por GET con la contraseña en la URL. |
+| 2026-10-05 | arquitecto | **Versión 2.0 (fase 0 de la v2).** Nuevas §13-§18. Cambios en lo existente, todos compatibles: `CONFIG_VERSION` 2 con migración automática (§13.8); modelos persistentes con `extra="allow"` y cuerpos de petición filtrados con `known_fields_only`; `Vendor` pasa de lista cerrada a identificador validado contra el registro (`DeviceCreate` sigue respondiendo 422 con una marca desconocida); `DeviceKind` admite `dvr` y `xvr`; `DeviceInfo.firmware_date`; extra `[vms]` con `numpy` y `opencv-python-headless` (B6); extra `[test]` y `requirements-test.txt`; `FakeEngine(clock=…)`; rutas de cámaras, vivo y grabaciones llaman a `vms/api/permissions.py` (sin efecto hasta B6); routers vacíos registrados; `devices.js` separado de `panel.js`; contenedores y módulos vacíos en las páginas (§18.9); punto de extensión del panel central (`central/extensions.py`). |
+
+---
+
+# Parte II · v2 (fase 0, 5-oct-2026)
+
+Lo que sigue es el contrato de la v2. Las decisiones y su justificación están en `docs/PLAN-V2.md`;
+aquí solo va lo que un bloque necesita para no pisar a otro: rutas, formatos, nombres y comportamientos.
+Lo marcado **(pendiente de S1/S5)** se cerrará con el veredicto de esa prueba (`docs/investigacion-v2/spikes.md`).
+
+## 13. Plataforma Windows: disco, servicios, `vmshost`, puntero y diario [B1]
+
+### 13.1 Disposición en disco
+
+```
+C:\Program Files\VMSMultimarca\
+├── bin\vmshost.exe                    arrancador fijo (solo lo cambia el instalador completo)
+├── versions\<X.Y.Z>\                  inmutable; solo escribe el actualizador
+│   ├── bin\vmsctl.exe
+│   ├── runtime\                       python.exe, python312.dll, python312._pth, Lib\site-packages\ (.pyc)
+│   ├── app\                           vms\, analytics\, central\
+│   ├── engine\                        mediamtx.exe, MEDIAMTX-LICENSE.txt
+│   ├── viewer\VMS.exe
+│   ├── models\                        rfdetr-*.xml/.bin, LICENSE
+│   ├── data\advisories.json           tabla de avisos de seguridad (§18.12)
+│   ├── THIRD_PARTY_NOTICES.txt
+│   └── release.json                   copia del descriptor firmado (§15.4)
+└── updater\slot-a\ y slot-b\          vmsctl.exe + runtime mínimo + vms_updater
+
+C:\ProgramData\VMSMultimarca\          (= carpeta de datos, §3.2) +
+├── state\active.json, journal.json    escritos SIEMPRE con atomic_write (§13.5)
+├── backups\pre-<X.Y.Z>-<AAAAMMDDTHHMMSSZ>\
+├── updater\public-status.json         legible por Usuarios (§15.6); cache\; blacklist.json
+├── mediamtx\mediamtx.yml              fuente única de rutas (§13.10); ACL estricta
+├── secrets\                           DPAPI de máquina + ACL por SID (§13.9)
+├── ops\                               datos de B6 (§18.17)
+└── evidence\                          evidencias protegidas y exportaciones (§18.6-§18.7)
+```
+Sin junctions. Lo que no cambia entre versiones se copia con enlaces duros. `PYTHONDONTWRITEBYTECODE=1`
+en todos los servicios.
+
+### 13.2 Servicios y cuentas
+
+| Servicio | Cuenta | Inicio | `ImagePath` |
+|---|---|---|---|
+| `VMSEngine` | `NT SERVICE\VMSEngine` | automático | `"<bin>\vmshost.exe" service --name VMSEngine` |
+| `VMSBackend` | `NT SERVICE\VMSBackend` | automático (retrasado) | ídem con `--name VMSBackend` |
+| `VMSAnalytics` | `NT SERVICE\VMSAnalytics` | automático (retrasado) | ídem |
+| `VMSHeartbeat` | `NT SERVICE\VMSHeartbeat` | automático (retrasado) | ídem |
+| `VMSCentral` | `NT SERVICE\VMSCentral` | automático | ídem |
+| `VMSUpdater` | `LocalSystem` | automático (retrasado) | ídem (`vmshost` elige la ranura A/B) |
+
+- ACL siempre por **SID** (`*S-1-5-80-…` del servicio, `*S-1-5-18`, `*S-1-5-32-544`), nunca por nombre
+  localizado. El SID de servicio se obtiene con la API (`LookupAccountName("NT SERVICE\<nombre>")`), no
+  analizando la salida de `sc showsid` (la prueba S4 lo hace así solo por ser un script).
+- Recuperación del SCM: reiniciar a los 1, 5 y 30 s; contador a cero a las 24 h.
+- Permisos por carpeta: los de PLAN-V2 §2.2. Grupo local `VMS Operadores` (lectura de `kiosk.token`).
+
+### 13.3 `vmshost.exe`
+
+```
+vmshost.exe service --name <Servicio>        (lo lanza el SCM)
+vmshost.exe viewer [--walls]                 (accesos directos: abre el visor de la versión activa)
+vmshost.exe --version
+```
+1. Lee `state\active.json`; si falta, está corrupto o apunta a una versión que no existe, lo
+   **reconstruye** con `last_good` del diario y lo anota en `logs\vmshost.log`.
+2. Lanza `versions\<activa>\bin\vmsctl.exe run --service <nombre>` (o `updater\slot-<x>\vmsctl.exe run
+   --service VMSUpdater`) dentro de un **Job Object** con `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. El hijo
+   se crea **suspendido** (o con `PROC_THREAD_ATTRIBUTE_JOB_LIST`) para que no haya ventana sin job.
+3. Versión «a prueba» (`trial: true`): si el hijo cae **3 veces en 10 min** o pasan **30 min** sin
+   confirmación, vuelve a `previous` (puntero escrito con `atomic_write`) y la arranca.
+4. Informa al SCM (Running/Stopped) y, al recibir Stop, para el job.
+5. **Quién escribe el puntero** (hallazgo de S4): `vmshost` corre con la cuenta del servicio que hospeda, así
+   que con el diseño de la prueba todas las cuentas virtuales necesitarían escribir `state\`. En el
+   producto **solo** `VMSUpdater` (LocalSystem) y el instalador escriben `active.json`; el `vmshost` de un
+   servicio sin privilegios que detecte una versión a prueba fallida escribe `state\rollback-request.json`
+   (permiso de crear archivos en esa carpeta, no de modificar el puntero) y para su hijo; el `vmshost` del
+   actualizador (o el propio actualizador) ejecuta la vuelta atrás. Decisión de B1, a cerrar en su revisión.
+
+### 13.4 `state\active.json` (puntero)
+
+```json
+{"schema": 1,
+ "active": "2.1.0", "previous": "2.0.0",
+ "trial": true, "trial_since_unix": 1763600000,
+ "updater": {"slot": "b", "previous_slot": "a", "trial": false, "trial_since_unix": null},
+ "updated_unix": 1763600000}
+```
+Tiempos en segundos Unix (UTC): sin dependencias de fecha en Rust. Campos desconocidos se conservan.
+
+### 13.5 `state\journal.json` (diario) y `atomic_write`
+
+```json
+{"schema": 1, "update_id": "u-20261120T011200Z", "from": "2.0.0", "to": "2.1.0",
+ "components": ["app"], "state": "verifying", "attempt": 1, "last_good": "2.0.0",
+ "backup": "backups\\pre-2.1.0-20261120T011200Z",
+ "steps": [{"state": "downloaded", "started_unix": 1763600000, "done_unix": 1763600050}],
+ "error": ""}
+```
+Estados: `idle → downloaded → backed_up → stopping → switched → migrated → started → verifying → good`
+y `→ rolling_back → rolled_back`. Cada paso se anota **antes** y se marca hecho **después**; al arrancar,
+`VMSUpdater` retoma o revierte (pasos idempotentes). `last_good` lo leen el actualizador y `vmshost`.
+
+**`atomic_write`** (Python `vms.core.atomic.atomic_write_bytes/_text`, Rust `vms_common::atomic_write`):
+temporal `<nombre>.tmp-<pid>` en la misma carpeta → flush + `fsync`/`FlushFileBuffers` → sustitución
+atómica (`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` en Windows, `rename` + `fsync`
+de la carpeta en POSIX), con reintentos si un antivirus bloquea el archivo. Python usa hoy `os.replace`
+(sin `WRITE_THROUGH`): **B1 lo cambia** a `MoveFileExW` con `ctypes` en Windows. Se usa para
+`active.json`, `journal.json`, `config.json`, `users.json`, `mediamtx.yml` y `public-status.json`.
+
+### 13.6 Ocultación de credenciales
+
+Reglas en `vms.core.rtsp.redact` (Python) y `vms_common::redact` (Rust). Vectores compartidos en
+`tests/fixtures/redaction_vectors.json` (`{"version", "secrets", "cases": [{"name", "input", "expected"}]}`),
+comprobados por `tests/core/test_redaction_vectors.py` y `cargo test -p vms-common`. Dueño: B1; B5 pide
+vectores nuevos cuando una marca tenga un formato de URL distinto. Cambiar una regla = cambiarla en los
+dos lenguajes + añadir el vector.
+
+### 13.7 Instalador ↔ actualizador
+
+`DisplayVersion` en `HKLM\…\Uninstall\{AppId}_is1` y `HKLM\SOFTWARE\VMSMultimarca\InstalledVersion` los
+escribe el actualizador tras cada actualización o vuelta atrás buenas; el instalador se niega a bajar de
+versión salvo `/ALLOWDOWNGRADE`. Cerrojo compartido por la tubería (§15.2, orden `lock`).
+
+### 13.8 Compatibilidad de `config.json` y `users.json`
+
+- `CONFIG_VERSION = 2`. `vms/core/config_migrations.py` (dueño B4): `MIGRATIONS = {1: v1_to_v2, …}`,
+  funciones puras sobre el JSON; `ConfigStore` las aplica al cargar.
+- Modelos persistentes (`Device`, `Camera`, `WallLayout`, reglas, ajustes, `AppConfig`, `UserPublic`/`User`,
+  `Site`): `extra="allow"`. Una versión N-1 conserva lo que no conoce. Nunca se conserva un `password` en
+  claro dentro de un equipo (se descarta y se avisa, como en la v1).
+- Cuerpos de petición que llegan como `dict` (ajustes, reglas, analítica por cámara): se filtran con
+  `vms.core.models.known_fields_only(Modelo, cuerpo)` antes de mezclarse con lo guardado.
+- Versión **mayor** que la propia: se carga sin migrar y se registra un aviso. **Pendiente de B4:** arrancar
+  en solo lectura (`config_warning`, `status: degraded`) y no guardar nunca.
+- `Vendor`: texto `^[a-z0-9][a-z0-9-]{1,31}$`. El alta (`DeviceCreate`, `DeviceUpdate`,
+  `DeviceTestRequest`) lo valida contra `known_vendor_ids()` (lo amplía el registro con
+  `register_vendor_ids()`); un equipo guardado con una marca desconocida se conserva y la interfaz muestra
+  «Driver no disponible en esta versión».
+
+### 13.9 Secretos
+
+DPAPI de máquina (`CryptProtectData` + `CRYPTPROTECT_LOCAL_MACHINE`) + ACL al SID del servicio que lo usa,
+SYSTEM y Administradores. Código en `vms/core/winsec.py` (B1, `ctypes`). Archivos en `secrets\`:
+`secret.key`, `credentials.enc`, `internal.token`, `kiosk.token` (§17.1), `site.token`, y la clave de
+firma de evidencias `evidence-ed25519.key` (§18.7). Migración automática desde el `secret.key` en claro de
+la v1. En SSD el borrado seguro no está garantizado (se documenta).
+
+### 13.10 Motor como servicio y YAML como fuente única (resultado de S2)
+
+- `VMS_ENGINE_MODE=child|attach` (por defecto `child` en macOS/Linux de desarrollo; el instalador de Windows
+  fija `attach`). `python -m vms engine-config` escribe el YAML; `python -m vms engine-run` hace de `vmsctl`
+  en desarrollo.
+- En `attach`, el backend escribe `mediamtx\mediamtx.yml` **completo** (rutas con su `source` y
+  credenciales codificadas `%XX`) con `atomic_write` en cada cambio; nunca añade rutas por la API.
+- Comportamiento verificado con MediaMTX v1.21.1 en S2 (macOS):
+  - el renombrado atómico dispara la recarga (0,2 s hasta tener vídeo en una ruta nueva);
+  - la recarga **solo reinicia las rutas cuya configuración cambió**: las demás no cortan ni abren segmento;
+  - cambiar un ajuste de grabación en `pathDefaults` (`recordDeleteAfter`, `recordSegmentDuration`) no
+    reinicia las rutas, **pero abre un segmento nuevo en todas** (hueco medido ≤ 0,8 s con GOP de 1 s,
+    es decir, ≤ 1 GOP). Por eso la retención se cambia como un ajuste excepcional (se avisa en la
+    interfaz) y `recordDeleteAfter` se mantiene en el YAML: así la retención funciona aunque el backend
+    esté caído días;
+  - motor matado (SIGKILL) y relanzado con el mismo YAML → vuelve a grabar todo en 0,2 s sin backend;
+  - un 401 de la cámara no escribe la contraseña en el registro (la redacción de `vmsctl` sigue siendo
+    obligatoria como defensa); la API de MediaMTX **sí** devuelve el `source` con la contraseña: la API
+    sigue solo en 127.0.0.1 con usuarios internos (§4.3).
+- Pausa por 401: se quitan del YAML las rutas del equipo afectado; `vmsctl` escribe `logs\engine.log` ya
+  redactado y el backend lo sigue con `vms/engine/logtail.py` (tolera la rotación).
+- Los usuarios internos de MediaMTX no admiten `:`, `/` ni `%` en la contraseña (hallazgo de S2): las de la
+  v1 se derivan en hexadecimal, así que no cambia nada.
+
+## 14. `vmsctl` [B1]
+
+### 14.1 Órdenes
+
+```
+vmsctl run --service <Servicio>                       anfitrión del proceso real (lo lanza vmshost)
+vmsctl services install --role control|store|central|viewer --data-dir <ruta>
+vmsctl services uninstall [--purge]
+vmsctl services start|stop|restart [--only VMSBackend,VMSEngine]
+vmsctl firewall apply --profiles private[,domain] | firewall remove
+vmsctl acl apply --data-dir <ruta>
+vmsctl ports check
+vmsctl health wait --timeout 120 [--deep]
+vmsctl version switch <X.Y.Z> | version show
+vmsctl update check|status|rollback [--to X.Y.Z] [--reason <texto>]   (por la tubería; exige elevación)
+vmsctl tls setup --hostname <nombre> [--import-root]
+vmsctl kiosk rotate
+vmsctl diag bundle --out <zip>                        registros y estado, nunca secretos ni mediamtx.yml
+vmsctl migrate-from-v1                                servicios WinSW → vmshost, datos intactos
+```
+Todas aceptan `--json`. `run`: lanza `runtime\python.exe -m vms` (o `engine\mediamtx.exe`…), lo mete en
+su Job Object, parada en 3 escalones (`POST /api/internal/shutdown` o `CTRL_BREAK` → 10 s →
+`TerminateJobObject`), reinicio con backoff 1/2/5/10/30 s y `logs\<servicio>.log` redactado con rotación
+10 × 10 MB.
+
+### 14.2 Códigos de salida y JSON
+
+| Código | Significado |
+|---|---|
+| 0 | ok |
+| 2 | uso incorrecto |
+| 10 | puerto ocupado |
+| 11 | sin permisos |
+| 12 | health check fallido |
+| 20 | error de Windows (código Win32 en `error.win32`) |
+
+Salida con `--json` (una sola línea, UTF-8):
+`{"ok": false, "code": 10, "data": {…}, "error": {"code": "port_in_use", "message_es": "El puerto 8600 está ocupado por …", "win32": null}}`.
+Nunca se analiza texto localizado de Windows. Constantes en `vms_common::exit_codes`.
+
+## 15. Actualizador [B4]
+
+### 15.1 Fuentes de actualización
+
+`VMS_UPDATE_SOURCE` (lo fija el instalador): `https://updates.<dominio>/` (Worker, §15.5),
+`http://<host>:<puerto>/` (repositorio estático: pruebas y CI) o `file:///D:/vms-updates` (USB o carpeta
+compartida, repositorio `offline`). La verificación TUF es idéntica en las tres. El `root` de confianza
+viene en el instalador (`updater\trusted\online\1.root.json` o `offline\1.root.json`).
+**Decisión de la noche del 5/10:** sin Cloudflare todavía; el Worker se prueba con Miniflare y la prueba
+real de actualización usa un servidor HTTP local en CI.
+
+### 15.2 Tubería de control `\\.\pipe\VMSMultimarca.updater`
+
+ACL: SYSTEM y Administradores (token elevado). Mensajes JSON de una línea, petición → respuesta:
+
+| Petición | Respuesta |
+|---|---|
+| `{"cmd": "status"}` | contenido de `public-status.json` + `journal` |
+| `{"cmd": "check"}` | `{"ok": true, "found": "2.1.0" \| null}` |
+| `{"cmd": "rollback", "to": "2.0.0" \| null, "reason": "…"}` | `{"ok": true, "update_id": "…"}` o error |
+| `{"cmd": "hold", "on": true \| false}` | `{"ok": true}` |
+| `{"cmd": "lock", "owner": "installer", "ttl_s": 3600}` / `{"cmd": "unlock", "owner": "installer"}` | `{"ok": true}` o `{"ok": false, "error": "busy"}` |
+
+### 15.3 Estados y fallos inyectados
+
+Estados del diario: §13.5. Variables de prueba (solo en builds de prueba): `VMS_UPDATER_FAULT_AT=<estado>`
+(mata el proceso justo antes y después del paso) y `VMS_UPDATER_PAUSE_AT=<estado>` (espera 30 s y lo
+anuncia en `public-status.json`).
+
+### 15.4 Repositorio, descriptor y canales
+
+Formato de PLAN-V2 §2.7 sin cambios (TUF con `consistent_snapshot`, `bundles/`, `components/<c>/`,
+`channels/`, `installers/`, y además `data/advisories-<AAAAMMDD>.json` como componente `data`, sin reinicio,
+§18.12). `root` y `targets`: **ECDSA P-256** (S3: verificado con python-tuf 7.0.1 + securesystemslib 1.5.1;
+`HSMSigner` usa python-pkcs11, MIT). `snapshot`/`timestamp`: ed25519.
+**Claves de desarrollo:** se generan fuera del repositorio (`%USERPROFILE%\.vms-dev-keys\` o el token SoftHSM
+`vms-dev`), sus archivos y etiquetas empiezan por `dev-` y el `root` de desarrollo lleva
+`"x-vms-env": "dev"` en `signed`; un cliente de producción solo confía en el `root` de producción que trae
+el instalador, así que una firma de desarrollo nunca vale en una tienda. La ceremonia real (2 YubiKey +
+papel) queda documentada en `docs/PUBLICAR-VERSION.md` (B4) y se hará cuando se compren las llaves (D4).
+
+### 15.5 Worker (`infra/update-worker/`)
+
+`GET /metadata/<archivo>` libre (caché corta). `GET /targets/<ruta>` con `Authorization: Bearer <token>`:
+KV `site_tokens`, clave `<cliente>:<sha256 hex del token>`, valor `{"site": "S0042", "active": true}`.
+Sin token o revocado → 401 `{"error":"unauthorized"}`; token de otro cliente → 403; descarga registrada
+(cliente, sede, versión). Cabecera `Date` siempre presente (comprobación de reloj, §15.6).
+
+### 15.6 `updater\public-status.json` y latido
+
+```json
+{"schema": 1, "installed": "2.1.0", "channel": "stable", "state": "good", "hold": false,
+ "last_check": "2026-11-20T03:10:00Z", "last_result": "update_ok|update_failed|metadata_expired|clock_skew|none",
+ "message_es": "", "available": null, "metadata_expires": "2026-11-27T00:00:00Z", "clock_skew_s": 0.4,
+ "reboot_pending": false, "updated": "2026-11-20T03:10:05Z"}
+```
+Lo leen el visor (diagnóstico) y `/status` (`GET /api/updates/status`, router `updates`, rol O). El latido
+añade `payload.update` con esos mismos campos (aditivo a §7.3). La respuesta del latido HTTP puede traer
+`{"update": {"check": true, "channel": "pilot", "hold": false, "rollback_to": null}}`.
+
+### 15.7 Panel central
+
+Tabla `site_versions` (migración `0003_site_updates.sql`) y rutas en `central/updates.py` (registradas por
+`central/extensions.py`): `GET /api/updates/sites`, `PUT /api/updates/sites/{id}` (`channel`, `hold`,
+`window`), `POST /api/updates/sites/{id}/rollback` (A). El panel **no firma** nada.
+
+## 16. Registro de drivers [B5]
+
+### 16.1 Tipos (código: `vms/core/interfaces.py`)
+
+`DriverSpec` (id, name, brands, kinds, capabilities, default_ports, auth, maturity, detect, lockout,
+presets, client, notes_es, setup_hints_es), `Capability`, `StreamPreset`, `LockoutPolicy`,
+`DetectionHints`, `DriverPublic`. Registro: `vms/vendors/registry.py` (`REGISTRY`, `get_driver`,
+`best_match`), un archivo por driver en `vms/vendors/drivers/<id>.py`, que llama a
+`register_vendor_ids()`. `client_for`, `test_device` y `build_camera_sources` consultan el registro; sus
+firmas (§5.1) no cambian.
+
+### 16.2 Capacidades
+
+`api_probe`, `api_channels`, `api_snapshot`, `api_codec_fix`, `onvif`, `onvif_media2`, `discovery_wsd`,
+`discovery_sadp`, `discovery_dhip`, **`time_read`** (implementa `DeviceClockClient.device_time() ->
+DeviceTime`; lo usa B6) y **`security_read`** (implementa `DeviceSecurityClient.security_settings(admin_username,
+admin_password) -> DeviceSecuritySettings`; lo usa B6 con credenciales temporales que no se guardan ni se
+registran); `rtsps` y `mjpeg_http` (v2.1); `events` y `ptz` (fuera de la v2).
+
+### 16.3 Madurez e identidad
+
+`maturity`: `verified` (fila de 72 h en `docs/COMPATIBILIDAD.md`, lo comprueba
+`tests/vendors/test_maturity_matches_matrix.py`), `fixtures`, `community`, `experimental`.
+`Device.identity: DeviceIdentity | None` (`serial`, `mac`, `source`, `seen_at`), `Device.allow_basic`
+(por defecto `false`) y `Device.follow_ip` (por defecto `false`).
+
+### 16.4 `GET /api/vendors` (rol A)
+
+Respuesta: `[DriverPublic]` (sin funciones). La interfaz construye el formulario de alta en
+`#device-form-root` desde `vms/web/static/js/devices.js` (dueño B5) y elimina `presetPaths` de JS.
+
+## 17. Visor de escritorio [B2] (pendiente de S1 y S5)
+
+### 17.1 Entrada de los muros sin escribir contraseñas
+
+`ProgramData\VMSMultimarca\secrets\kiosk.token` (ACL: SYSTEM, Administradores y el grupo local
+`VMS Operadores`). El visor lo lee y lo cambia por la cookie de kiosco con
+`POST /api/local/kiosk-session` (`{"token": "…", "next": "/wall/1"}` → 204 + cookie; solo desde
+127.0.0.1; router `local`), sin pasarlo por la línea de órdenes ni por la URL. `vmsctl kiosk rotate` lo
+cambia. Un usuario fuera del grupo ve «Sin permiso para abrir los muros».
+
+### 17.2 Ventanas y datos
+
+`%APPDATA%\VMSMultimarca\viewer.json`:
+`{"schema": 1, "servers": [{"name", "url", "sha256"}], "walls": [{"wall": 1, "server": "local", "monitor_key": "<nombre>|<x>,<y>|<ancho>x<alto>"}]}`.
+Todas las ventanas comparten la carpeta de datos de WebView2. Páginas remotas sin IPC (capacidades de
+Tauri solo para `tauri://localhost`). Fijación del certificado del servidor remoto: **pendiente de S5**.
+
+### 17.3 Eventos SSE nuevos (`vms/api/events.py`, dueño B2)
+
+`engine` (`{"state": "started|restarted|down", "pid", "at"}`, lo emite B1: el muro pone a cero su espera)
+y `update` (`{"version", "viewer_restart", "state", "message_es"}`, lo emite B4). Además B6 emite
+`health`, `bookmark`, `evidence` y `notice` (§18.18). Nombres y cargas declarados en código
+(`V2_EVENTS` y los `TypedDict`); nadie inventa otros sin pasar por aquí.
+
+## 18. Operación, IA de verificación y onboarding [B6]
+
+### 18.1 Principios
+
+- **RGPD:** ni reconocimiento facial, ni identificación, ni búsqueda de personas, ni métricas de
+  trabajadores, ni audio. La salud de imagen mide **la cámara**, no a la gente. La única imagen que se
+  guarda es la **referencia** de cada cámara (mediana de unos 15 fotogramas tomados durante unos minutos,
+  que borra a los transeúntes) y la del último aviso de sabotaje; se guardan en `ops\references\` con ACL
+  de datos y nunca viajan en avisos, en el latido ni en el informe. Tratamiento mínimo documentado en
+  `docs/RGPD-EIPD.md` («Salud de cámara»).
+- **Licencias (lo que se distribuye):** OpenCV clásico + NumPy (ya en `[vms]`), `cryptography` (Ed25519),
+  biblioteca estándar (`sqlite3`, `smtplib`), `httpx`; **Driver.js 1.9.0 (MIT)** copiado en
+  `vms/web/vendor/driver.js/` con su `LICENSE` (sin CDN). Descartados por licencia o por RGPD: Shepherd.js
+  e Intro.js (AGPL), pyiqa (no comercial), SuperPoint, DINOv3, cve-search (AGPL), nmap/python-nmap,
+  smartmontools, py-SMART, libx264, CLIP sobre imágenes, ANPR. DINOv2/LightGlue/ALIKED solo si el método
+  clásico falla en el piloto (no en la v2).
+- Los textos de causa, avisos y diagnóstico son en lenguaje de tienda, con qué hacer, y el estado nunca se
+  indica solo con color (icono + texto).
+- Código en `vms/ops/` (paquete de B6), rutas en los routers vacíos ya registrados (§18.9) y modelos base
+  en `vms/ops/models.py`. Los ajustes guardados en `config.json` están en `vms/core/models.py`
+  (`HealthSettings`, `NotificationSettings`, `CameraHealthConfig`, `CameraScope`): B6 pide cambios a B5.
+
+### 18.2 Salud de imagen (prioridad 1)
+
+- **Dónde corre:** en el backend (también en puestos sin analítica), tarea en segundo plano con
+  `asyncio.to_thread`, una comprobación por cámara cada `settings.health.check_interval_s` (180 s por
+  defecto) repartidas en el intervalo. Imagen: subflujo, por `DeviceClient.snapshot` o, si falla, un
+  fotograma del RTSP local de MediaMTX (como `/api/cameras/{id}/snapshot`). Nunca se decodifica de forma
+  continua. Objetivo: < 20 ms de CPU por comprobación a 640 px.
+- **Referencias:** día y noche (IR). «Fijar referencia» toma ~15 fotogramas en ~3 min y guarda la mediana;
+  queda en la auditoría. Se avisa si la mediana aún muestra a alguien quieto («fíjala con la tienda
+  cerrada»).
+- **Medidas y causas** (`HealthMetrics`, `HealthCause`): negra (luma < ~10 y % < 8 alto), tapada (desviación
+  y entropía bajas, pocos bordes), desenfocada (`var(Laplaciano)` relativa y bordes conservados), movida o
+  girada (ORB + `estimateAffinePartial2D` con **puerta de inliers ≥ 15 %**; si no, la causa es otra),
+  mira a otro sitio, congelada (diferencia ≈ 0 con el OSD tapado), IR atascado/débil, degradada, contraluz,
+  dominante de color, ruido. Zonas excluidas: `Camera.health.masks`.
+- **Puntuación 0-100:** 100 − penalizaciones; tapada/negra/congelada = 0; movida −40 a −60; desenfoque
+  −10 a −40; color/ruido/contraluz −5 a −15. Estado: ≥ 80 `ok`, 50-79 `warning`, < 50 `critical`; sin
+  referencia o sin imagen: `unknown`. **Histéresis:** `settings.health.hysteresis` comprobaciones seguidas
+  antes de cambiar de estado.
+- **Rutas** (router `health`):
+
+| Método y ruta | Rol | Petición → Respuesta |
+|---|---|---|
+| `GET /api/camera-health` | O | → `[CameraHealth]` (respeta el ámbito por cámara) |
+| `GET /api/camera-health/{camera_id}` | O | → `CameraHealth` |
+| `POST /api/camera-health/{camera_id}/reference` | A | `{"kind": "day" \| "night"}` → 202 `{"job_id"}`; al terminar, evento `health` |
+| `GET /api/camera-health/{camera_id}/reference.jpg?kind=day` | A | → `image/jpeg`, `Cache-Control: no-store`; queda en `audit.log` |
+| `GET /api/camera-health/{camera_id}/now.jpg` | A | → imagen actual en memoria (no se guarda) para «Antes / Ahora» |
+| `PUT /api/camera-health/{camera_id}/config` | A | `CameraHealthConfig` → `CameraHealthConfig` |
+| `POST /api/camera-health/{camera_id}/check` | A | → `HealthCheck` (comprobación inmediata) |
+
+### 18.3 Hora y desfase (prioridad 3)
+
+Lectura por `DeviceClockClient.device_time()` (B5; ONVIF `GetSystemDateAndTime` sin autenticación, ISAPI
+`/ISAPI/System/time`, Dahua `getCurrentTime`) y hora del PC (en Windows, estado de `w32tm` por API, sin
+analizar texto). Desfase = hora del equipo − hora del PC a mitad del viaje. Umbrales
+`settings.health.clock_warn_s` (2 s) y `clock_critical_s` (30 s); también aviso si `time_mode` es manual.
+Cada medida se guarda (§18.17) y la exportación incluye la última en el manifiesto.
+Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck]}`; `POST /api/clock/check` (A).
+
+### 18.4 Previsión de días de grabación (prioridad 4)
+
+Tasa real por cámara (bytes/hora en `recordings\` de las últimas 24 h) frente a disco libre + lo que la
+retención borrará. `GET /api/retention-forecast` (O) → `RetentionForecast`;
+`POST /api/retention-forecast/simulate` (A) `{"add_cameras": 4, "bitrate_mbps": 4.0}` → `RetentionForecast`.
+Aviso si los días previstos < `settings.retention.days`; aviso RGPD si el objetivo > 30 días.
+
+### 18.5 Informe de salud (prioridad 2)
+
+`GET /api/health-report?date=AAAA-MM-DD` (O) → `HealthReport` (día en la zona de la sede);
+`GET /api/health-report.csv?date=` (O). Contenido: disponibilidad por cámara, huecos de grabación (minutos
+sin segmento, desde los spans del motor), fps y tasa frente a lo esperado, puntuación de imagen mínima,
+desfase, días de retención reales, tramos protegidos, disco (libre, previsión y, en Windows, estado SMART
+leído con `Get-PhysicalDisk`/`Get-StorageReliabilityCounter` invocados desde `vmsctl diag`, nunca con
+smartmontools). Latido (aditivo a §7.3): `payload.health = {"report_date", "status", "score_min",
+"cameras_critical", "cameras_warning", "clock_worst_s", "forecast_days", "problems": ["…"]}` (máx. 10
+frases, sin imágenes ni IP).
+
+### 18.6 Marcadores y bloqueo de retención (prioridad 6)
+
+`Bookmark`/`BookmarkCreate` (`vms/ops/models.py`), id `bm-xxxxxxxx`. Rutas (router `evidence`):
+`GET /api/bookmarks?camera_id=&from=&to=` (O), `POST /api/bookmarks` (O con permiso `bookmark`; `protect`
+exige A o permiso `export`), `PATCH /api/bookmarks/{id}` y `DELETE /api/bookmarks/{id}` (A; se audita).
+«Proteger» crea **enlaces duros** (copia si no es el mismo volumen) de los segmentos del tramo en
+`evidence\protected\<camera_id>\` con su `meta.json` (motivo, caso, caducidad, usuario): la retención de
+MediaMTX borra el original pero el enlace sobrevive. Caducidad por defecto 90 días; al caducar, B6 borra la
+copia y lo anota. El disk guard cuenta `evidence\` y nunca la borra. Evento SSE `bookmark`.
+
+### 18.7 Exportación de evidencias (prioridad 5)
+
+Rutas: `POST /api/evidence/exports` (O con permiso `export`) `EvidenceExportRequest` → 202 `EvidenceExport`;
+`GET /api/evidence/exports/{id}`; `GET /api/evidence/exports/{id}/download` (ZIP en streaming);
+`DELETE /api/evidence/exports/{id}` (A). Progreso por SSE `evidence`. Motivo obligatorio. Línea en
+`audit.log` (`{"event": "evidence_export", "user", "ip", "cameras", "from", "to", "reason", "case_ref", "export_id", "sha256_manifest"}`).
+
+**Paquete** (`<export_id>.zip`, `export_id` = `ev-AAAAMMDD-xxxxxx`):
+```
+LEEME.txt                      cómo verificar, en español
+visor.html                     autocontenido (JS/CSS en línea, sin red): lista de clips, <video>, marca de
+                               agua superpuesta (usuario y fecha; NUNCA quemada en el vídeo) y comprobación
+                               de los SHA-256 con crypto.subtle; avisa si algo no coincide
+manifiesto.json                EvidenceManifest (schema 1): sede, intervalo UTC y local, desfase medido,
+                               usuario, motivo, caso, receptor y SHA-256 + tamaño de CADA archivo
+manifiesto.sig                 firma Ed25519 (base64) de los bytes exactos de manifiesto.json
+clave-publica.pem              clave pública de la instalación (key_id = SHA-256 de la clave en bruto)
+acta.html                      acta de cadena de custodia (quién exporta, quién recibe, huellas, códec y
+                               recomendación de VLC para H.265)
+video/<camera_id>/segments/…   segmentos fMP4 ORIGINALES de MediaMTX (el «nativo»)
+video/<camera_id>/<cámara>_<AAAAMMDD-HHMMSS>.mp4   unión sin recodificar (remux)
+```
+Clave de firma: `secrets\evidence-ed25519.key` (se crea en el primer uso; DPAPI de máquina cuando B1
+entregue `winsec`); la clave pública viaja en el latido (`payload.evidence_key = {"key_id", "public_key"}`)
+para que la central la tenga. Verificación: `python -m vms.ops.evidence verify <zip>` (sale con 0 si todo
+cuadra). Nunca se recodifica (sin libx264); H.265 se entrega tal cual.
+
+### 18.8 Permisos por cámara (prioridad 12)
+
+`User.camera_scope: CameraScope | None` (`cameras`, `live`, `playback`, `export`, `bookmark`). `None` =
+todas (compatibilidad v1); los administradores no tienen ámbito; el kiosco ve el vivo de las cámaras de
+los muros. Se aplica **solo** en `vms/api/permissions.py` (ya llamado desde cámaras, vivo, grabaciones y
+descargas); una cámara fuera del ámbito responde 404. Lo administra `PATCH /api/users/{username}` con
+`camera_scope` (router `users`, dueño B6 en la v2). Pendiente de pedir a B2: filtrar el evento SSE
+`status` por ámbito.
+
+### 18.9 Contenedores, módulos y estilos en las páginas
+
+Ya están en las páginas (vacíos y ocultos); el dueño solo edita su módulo:
+
+| Página | Contenedor | Módulo JS | Dueño |
+|---|---|---|---|
+| `index.html` | `#onboarding-root`, `#help-root` | `onboarding.js`, `help.js` | B6 |
+| `index.html` (diálogo de alta) | `#device-form-root` | `devices.js` | B5 |
+| `status.html` | `#updates-root` | `updates.js` (+ `updates.css`) | B4 |
+| `status.html` | `#health-root`, `#security-audit-root`, `#notifications-root` | `health.js`, `security.js`, `notifications.js` | B6 |
+| `playback.html` | `#timeline-events-root`, `#bookmarks-root`, `#evidence-root` | `timeline-events.js`, `bookmarks.js`, `evidence.js` | B6 |
+| `analytics.html` | `#counts-export-root` | `counts-export.js` | B6 |
+
+Hoja `ops.css` (B6) en esas páginas. `wall.html` no tiene nada de B6: **nunca** recorridos ni avisos en
+los muros en kiosco.
+
+### 18.10 Avisos por correo y webhook (prioridad 7)
+
+`settings.notifications: NotificationSettings` (en `config.json`, sin secretos). La contraseña SMTP y el
+secreto del webhook van al `CredentialStore` con las claves `notify:smtp_password` y `notify:webhook_secret`.
+Reglas (`NotificationRule`): tipos, gravedad mínima, canales, horas de silencio y **agrupación** («5
+cámaras caídas en la tienda 37» en vez de 5 mensajes). Por defecto, **sin imagen**.
+Webhook: `POST` JSON con cabecera `X-VMS-Signature: sha256=<HMAC-SHA256 hex del cuerpo con el secreto>`:
+```json
+{"schema": 1, "site": {"id": "s0037", "name": "Tienda 37", "code": "037"}, "at": "2026-11-20T10:00:00Z",
+ "severity": "critical", "kind": "tamper", "title_es": "Cámara tapada: Cajas 2", "count": 1,
+ "cameras": [{"camera_id": "cam-1a2b3c4d", "name": "Cajas 2"}], "details": {"score": 0, "causes": ["covered"]}}
+```
+Rutas (router `notifications`): `GET/PUT /api/notifications/settings` (A; nunca devuelve secretos, solo
+`has_smtp_password`), `PUT /api/notifications/secrets` (A), `POST /api/notifications/test` (A,
+`{"channel": "email"|"webhook"}`), `GET /api/notifications/log` (A) → `[NotificationRecord]`. Telegram
+sigue como en la v1 (§8.5).
+
+### 18.11 «¿Por qué no conecta?» (prioridad 9)
+
+`POST /api/diagnostics/device` (A) `{"device_id"}` o un `DeviceTestRequest` → `DiagnosisResult`;
+`POST /api/diagnostics/camera/{camera_id}` (A). Reglas deterministas en orden (`DiagnosisStep.code`):
+`ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` → `codec` →
+`clock` → `engine` → `path_ready`. **Un solo intento con credenciales** (respeta `LockoutPolicy`). Cada paso
+trae la causa probable y la acción en lenguaje claro. El LLM es opcional (`VMS_LLM_*`) y solo reescribe
+`summary_es` a partir de los pasos, **sin IP, usuarios ni contraseñas** (`llm_used`).
+
+### 18.12 Auditoría de seguridad de equipos (prioridad 11)
+
+Solo equipos dados de alta, sin explotar nada ni probar contraseñas. `POST /api/security-audit/run` (A)
+`{"admin_credentials": {"<device_id>": {"username", "password"}}}` (opcional, no se guardan ni se registran)
+→ `SecurityAuditReport`; `GET /api/security-audit/latest` (A); `GET /api/security-audit/advisories` (A)
+→ versión y fecha de la tabla. Comprobaciones (`SecurityFinding.check`): contraseña guardada débil o de
+fábrica (análisis **local**), usuario `admin` en vez del de solo lectura, RTSP/ONVIF anónimos (una petición
+sin credenciales), Telnet/SSH/HTTP sin TLS/puertos SDK/UPnP/P2P (TCP con tiempo límite y, con credenciales
+de administrador, `security_read`), firmware con CVE y hora. Resultado: «Vulnerable (KEV)», «Probablemente
+vulnerable», «Sin CVE conocidos en la tabla» o «Desconocido». **Nunca «seguro».**
+
+**Tabla de avisos propia** (`AdvisoryTable`, `schema` 1): `vms/ops/security/advisories.json` en cada
+versión y, entre versiones, como componente TUF `data` (§15.4). La prepara Unmanned en el PC de
+publicación (NVD API 2.0 + catálogo KEV de CISA, CC0 + EPSS de FIRST), así **ni las tiendas ni la central
+salen a Internet** y la tabla va firmada como cualquier otra parte del producto.
+```json
+{"schema": 1, "generated_at": "2026-10-05T00:00:00Z", "source": "Unmanned Studio", "kev_catalog_version": "2026.10.04",
+ "nvd_notice": "This product uses the NVD API but is not endorsed or certified by the NVD.",
+ "advisories": [{"id": "ADV-2026-001", "vendor": "hikvision", "model_regex": "^DS-2CD", "families": ["IPC_G3"],
+   "compare": "build_date", "fixed_build_date": "2021-06-28", "fixed_version": null,
+   "cves": ["CVE-2021-36260"], "kev": true, "kev_date_added": "2022-01-10", "cvss": 9.8, "epss": null,
+   "vendor_advisory_url": "https://www.hikvision.com/…", "reviewed": "2026-10-05", "notes_es": "…"}]}
+```
+Hikvision se compara por fecha de build (NVD no trae rangos); Dahua por versión por partes. Revisión
+trimestral; para empezar, los CVE de Hikvision y Dahua del KEV y de gravedad alta.
+
+### 18.13 Línea de tiempo con eventos (prioridad 13)
+
+`GET /api/timeline/{camera_id}?start=&end=&layers=recording_gap,bookmark,health,clock,analytics_alert,protected`
+(O, permiso `playback`) → `[TimelineEvent]`. Las capas se pintan sobre la línea de tiempo propia de
+`playback.html` (sin vis-timeline mientras baste). «Sin grabación» se pinta distinto de «hay grabación».
+Eventos del NVR (`nvr_event`): v2.1.
+
+### 18.14 Onboarding (prioridad 10)
+
+`GET /api/onboarding/state` y `PUT /api/onboarding/state` (O) → `OnboardingState` (por usuario, en
+`ops\onboarding.json`). Asistente de primer uso cuando no hay equipos y el usuario es administrador (pasos de
+la investigación §5.2: bienvenida, buscar, credenciales, probar con el diagnóstico, canales, referencia de
+imagen, muro, grabación con previsión, listo). Ayuda «?» con textos en `vms/web/static/help/es.json`
+(preparado para catalán e inglés). Estados vacíos con las 3 pautas (estado, enseñar, camino directo).
+Recorridos con Driver.js solo para administrador o técnico.
+
+### 18.15 Exportación CSV de conteos (prioridad 8)
+
+`GET /api/analytics/counts.csv?from=&to=&bucket=hour|day` (O; router `counts`; necesita `VMS_PG_DSN`, si no
+503 `not_configured`). Columnas `tienda;fecha;hora;entradas;salidas;cola_media;cola_max`, separador `;`,
+coma decimal, UTF-8 **con BOM**, fechas en la zona de la sede. Solo agregados.
+
+### 18.16 Panel central
+
+Rutas en `central/ops.py` (registradas por `central/extensions.py`): `GET /api/ops/problems?date=` («tiendas
+con problemas hoy», ordenadas por gravedad, a partir de `payload.health` del latido),
+`GET /api/ops/sites/{site_id}/health?date=`, `GET /api/ops/problems.csv`, `GET /api/sites/{site_id}/counts.csv`
+y `GET /api/counts.csv?sites=…` (mismas reglas que §18.15). El PDF es la página imprimible del navegador
+(sin bibliotecas de PDF).
+
+### 18.17 Persistencia de B6
+
+`<datos>\ops\ops.sqlite3` (SQLite de la biblioteca estándar, modo WAL; un solo escritor: el backend):
+tablas `health_checks` (90 días), `clock_checks` (400 días), `bookmarks`, `evidence_exports`,
+`notifications_log` (90 días) y `timeline_events`. Referencias de imagen en `ops\references\<camera_id>-day.jpg`
+y `-night.jpg`. Nada de esto entra en `diag bundle` salvo los recuentos.
+
+### 18.18 Eventos SSE de B6
+
+Declarados en `vms/api/events.py`: `health` (`HealthEvent`), `bookmark` (`BookmarkEvent`), `evidence`
+(`EvidenceEvent`) y `notice` (`NoticeEvent`; la interfaz lo muestra en el panel, **nunca** en los muros).
+
+### 18.19 Criterios de «terminado» de B6
+
+Los de PLAN-V2 §6.2 (B6). Imprescindibles: imágenes sintéticas reproducibles para cada causa (como la
+prueba de la investigación §3.2) con la puntuación y la causa esperadas; paquete de evidencias que
+`verify` acepta y que falla si se toca un byte; webhook firmado verificado por un servidor simulado;
+`test_spanish_style.py` verde; ninguna imagen de personas guardada (prueba que recorre `ops\` tras una
+ejecución).

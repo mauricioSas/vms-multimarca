@@ -1,8 +1,10 @@
 # Plan v2 — VMS Multimarca como app de Windows con actualizaciones y compatibilidad multimarca verificada
 
-**Fecha:** 5 de octubre de 2026 · **Versión del plan:** 1.1 (incorpora la revisión crítica, ver
-§8) · **Producto actual:** 0.1.0 (fases 1-2 construidas, primera instalación real en Windows 11
-10.0.26200 el 4-oct-2026).
+**Fecha:** 5 de octubre de 2026 · **Versión del plan:** 1.2 (1.1 = revisión crítica, §8; 1.2 = bloque
+B6 «Operación, IA de verificación y onboarding» y las decisiones de la noche del 5/10, §9) ·
+**Producto actual:** 0.1.0 (fases 1-2 construidas, primera instalación real en Windows 11
+10.0.26200 el 4-oct-2026) · **Fase 0:** hecha en la rama `v2` (resultado de las pruebas de concepto en
+[`investigacion-v2/spikes.md`](investigacion-v2/spikes.md)).
 
 Este documento es la base para construir la v2. Lo que dice cada parte lo respaldan los informes de
 investigación de [`docs/investigacion-v2/`](investigacion-v2/): app e instalador, actualizaciones,
@@ -24,6 +26,7 @@ amplía con las secciones §13-§17 que se describen aquí.
 | **Actualizaciones seguras con rollback** | Servicio `VMSUpdater` con **python-tuf 7** (TUF: firmas con umbral, protección contra versiones viejas y metadatos congelados). Versiones en carpetas paralelas; la versión activa la elige un **arrancador fijo** (`vmshost.exe`) leyendo un puntero que se escribe de forma atómica, con un **diario** que sobrevive a un corte de luz. Health check de 120 s y **vuelta atrás automática**, también si el actualizador nuevo no arranca. Repositorio en **Cloudflare R2** con un Worker que pide el token de la sede. Canales `pilot` y `stable` y canal por sede desde el panel central. La clave que autoriza versiones (`targets`) vive en una **llave física** y nunca en CI. |
 | **Sin cortar la grabación al actualizar** | MediaMTX pasa a ser **su propio servicio** (`VMSEngine`) y sus rutas viven en su propio archivo de configuración: **graba aunque el backend esté caído**. Al actualizar app o runtime, la grabación no se corta (**0 s**). Al actualizar el motor, **≤ 15 s** por la noche, medido en CI. |
 | **Compatibilidad multimarca verificada** | **Registro de drivers** (`vms/vendors/registry.py`): añadir una marca toca un solo sitio. La v2 trae **3 drivers con API** (Hikvision ISAPI, Dahua CGI y ONVIF genérico, con Media2/Profile T), **11 perfiles RTSP/ONVIF por marca** y RTSP manual. Cada uno muestra su **madurez real** en la interfaz: solo es «Verificado» con su prueba de 72 h con hardware. **Hikvision y Dahua tienen que estar verificados con hardware antes del piloto.** Batería de contrato con respuestas grabadas de equipos reales, servidor RTSP «caótico» y matriz de hardware publicada. |
+| **Operación y verificación** (bloque B6, §6.2) | Salud de imagen 0-100 con OpenCV clásico (tapada, desenfocada, movida, negra, congelada, IR…), informe de salud por tienda y en la central, desfase horario, previsión de días de grabación, exportación de evidencias firmada con visor portátil, marcadores que la retención no borra, avisos por correo y webhook, «¿por qué no conecta?», auditoría de seguridad de los equipos, permisos por cámara, línea de tiempo con eventos y onboarding con Driver.js. Sin datos personales: la referencia de cada cámara es una mediana de fotogramas. |
 | **Calidad muy alta, revisada** | CI en GitHub Actions con **windows-latest**: pytest completo; luego, en Windows real, instalación silenciosa → servicios → visor (por CDP) → actualización v1→v2 con medición del corte → rollback de una v3 rota → desinstalación. En el laboratorio, **cortes de luz simulados** (VM Hyper-V apagada en cada paso de la actualización) y checklist de hardware con 72 h de prueba. |
 
 **Coste fijo aproximado:** 25-60 €/mes más 350-700 € de entrada (certificado Certum OV, licencia de
@@ -1385,16 +1388,24 @@ Sin esto, los bloques se pisarían. Entregables:
 
 | Archivo | Dueño | Quién le pide cambios |
 |---|---|---|
-| `.github/workflows/*.yml` | B3 | B1 (job de servicios), B2 (build del visor), B4 (`publish-meta.yml`, `timestamp.yml`), B5 (job de compatibilidad) |
+| `.github/workflows/*.yml` | B3 | B1 (job de servicios), B2 (build del visor), B4 (`publish-meta.yml`, `timestamp.yml`), B5 (job de compatibilidad), B6 (job `b6-operacion`). Cada bloque ya tiene su job en `ci.yml` |
 | `native/Cargo.toml` (workspace) y `native/common/` | B1 | B2 |
-| `vms/core/models.py`, `vms/core/interfaces.py` | B5 (tras la fase 0) | B1, B4 |
+| `vms/core/models.py`, `vms/core/interfaces.py` | B5 (tras la fase 0) | B1, B4, B6 |
 | `vms/core/config_migrations.py` | B4 | B5 (si cambia un modelo persistente, entrega la migración como petición) |
-| `vms/api/events.py` | B2 | B1 (estado del motor), B4 (evento `update`) |
+| `vms/api/events.py` | B2 | B1 (estado del motor), B4 (evento `update`), B6 (`health`, `bookmark`, `evidence`, `notice`) |
 | `vms/api/app.py` | arquitecto (solo en la fase 0 y en la integración) | todos |
 | `tests/windows/` (arnés, pasos 1-5 y 10-12) | B3 | — |
 | `tests/windows/test_update_*.py` (pasos 6-9) | B4 | B3 le da el arnés |
 | `tests/fixtures/redaction_vectors.json` | B1 | B5 (nuevos formatos de URL de marca) |
 | `docs/CONTRATO.md` | arquitecto | todos (por nota en §12) |
+| `vms/api/routes/__init__.py`, `central/app.py`, `central/extensions.py` | arquitecto (los routers de todos ya están registrados desde la fase 0) | todos |
+| `vms/api/routes/cameras.py`, `live.py`, `recordings.py`, `walls.py` | arquitecto (integración) | B2, B5, B6 |
+| `vms/api/permissions.py`, `vms/api/routes/users.py` | B6 | B2 (filtrar el SSE `status` por ámbito) |
+| `vms/web/pages/*.html` | arquitecto: cada bloque ya tiene su contenedor y su módulo JS (CONTRATO §18.9) | todos |
+| `vms/web/static/js/panel.js`, `devices.js` | B5 | B6 (estados vacíos) |
+| `vms/web/static/js/ui.js`, `api.js`, `css/app.css` | arquitecto | todos |
+| `pyproject.toml`, `requirements-*.txt` (locks) | arquitecto | todos (con la licencia verificada) |
+| `tests/conftest.py`, `tests/fakes.py` | arquitecto | todos (los dobles nuevos de un bloque van en su carpeta de pruebas) |
 
 #### B1 — Plataforma Windows: arrancador, servicios, runtime y motor como servicio
 
@@ -1441,17 +1452,31 @@ Sin esto, los bloques se pisarían. Entregables:
 | **Salidas** | Registro con 3 drivers con API, 11 perfiles y RTSP manual (§3.4); correcciones de §3.2 (incluidas Media2, límites de NVR, cambio de IP, firmware y «Corregir códec» con copia, deshacer y auditoría); descubrimiento SADP y DHIP; batería de contrato; servidor caótico; herramienta de captura; matriz publicada con la madurez real |
 | **Terminado cuando** | (1) añadir un driver nuevo = **un archivo** `drivers/<id>.py` + fixtures (se demuestra añadiendo `milesight` en una sola PR); (2) batería de contrato y matriz §4.2 verdes; (3) `grep` sin presets duplicados en JS; (4) prueba: alta con contraseña incorrecta → exactamente **1** petición con credenciales al equipo (contador del mock); (5) `rroller/dahua` adaptado con atribución en el archivo y en `docs/TERCEROS.md`, y `tests/test_licenses.py` sin cambios en rojo; (6) `test_maturity_matches_matrix.py` verde. **Para el piloto, además:** Hikvision y Dahua en `verified` (con hardware, §3.4) |
 
+#### B6 — Operación, IA de verificación y onboarding
+
+Fuente: [`investigacion-v2/funciones-ia-onboarding.md`](investigacion-v2/funciones-ia-onboarding.md),
+prioridades 1-13 (las 14-21 quedan para la v2.1 o si Covert las pide). Contrato: CONTRATO §18.
+
+| | |
+|---|---|
+| **Carpetas propias** | `vms/ops/` (salud de imagen, informe, hora, previsión, evidencias y marcadores, avisos, diagnóstico, auditoría de seguridad con `security/advisories.json`, almacén `ops.sqlite3`), `vms/api/permissions.py`, `vms/api/routes/` `health.py`, `evidence.py`, `notifications.py`, `diagnostics.py`, `security_audit.py`, `timeline.py`, `onboarding.py`, `counts.py` y `users.py`, `vms/web/static/js/` `onboarding.js`, `help.js`, `health.js`, `security.js`, `notifications.js`, `timeline-events.js`, `bookmarks.js`, `evidence.js`, `counts-export.js`, `vms/web/static/css/ops.css`, `vms/web/static/help/`, `vms/web/vendor/driver.js/` (Driver.js 1.9.0, MIT, con su LICENSE), `central/ops.py` y sus vistas, `tests/ops/`, la sección «Salud de cámara» de `docs/RGPD-EIPD.md` |
+| **Entradas** | CONTRATO §18; capacidades `time_read` y `security_read` de B5 (mientras no lleguen, dobles en `tests/ops/`); `winsec` de B1 para guardar la clave de firma de evidencias con DPAPI; eventos SSE ya declarados (§17.3); la tabla de avisos la publica B4 como componente TUF `data` |
+| **Salidas** | Prioridades 1-13: (1) salud/sabotaje 0-100 con OpenCV clásico y causas; (2) informe de salud por tienda + vista central «tiendas con problemas hoy» + CSV; (3) desfase horario cámara↔PC; (4) previsión de días de grabación con simulador; (5) exportación de evidencias con SHA-256, manifiesto firmado Ed25519, acta y visor HTML portátil con marca de agua (no quemada); (6) marcadores con bloqueo de retención; (7) avisos por correo y webhook con agrupación; (8) CSV de conteos; (9) «¿por qué no conecta?» por reglas (LLM opcional solo para redactar); (10) onboarding: asistente de primer uso, «?» contextual, estados vacíos y recorridos con Driver.js; (11) auditoría de seguridad con la tabla de avisos propia + KEV/NVD; (12) permisos por cámara; (13) línea de tiempo con eventos |
+| **Terminado cuando** | (1) batería de imágenes **sintéticas** (generadas en la prueba, nunca fotos de personas) para cada causa con la causa y la puntuación esperadas, y 50 fotogramas normales sin falsos positivos; < 20 ms por comprobación a 640 px; histéresis probada; (2) desfase con mocks ONVIF/ISAPI/CGI a ±2 h y con `timeMode` manual; (3) previsión con un disco simulado; (4) `python -m vms.ops.evidence verify` acepta el paquete y falla si se cambia un byte; `visor.html` abre sin red en Chromium y detecta el cambio; (5) un tramo protegido sobrevive al borrado de MediaMTX y caduca; (6) correo con un servidor SMTP simulado y webhook con firma HMAC verificada; avisos agrupados; (7) diagnóstico: cada regla con su mock y exactamente **1** intento con credenciales; (8) auditoría: la tabla valida su esquema, casos Hikvision (fecha de build) y Dahua (versión), RTSP anónimo detectado con `rtsp_chaos`, sin salir a Internet; (9) asistente completo con Playwright y nunca en `/wall/N`; (10) operador con ámbito: 404 en cámaras fuera de su ámbito (vivo, grabación, descarga) y el kiosco igual que antes; (11) informe y latido con `payload.health`; vista central y CSV; (12) RGPD: tras una ejecución completa, `ops\` solo contiene referencias de cámara y metadatos; EIPD actualizada; (13) `pytest` completo y `test_spanish_style.py` verdes; licencias revisadas (`tests/test_licenses.py`) |
+
 ### 6.3 Integración y revisión
 
-- **Revisión cruzada:** B1↔B3 (Windows), B2↔B5 (interfaz), B4↔B1 (servicios, puntero y diario).
+- **Revisión cruzada:** B1↔B3 (Windows), B2↔B5 (interfaz), B4↔B1 (servicios, puntero y diario),
+  B6↔B5 (capacidades `time_read`/`security_read` y diagnóstico), B6↔B2 (interfaz, SSE y kiosco).
   Además, un **revisor de seguridad independiente** sobre `updater/`, `vmshost`, la tubería de
-  control, `kiosk.token`, `vmsctl acl/firewall`, `tools/release` y el Worker, con el mismo método de
+  control, `kiosk.token`, `vmsctl acl/firewall`, `tools/release`, el Worker y lo sensible de B6 (firma de
+  evidencias, webhook, permisos por cámara y credenciales temporales de la auditoría), con el mismo método de
   la v1: cada hallazgo tiene que ir con una prueba que lo reproduce.
 - **Semana de integración:**
   - e2e de Windows completo en verde 3 veces seguidas (para descartar fallos intermitentes).
   - `system_check` macOS 10/10.
   - Actualizar `ESTADO.md` y `CONTRATO.md` §12.
-- **Orden de fusión:** fase 0 → B5 y B1 (no dependen de nadie) → B2 → B4 → B3 (el que integra).
+- **Orden de fusión:** fase 0 → B5 y B1 (no dependen de nadie) → B6 → B2 → B4 → B3 (el que integra).
 
 ---
 
@@ -1574,3 +1599,38 @@ comporte igual en v1.21.1 que en `main` (S2); que la firma PKCS#11 con YubiKey f
 punta con python-tuf 7 (S3); que Certum se pueda usar desde un script sin intervención (no bloquea:
 se firma en local); el precio de la licencia de Inno; el precio de ESU (fuentes secundarias); la
 hora exacta a la que Windows Update reinicia (por eso el diseño ya no depende de ella).
+
+---
+
+## 9. Decisiones de la noche del 5/10 y desviaciones de la fase 0
+
+El responsable delegó las decisiones técnicas con tres límites: no gastar dinero, no crear cuentas
+externas y no publicar fuera del repositorio privado. Lo que sigue **manda sobre el resto del plan**
+donde choque.
+
+### 9.1 Decisiones del responsable
+
+| # | Decisión | Qué cambia | Hasta cuándo |
+|---|---|---|---|
+| N1 | **Sin certificado Authenticode todavía** | Las builds salen sin firmar. El hueco está preparado: directiva `SignTool=` del `.iss` vacía, paso `python -m tools.build sign` (jsign) que se salta si no hay certificado, y en el e2e de Windows un certificado de prueba autoimportado en el runner. SmartScreen avisará en el laboratorio (se documenta) | Hasta D1 |
+| N2 | **Sin YubiKey** | Claves TUF de **desarrollo** en software o en SoftHSM, marcadas `dev` (archivos y etiquetas `dev-*`, `"x-vms-env": "dev"` en el `root`), **nunca en el repositorio** (`%USERPROFILE%\.vms-dev-keys\` o el token SoftHSM `vms-dev`). La ceremonia real (2 YubiKey + papel, umbral 2 de 3) queda escrita en `docs/PUBLICAR-VERSION.md` (B4) | Hasta D4 |
+| N3 | **Sin Cloudflare** | El Worker se construye y se prueba con Miniflare. El actualizador admite, además del Worker, una **fuente HTTP estática** y un **espejo USB/carpeta** (`file://`) (CONTRATO §15.1). La prueba real de actualización usa un servidor HTTP local en CI | Hasta D5 |
+| N4 | **S1 no bloquea la fase 0** | S1 necesita el PC Windows del usuario. Se sigue con Tauri y se deja el kit de S1 listo (visor mínimo + `s1.ps1` + guía de 3 pasos, `spikes/s1-webview2/`). **Electron sigue como plan B.** B2 no arranca hasta tener el veredicto | Veredicto de S1 |
+| N5 | **Hyper-V y cortes de luz reales, al laboratorio** | §4.4 bis no se hace esta noche. Sí se hacen (B4) las pruebas del diario con fallos inyectados (`VMS_UPDATER_FAULT_AT`) | Laboratorio (D12) |
+| N6 | **Bloque B6 nuevo** | «Operación, IA de verificación y onboarding» con las prioridades 1-13 del informe de funciones (§6.2 y CONTRATO §18), respetando sus descartes de licencia y de RGPD | — |
+
+### 9.2 Decisiones técnicas tomadas en la fase 0
+
+| Tema | Decisión | Motivo |
+|---|---|---|
+| `packaging/` | Se llama **`distribution/`** (`distribution/runtime/`, `distribution/installer/`, `distribution/layout.py`) | Con `__init__.py` (para `python -m …`), `packaging/` taparía el paquete `packaging` de PyPI que usan pip, pytest y `tools.lock_requirements` |
+| Salud de imagen | Corre en el **backend** (no en la analítica): `numpy` y `opencv-python-headless` pasan al extra `[vms]` | Los puestos de control no tienen servicio de analítica y también necesitan la salud de imagen. El runtime ya incluye OpenCV |
+| Tabla de avisos de seguridad | Viaja como componente TUF `data` (y dentro de cada versión), preparada en el PC de publicación con NVD + KEV + EPSS | Así va firmada como el resto del producto y ni las tiendas ni la central salen a Internet (el informe proponía que la firmara la central) |
+| Marcadores protegidos | Enlaces duros a los segmentos (copia si cambia el volumen) en `evidence\protected\` | Proteger no duplica disco y la retención de MediaMTX no los borra |
+| Permisos por cámara | Ganchos en las rutas desde la fase 0 (`vms/api/permissions.py`, sin efecto hasta B6) | B6 activa el ámbito sin tocar archivos de otros bloques |
+| Puntero `active.json` | Solo lo escriben el actualizador (LocalSystem) y el instalador; un servicio sin privilegios pide la vuelta atrás con `state\rollback-request.json` | Hallazgo de S4: con el diseño de la prueba, todas las cuentas virtuales tendrían que poder escribir el puntero (CONTRATO §13.3, a cerrar por B1) |
+| Retención en MediaMTX | `recordDeleteAfter` se queda en el YAML; cambiarla abre un segmento nuevo en todas las cámaras (≤ 1 GOP de hueco, medido en S2) y se avisa | Así la retención funciona aunque el backend esté caído días |
+| Firma TUF por PKCS#11 | `HSMSigner` de securesystemslib 1.5.1 usa **python-pkcs11 (MIT)**, no PyKCS11 (GPL) | Comprobado en el código de la versión 1.5.1 (S3) |
+| Calidad en CI | `ruff` (E4, E7, E9, F, B), `mypy --strict` en `vms/core` (ya pasa) y normal en `vms/ops`; el resto se suma por bloques. `pytest-randomly` activo por defecto; `pytest-cov` con informe en CI (el umbral del 80 % se fija cuando haya una medida de CI) | Que CI quede verde hoy sin rebajar nada que ya se cumpla |
+| CI en GitHub | **Pendiente del usuario:** el token de `gh` de este equipo no tiene el permiso `workflow`, y GitHub rechaza subir `.github/workflows/*.yml` sin él. Los flujos están escritos y validados en local (actionlint), en el último commit local de `v2` | Ver «Cómo terminar» en `investigacion-v2/spikes.md` |
+
