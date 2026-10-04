@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vms-multimarca"
+version = "0.1.0"
+description = "VMS multimarca (Hikvision, Dahua, ONVIF) con vista en vivo, grabación, reproducción y analítica de tienda"
+requires-python = ">=3.12,<3.13"
+license = { text = "Propietario" }
+readme = "LEEME.md"
+# Núcleo común (vms.core): lo necesitan todos los componentes.
+dependencies = [
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "python-dotenv>=1.0",
+    "keyring>=25",
+    "cryptography>=43",
+    "httpx>=0.28",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+# PC de control / sede: backend FastAPI + motor MediaMTX + integración de fabricantes.
+vms = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "argon2-cffi>=23",
+    "onvif-zeep-async>=4.3",
+    "psutil>=6",
+    "psycopg[binary]>=3.2",
+]
+# Analítica en la sede: SOLO inferencia (modelo RF-DETR ya exportado a ONNX/OpenVINO).
+# No incluye torch: en Linux arrastraría las wheels CUDA (varios GB) a un mini PC sin GPU.
+# OJO: supervision declara PyAV (FFmpeg GPL); instalar con los lock y --no-deps (CONTRATO §10).
+analytics = [
+    "numpy>=2",
+    "opencv-python-headless>=4.10",
+    "supervision>=0.26",
+    "trackers>=2.6",
+    "openvino>=2025.0",
+    "onnxruntime>=1.20",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+]
+# Exportación del modelo (máquina de desarrollo/CI): RF-DETR + torch → ONNX/OpenVINO.
+# Solo tamaños con licencia Apache-2.0: nano, small, medium, base. Nunca XL/2XL (PML).
+export = [
+    "rfdetr>=1.11",
+    "onnx>=1.16",          # Apache-2.0; lo necesita torch.onnx.export dentro de rfdetr.export()
+    "openvino>=2025.0",
+    "onnxruntime>=1.20",
+]
+# Panel central multi-sede + informe semanal (proveedor LLM configurable).
+central = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "argon2-cffi>=23",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "anthropic>=0.40",
+]
+dev = [
+    "vms-multimarca[vms,analytics,central,export]",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "respx>=0.21",
+    "playwright>=1.48",
+    "pgserver>=0.1.4",
+    "pip-licenses>=5",
+]
+
+[project.scripts]
+vms-migrate = "vms.db.migrate:main"
+
+[tool.setuptools.packages.find]
+include = ["vms*", "analytics*", "central*"]
+exclude = ["tests*", "tools*", "legacy*"]
+
+[tool.setuptools.package-data]
+"vms.db" = ["migrations/*.sql"]
+"vms.web" = ["**/*"]
+"central" = ["web/*.html", "web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 180
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: pruebas lentas (procesos externos, vídeo, modelos)",
+    "e2e: pruebas extremo a extremo con simulador y MediaMTX reales",
+    "needs_ffmpeg: necesita ffmpeg en el equipo de desarrollo",
+    "needs_mediamtx: necesita el binario de MediaMTX (bin/ o VMS_MEDIAMTX_BIN)",
+    "needs_postgres: necesita PostgreSQL (pgserver o VMS_TEST_PG_DSN)",
+    "needs_browser: necesita Chromium de Playwright",
+    "needs_model: necesita pesos de RF-DETR descargados",
+]
+filterwarnings = [
+    "ignore:`torch.jit.script` is deprecated:FutureWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

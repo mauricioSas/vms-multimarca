@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Estado del sistema · VMS Multimarca</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside id="sidebar" class="sidebar"></aside>
+  <div>
+    <button type="button" id="menu-toggle" class="btn menu-toggle" aria-expanded="false" aria-controls="sidebar"></button>
+    <main class="main">
+      <header class="page-head">
+        <div>
+          <div class="kicker">Supervisión</div>
+          <h1>Estado del sistema</h1>
+        </div>
+        <div class="actions">
+          <span class="muted small" id="st-updated" aria-live="polite"></span>
+          <button type="button" class="btn" id="st-refresh">Actualizar</button>
+        </div>
+      </header>
+
+      <div id="st-overall" class="banner info" role="status">Cargando el estado…</div>
+      <div id="st-config-warning" class="banner" role="alert" hidden></div>
+
+      <section class="section grid-cards" aria-label="Resumen">
+        <div class="card stat" id="card-engine">
+          <div class="label">Motor de vídeo</div>
+          <div class="value" id="st-engine">—</div>
+          <div class="hint" id="st-engine-hint"></div>
+        </div>
+        <div class="card stat">
+          <div class="label">Cámaras con vídeo</div>
+          <div class="value" id="st-cams">—</div>
+          <div class="hint" id="st-cams-hint"></div>
+        </div>
+        <div class="card stat">
+          <div class="label">Grabando</div>
+          <div class="value" id="st-rec">—</div>
+          <div class="hint" id="st-rec-hint">Grabación continua 24/7</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Disco de grabación</div>
+          <div class="value" id="st-disk">—</div>
+          <div class="meter" id="st-disk-meter" role="meter" aria-label="Uso del disco" aria-valuemin="0" aria-valuemax="100"><i style="width:0"></i></div>
+          <div class="hint" id="st-disk-hint" style="margin-top:6px"></div>
+        </div>
+        <div class="card stat">
+          <div class="label">Analítica</div>
+          <div class="value" id="st-analytics">—</div>
+          <div class="hint" id="st-analytics-hint"></div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="h-st-cams">
+        <div class="section-head"><h2 id="h-st-cams">Cámaras</h2></div>
+        <div class="card table-wrap">
+          <table class="table" id="st-cams-table">
+            <thead><tr>
+              <th scope="col">Cámara</th><th scope="col">Vídeo</th><th scope="col">Grabación</th>
+              <th scope="col">Espectadores</th><th scope="col">Datos recibidos</th><th scope="col">Último error</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="h-st-system">
+        <div class="section-head"><h2 id="h-st-system">Sistema</h2></div>
+        <div class="card card-pad">
+          <dl class="kv" id="st-system"></dl>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script type="module" src="/static/js/status.js"></script>
+</body>
+</html>

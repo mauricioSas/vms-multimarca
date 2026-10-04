@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Informe semanal · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/report.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head">
+    <a id="back" href="/">← Sede</a>
+    <h1 id="title">Informe semanal</h1>
+    <span class="sub" id="meta"></span>
+  </div>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="card">
+    <div id="status"></div>
+    <article class="report-body" id="body"></article>
+  </section>
+  <section class="card">
+    <details>
+      <summary>Cifras calculadas (fuente de verdad del informe)</summary>
+      <pre class="json" id="metrics"></pre>
+    </details>
+  </section>
+</main>
+</body>
+</html>

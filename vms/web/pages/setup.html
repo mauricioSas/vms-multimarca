@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Primer arranque · VMS Multimarca</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <main class="auth-wrap">
+    <section class="card auth-card" aria-labelledby="setup-title">
+      <div class="brand"><div class="brand-mark" aria-hidden="true"></div>
+        <div><div class="brand-name">VMS</div><div class="brand-sub">Multimarca</div></div></div>
+      <h1 id="setup-title">Primer arranque</h1>
+      <p class="lead">Crea el usuario administrador. Solo se puede hacer desde el propio equipo del VMS.</p>
+      <div id="setup-done" class="banner info" hidden>
+        <span>El sistema ya tiene usuarios. <a href="/login">Ir a iniciar sesión</a>.</span>
+      </div>
+      <form id="setup-form" method="post" novalidate>
+        <div class="field">
+          <label for="username">Usuario administrador</label>
+          <input class="input" id="username" name="username" value="admin" autocomplete="username" required
+                 pattern="[A-Za-z0-9._\-]{3,32}">
+          <small>De 3 a 32 caracteres: letras, números, punto, guion o guion bajo.</small>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input class="input" id="password" name="password" type="password" minlength="8" autocomplete="new-password" required>
+          <small>Mínimo 8 caracteres.</small>
+        </div>
+        <div class="field">
+          <label for="password2">Repite la contraseña</label>
+          <input class="input" id="password2" name="password2" type="password" minlength="8" autocomplete="new-password" required>
+        </div>
+        <p id="setup-error" class="form-error" role="alert" hidden></p>
+        <button class="btn btn-primary" type="submit" id="setup-submit" disabled>Crear administrador</button>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="/static/js/setup.js"></script>
+</body>
+</html>

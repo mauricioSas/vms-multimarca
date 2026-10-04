@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sede · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/site.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head">
+    <a href="/">← Sedes</a>
+    <h1 id="title">Sede</h1>
+    <span id="badge"></span>
+    <span class="sub" id="meta"></span>
+  </div>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="tiles" id="tiles" aria-label="Resumen"></section>
+  <div class="page-head">
+    <h2>Afluencia</h2>
+    <span class="spacer"></span>
+    <div class="seg" id="range" role="group" aria-label="Periodo">
+      <button type="button" data-range="today" aria-pressed="true">Hoy</button>
+      <button type="button" data-range="yesterday">Ayer</button>
+      <button type="button" data-range="week">Esta semana</button>
+      <button type="button" data-range="last7">7 días</button>
+      <button type="button" data-range="last30">30 días</button>
+    </div>
+  </div>
+  <div class="grid-2">
+    <section class="card">
+      <h2 id="counts-title">Entradas</h2>
+      <div id="counts"></div>
+    </section>
+    <section class="card">
+      <h2>Ocupación media de la cola (personas)</h2>
+      <div id="occupancy"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Alertas de cola</h2>
+    <div class="table-wrap" id="alerts"></div>
+  </section>
+  <div class="grid-2">
+    <section class="card">
+      <h2>Cámaras</h2>
+      <div class="table-wrap" id="cameras"></div>
+    </section>
+    <section class="card">
+      <h2>Informes semanales</h2>
+      <div class="table-wrap" id="reports"></div>
+      <h3>Reglas de analítica</h3>
+      <div class="table-wrap" id="rules"></div>
+    </section>
+  </div>
+</main>
+</body>
+</html>

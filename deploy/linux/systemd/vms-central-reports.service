@@ -1,0 +1,37 @@
+# VMS Multimarca — informe semanal de todas las sedes (lo lanza vms-central-reports.timer).
+# Cifras calculadas en SQL; el proveedor LLM configurable (VMS_LLM_*) solo redacta.
+[Unit]
+Description=VMS Multimarca - informe semanal de las sedes
+Documentation=file:///opt/vms-multimarca/LEEME.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=vms
+Group=vms
+WorkingDirectory=/opt/vms-multimarca
+Environment=VMS_DATA_DIR=/var/lib/vms-multimarca
+Environment=PYTHONUNBUFFERED=1
+Environment=VMS_ENV_FILE=/etc/vms-multimarca/vms.env
+ExecStart=/opt/vms-multimarca/.venv/bin/python -m analytics.reports --all-sites --last-week --out /var/lib/vms-multimarca/reports
+StateDirectory=vms-multimarca
+StateDirectoryMode=0750
+TimeoutStartSec=3600
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0027

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Administración · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/admin.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head"><h1>Administración</h1></div>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="card">
+    <h2>Tokens de latido por sede</h2>
+    <p class="muted">Cada tienda envía su estado con su propio token. Créalo aquí y ponlo en el archivo .env de la
+      sede como <code>VMS_SITE_TOKEN</code>. Si lo vuelves a crear, el anterior deja de valer.</p>
+    <form class="inline" id="token-form">
+      <div><label for="site-id">Identificador de la sede</label>
+        <input id="site-id" placeholder="site-bcn-001" required pattern="[a-z0-9][a-z0-9\-]{2,39}"></div>
+      <button class="btn primary" type="submit">Crear o rotar token</button>
+    </form>
+    <div id="token-out" class="msg" role="status"></div>
+    <div class="table-wrap" id="tokens"></div>
+  </section>
+  <section class="card">
+    <h2>Usuarios del panel</h2>
+    <form class="inline" id="user-form" method="post" autocomplete="off">
+      <div><label for="new-user">Usuario</label><input id="new-user" required minlength="3" maxlength="32"></div>
+      <div><label for="new-pass">Contraseña</label><input id="new-pass" type="password" required minlength="8" autocomplete="new-password"></div>
+      <div><label for="new-role">Rol</label><select id="new-role"><option value="operator">Operador</option><option value="admin">Administrador</option></select></div>
+      <button class="btn primary" type="submit">Crear usuario</button>
+    </form>
+    <div class="table-wrap" id="users"></div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Muro de vídeo</title>
+  <link rel="stylesheet" href="/static/css/wall.css">
+</head>
+<body>
+  <main id="wall" class="wall" aria-label="Muro de vídeo" style="--cols:2"></main>
+  <div id="hud" class="hud" role="toolbar" aria-label="Controles del muro">
+    <span class="title" id="hud-title">Monitor</span>
+    <span class="clock" id="hud-clock">--:--:--</span>
+    <span class="sep" aria-hidden="true"></span>
+    <span id="layout-buttons" role="group" aria-label="Distribución"></span>
+    <span class="sep" aria-hidden="true"></span>
+    <button type="button" id="btn-fullscreen" title="Pantalla completa (F)">Pantalla completa</button>
+    <a href="/" id="link-panel" title="Volver al panel">Panel</a>
+  </div>
+  <div id="fatal" class="fatal" hidden></div>
+  <script type="module" src="/static/js/wall.js"></script>
+</body>
+</html>

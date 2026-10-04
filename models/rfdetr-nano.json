@@ -1,0 +1,16 @@
+{
+  "model": "rfdetr-nano",
+  "source": "rfdetr  RFDETRNano",
+  "license": "Apache-2.0",
+  "resolution": 384,
+  "person_class_index": 1,
+  "input": "input [1,3,R,R] RGB float32, normalizado ImageNet",
+  "outputs": [
+    "dets (cxcywh 0..1)",
+    "labels (logits)"
+  ],
+  "onnx_sha256": "06b14d3e39b133b8466e330b4c417dd81c3ef9c3f900fbd918811b579356698c",
+  "exported_at": "2026-10-04T14:13:05Z",
+  "openvino_xml_sha256": "72a26dca4230d3e8fbae5b9fb7e345062c507a969c3906dc703968253ca4a1b0",
+  "openvino_bin_sha256": "b58cf3532e2cc6e95b970266482573ab498746f00f36067c481f003179b0f5e5"
+}

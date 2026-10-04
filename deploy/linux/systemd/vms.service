@@ -1,0 +1,49 @@
+# VMS Multimarca — backend web + motor de vídeo (MediaMTX como proceso hijo supervisado).
+# MediaMTX no tiene unidad propia: el backend genera su configuración, le registra las cámaras
+# por su API (las contraseñas solo viven en memoria) y lo relanza si se cae.
+[Unit]
+Description=VMS Multimarca - backend y video
+Documentation=file:///opt/vms-multimarca/LEEME.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vms
+Group=vms
+WorkingDirectory=/opt/vms-multimarca
+Environment=VMS_DATA_DIR=/var/lib/vms-multimarca
+Environment=VMS_CREDENTIAL_BACKEND=file
+Environment=PYTHONUNBUFFERED=1
+Environment=VMS_ENV_FILE=/etc/vms-multimarca/vms.env
+ExecStart=/opt/vms-multimarca/.venv/bin/python -m vms
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+# SIGTERM al backend (que para MediaMTX con orden); lo que quede tras 30 s recibe SIGKILL
+KillMode=mixed
+StateDirectory=vms-multimarca
+StateDirectoryMode=0750
+LimitNOFILE=65536
+PrivateDevices=yes
+# El .env lo lee la aplicación (VMS_ENV_FILE), no systemd, para respetar valores JSON con comillas.
+# Si las grabaciones van a otro disco: «systemctl edit vms» y añade ReadWritePaths=/ruta/al/disco
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

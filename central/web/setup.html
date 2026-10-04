@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Primer arranque · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/setup.js" defer></script>
+</head>
+<body>
+<main class="auth">
+  <div class="card">
+    <h1>Primer arranque</h1>
+    <p class="muted">Crea el primer administrador del panel. Solo se puede hacer desde el propio servidor.</p>
+    <form id="form" method="post" autocomplete="off">
+      <label for="username">Usuario</label>
+      <input id="username" name="username" value="admin" required minlength="3" maxlength="32">
+      <label for="password">Contraseña (mínimo 8 caracteres)</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8">
+      <label for="password2">Repite la contraseña</label>
+      <input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="8">
+      <button class="btn primary" type="submit" disabled>Crear administrador</button>
+    </form>
+    <div id="msg" class="msg" role="alert"></div>
+  </div>
+</main>
+</body>
+</html>

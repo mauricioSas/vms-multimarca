@@ -1,0 +1,16 @@
+{
+  "model": "rfdetr-small",
+  "source": "rfdetr  RFDETRSmall",
+  "license": "Apache-2.0",
+  "resolution": 512,
+  "person_class_index": 1,
+  "input": "input [1,3,R,R] RGB float32, normalizado ImageNet",
+  "outputs": [
+    "dets (cxcywh 0..1)",
+    "labels (logits)"
+  ],
+  "onnx_sha256": "3b50c9e70097701dab5b85dc4965c1702dc0c8346a5d018ad695cc5b88e58e81",
+  "exported_at": "2026-10-04T14:13:24Z",
+  "openvino_xml_sha256": "59bbfb115aea45a8c656c0ea87c13c3788dacac24c9c4e95245bff71e305c484",
+  "openvino_bin_sha256": "bd1b82642fb6c7aaa52f14f3751e80ad3050041c94635ee9f03fe7541f318ff3"
+}

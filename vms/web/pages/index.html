@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Panel de control · VMS Multimarca</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside id="sidebar" class="sidebar"></aside>
+  <div>
+    <button type="button" id="menu-toggle" class="btn menu-toggle" aria-expanded="false" aria-controls="sidebar"></button>
+    <main class="main" id="main">
+      <div id="config-warning" class="banner" role="alert" hidden></div>
+
+      <header class="page-head">
+        <div>
+          <div class="kicker">Panel de control</div>
+          <h1>Equipos y monitores</h1>
+        </div>
+        <div class="actions admin-only">
+          <button type="button" class="btn" id="btn-discover">Buscar en la red</button>
+          <button type="button" class="btn btn-primary" id="btn-add-device">Añadir equipo</button>
+        </div>
+      </header>
+
+      <!-- ============================================================ equipos -->
+      <section class="section" id="sec-devices" aria-labelledby="h-devices">
+        <div class="section-head">
+          <h2 id="h-devices">Equipos <span class="muted small" id="devices-count"></span></h2>
+        </div>
+        <div class="card table-wrap">
+          <table class="table" id="devices-table">
+            <thead><tr>
+              <th scope="col">Nombre</th><th scope="col">Fabricante</th><th scope="col">Dirección</th>
+              <th scope="col">Tipo</th><th scope="col">Cámaras</th><th scope="col">Estado</th>
+              <th scope="col"><span class="sr-only">Acciones</span></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================ cámaras -->
+      <section class="section" id="sec-cameras" aria-labelledby="h-cameras">
+        <div class="section-head">
+          <h2 id="h-cameras">Cámaras <span class="muted small" id="cameras-count"></span></h2>
+          <button type="button" class="btn btn-sm admin-only" id="btn-add-camera">Añadir cámara manual</button>
+        </div>
+        <div class="card table-wrap">
+          <table class="table" id="cameras-table">
+            <thead><tr>
+              <th scope="col">Cámara</th><th scope="col">Equipo</th><th scope="col">Canal</th>
+              <th scope="col">Vídeo</th><th scope="col">Grabación</th>
+              <th scope="col"><span class="sr-only">Acciones</span></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================ monitores -->
+      <section class="section" id="sec-monitors" aria-labelledby="h-monitors">
+        <div class="section-head">
+          <h2 id="h-monitors">Monitores</h2>
+          <span class="muted small">Arrastra una cámara a una celda o elígela en su lista. Guarda para aplicar en el muro.</span>
+        </div>
+        <div class="monitor-tabs" role="tablist" aria-label="Monitores" id="monitor-tabs"></div>
+        <div class="monitor-editor">
+          <div class="card cam-palette" aria-label="Cámaras disponibles">
+            <h3>Cámaras</h3>
+            <div id="cam-palette-list"></div>
+          </div>
+          <div class="card monitor-stage" role="tabpanel" id="monitor-panel">
+            <div class="monitor-toolbar">
+              <div class="field" style="min-width:220px;flex:1">
+                <label for="wall-name">Nombre del monitor</label>
+                <input class="input" id="wall-name" maxlength="40" placeholder="p. ej. Cajas y entrada">
+              </div>
+              <div class="field">
+                <span id="grid-label">Distribución</span>
+                <div class="segmented" role="group" aria-labelledby="grid-label" id="grid-buttons">
+                  <button type="button" data-grid="1">1</button>
+                  <button type="button" data-grid="4">4</button>
+                  <button type="button" data-grid="9">9</button>
+                  <button type="button" data-grid="16">16</button>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+                <span class="pill warn plain" id="wall-dirty" hidden>Cambios sin guardar</span>
+                <button type="button" class="btn" id="btn-clear-wall">Vaciar</button>
+                <a class="btn" id="btn-open-wall" href="/wall/1" target="vms-wall-1" rel="noopener">Abrir muro</a>
+                <button type="button" class="btn btn-primary" id="btn-save-wall">Guardar monitor</button>
+              </div>
+            </div>
+            <div class="monitor-screen" id="monitor-screen" aria-label="Celdas del monitor"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- ============================================================ diálogo: equipo -->
+<dialog class="modal" id="device-dialog" aria-labelledby="device-dialog-title">
+  <form id="device-form" method="dialog" novalidate>
+    <div class="modal-head">
+      <h2 id="device-dialog-title">Añadir equipo</h2>
+      <button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field">
+          <label for="dev-name">Nombre</label>
+          <input class="input" id="dev-name" name="name" maxlength="80" required placeholder="p. ej. NVR cajas">
+        </div>
+        <div class="field">
+          <label for="dev-vendor">Fabricante</label>
+          <select class="input" id="dev-vendor" name="vendor">
+            <option value="hikvision">Hikvision</option>
+            <option value="dahua">Dahua</option>
+            <option value="onvif">ONVIF (otras marcas)</option>
+            <option value="generic">Genérico (RTSP manual)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="dev-kind">Tipo de equipo</label>
+          <select class="input" id="dev-kind" name="kind">
+            <option value="nvr">Grabador (NVR/DVR)</option>
+            <option value="camera">Cámara IP</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="dev-host">IP o nombre</label>
+          <input class="input mono" id="dev-host" name="host" required placeholder="192.168.1.64" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="dev-http-port">Puerto HTTP</label>
+          <input class="input mono" id="dev-http-port" name="http_port" type="number" min="1" max="65535" value="80">
+        </div>
+        <div class="field">
+          <label for="dev-rtsp-port">Puerto RTSP</label>
+          <input class="input mono" id="dev-rtsp-port" name="rtsp_port" type="number" min="1" max="65535" value="554">
+        </div>
+        <div class="field">
+          <label for="dev-onvif-port">Puerto ONVIF</label>
+          <input class="input mono" id="dev-onvif-port" name="onvif_port" type="number" min="1" max="65535" placeholder="igual que HTTP">
+        </div>
+        <div class="field" style="justify-content:flex-end">
+          <label class="check"><input type="checkbox" name="https" id="dev-https"> Usar HTTPS</label>
+        </div>
+        <div class="field">
+          <label for="dev-username">Usuario</label>
+          <input class="input" id="dev-username" name="username" maxlength="64" autocomplete="off" value="admin">
+        </div>
+        <div class="field">
+          <label for="dev-password">Contraseña</label>
+          <input class="input" id="dev-password" name="password" type="password" autocomplete="new-password">
+          <small id="dev-password-hint"></small>
+          <label class="check small" id="dev-clear-pw-wrap" hidden><input type="checkbox" id="dev-clear-pw"> Borrar la contraseña guardada</label>
+        </div>
+
+        <div class="field span-2">
+          <span>Rutas de vídeo por canal</span>
+          <div class="paths-preview" id="paths-preview" aria-live="polite"></div>
+        </div>
+        <div class="field" data-manual-path>
+          <label for="dev-main-path">Ruta del flujo principal</label>
+          <input class="input mono" id="dev-main-path" name="main_path" placeholder="/stream1" spellcheck="false">
+        </div>
+        <div class="field" data-manual-path>
+          <label for="dev-sub-path">Ruta del subflujo (opcional)</label>
+          <input class="input mono" id="dev-sub-path" name="sub_path" placeholder="/stream2" spellcheck="false">
+        </div>
+        <div class="field span-2">
+          <label for="dev-notes">Notas</label>
+          <textarea class="input" id="dev-notes" name="notes" maxlength="500" rows="2"></textarea>
+        </div>
+      </div>
+      <div id="device-test-result" class="result-box" hidden aria-live="polite"></div>
+      <p id="device-form-error" class="form-error" role="alert" hidden></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" id="btn-device-test">Probar conexión</button>
+      <div class="right">
+        <button type="button" class="btn" data-close>Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="btn-device-save">Guardar equipo</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============================================================ diálogo: canales de NVR -->
+<dialog class="modal" id="channels-dialog" aria-labelledby="channels-title">
+  <div class="modal-head">
+    <h2 id="channels-title">Importar canales</h2>
+    <button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>
+  </div>
+  <div class="modal-body">
+    <p class="muted" id="channels-intro" style="margin-top:0"></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" class="btn btn-sm" id="channels-all">Marcar todos</button>
+      <button type="button" class="btn btn-sm" id="channels-none">Ninguno</button>
+    </div>
+    <div class="channel-list" id="channels-list" aria-live="polite"></div>
+  </div>
+  <div class="modal-foot"><div class="right">
+    <button type="button" class="btn" data-close>Cancelar</button>
+    <button type="button" class="btn btn-primary" id="btn-channels-import">Importar seleccionados</button>
+  </div></div>
+</dialog>
+
+<!-- ============================================================ diálogo: búsqueda ONVIF -->
+<dialog class="modal" id="discover-dialog" aria-labelledby="discover-title">
+  <div class="modal-head">
+    <h2 id="discover-title">Buscar equipos en la red</h2>
+    <button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>
+  </div>
+  <div class="modal-body">
+    <p class="muted" style="margin-top:0">Busca cámaras y grabadores ONVIF en la red local (WS-Discovery). Algunos equipos
+      tienen ONVIF desactivado de fábrica: si no aparece, añádelo a mano con su IP.</p>
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+      <div class="field">
+        <label for="discover-timeout">Tiempo de búsqueda</label>
+        <select class="input" id="discover-timeout">
+          <option value="3">3 segundos</option><option value="5">5 segundos</option><option value="10">10 segundos</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" id="btn-discover-run">Buscar</button>
+    </div>
+    <div class="table-wrap" style="margin-top:14px">
+      <table class="table" id="discover-table">
+        <thead><tr><th>Dirección</th><th>Fabricante</th><th>Modelo</th><th>Nombre</th><th><span class="sr-only">Acciones</span></th></tr></thead>
+        <tbody><tr><td colspan="5" class="empty">Pulsa «Buscar» para empezar.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============================================================ diálogo: cámara -->
+<dialog class="modal" id="camera-dialog" aria-labelledby="camera-dialog-title">
+  <form id="camera-form" method="dialog" novalidate>
+    <div class="modal-head">
+      <h2 id="camera-dialog-title">Cámara</h2>
+      <button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field">
+          <label for="cam-name">Nombre</label>
+          <input class="input" id="cam-name" name="name" maxlength="80" required>
+        </div>
+        <div class="field">
+          <label for="cam-device">Equipo</label>
+          <select class="input" id="cam-device" name="device_id"></select>
+        </div>
+        <div class="field">
+          <label for="cam-channel">Canal</label>
+          <input class="input mono" id="cam-channel" name="channel" type="number" min="1" max="512" value="1">
+        </div>
+        <div class="field">
+          <label for="cam-transport">Transporte RTSP</label>
+          <select class="input" id="cam-transport" name="rtsp_transport">
+            <option value="tcp">TCP (recomendado)</option><option value="udp">UDP</option><option value="automatic">Automático</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cam-main-path">Ruta del flujo principal</label>
+          <input class="input mono" id="cam-main-path" name="main_path" spellcheck="false">
+          <small>Vacío = ruta del fabricante.</small>
+        </div>
+        <div class="field">
+          <label for="cam-sub-path">Ruta del subflujo</label>
+          <input class="input mono" id="cam-sub-path" name="sub_path" spellcheck="false">
+          <small>Vacío = ruta del fabricante.</small>
+        </div>
+        <div class="field span-2" style="flex-direction:row;gap:22px;flex-wrap:wrap">
+          <label class="check"><input type="checkbox" name="enabled" checked> Activada</label>
+          <label class="check"><input type="checkbox" name="record" checked> Grabar 24/7</label>
+          <label class="check"><input type="checkbox" name="has_sub" checked> Tiene subflujo</label>
+        </div>
+      </div>
+      <p id="camera-form-error" class="form-error" role="alert" hidden></p>
+    </div>
+    <div class="modal-foot"><div class="right">
+      <button type="button" class="btn" data-close>Cancelar</button>
+      <button type="submit" class="btn btn-primary" id="btn-camera-save">Guardar cámara</button>
+    </div></div>
+  </form>
+</dialog>
+
+<script type="module" src="/static/js/panel.js"></script>
+</body>
+</html>

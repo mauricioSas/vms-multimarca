@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sedes · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/index.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head">
+    <h1>Sedes</h1>
+    <span class="sub" id="updated"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="refresh" type="button">Actualizar</button>
+  </div>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="tiles" id="tiles" aria-label="Resumen"></section>
+  <section class="card">
+    <h2>Estado de las sedes</h2>
+    <div class="table-wrap" id="sites"></div>
+  </section>
+  <div class="page-head">
+    <h2>Comparativa</h2>
+    <span class="spacer"></span>
+    <div class="seg" id="range" role="group" aria-label="Periodo">
+      <button type="button" data-range="today">Hoy</button>
+      <button type="button" data-range="week">Esta semana</button>
+      <button type="button" data-range="last7" aria-pressed="true">7 días</button>
+      <button type="button" data-range="last30">30 días</button>
+    </div>
+  </div>
+  <div class="grid-2">
+    <section class="card">
+      <h2>Entradas por sede</h2>
+      <div id="compare"></div>
+    </section>
+    <section class="card">
+      <h2>Colas con más alertas</h2>
+      <div class="table-wrap" id="queues"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Detalle de la comparativa</h2>
+    <div class="table-wrap" id="compare-table"></div>
+  </section>
+</main>
+</body>
+</html>

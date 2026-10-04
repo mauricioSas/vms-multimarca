@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entrar · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/login.js" defer></script>
+</head>
+<body>
+<main class="auth">
+  <div class="card">
+    <h1>Panel central</h1>
+    <p class="muted">VMS Multimarca · Entra con tu usuario.</p>
+    <form id="form" method="post" autocomplete="on">
+      <label for="username">Usuario</label>
+      <input id="username" name="username" autocomplete="username" required autofocus>
+      <label for="password">Contraseña</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="btn primary" type="submit" disabled>Entrar</button>
+    </form>
+    <div id="msg" class="msg" role="alert"></div>
+  </div>
+</main>
+</body>
+</html>

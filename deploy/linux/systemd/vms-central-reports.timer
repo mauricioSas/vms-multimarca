@@ -1,0 +1,13 @@
+# Lunes a las 06:00 hora de Madrid: informe de la semana ISO anterior.
+# Persistent=true: si el servidor estaba apagado a esa hora, se ejecuta al arrancar.
+[Unit]
+Description=VMS Multimarca - programa el informe semanal (lunes 06:00 Europe/Madrid)
+
+[Timer]
+OnCalendar=Mon *-*-* 06:00:00 Europe/Madrid
+Persistent=true
+RandomizedDelaySec=300
+Unit=vms-central-reports.service
+
+[Install]
+WantedBy=timers.target

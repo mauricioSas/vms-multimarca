@@ -1,0 +1,44 @@
+# VMS Multimarca — analítica de tienda (conteo de puerta y ocupación de cola).
+# Lee el vídeo del MediaMTX local; no guarda imágenes ni vídeo (RGPD).
+[Unit]
+Description=VMS Multimarca - analitica de tienda
+Documentation=file:///opt/vms-multimarca/LEEME.md
+After=network-online.target vms.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vms
+Group=vms
+WorkingDirectory=/opt/vms-multimarca
+Environment=VMS_DATA_DIR=/var/lib/vms-multimarca
+Environment=PYTHONUNBUFFERED=1
+Environment=VMS_ENV_FILE=/etc/vms-multimarca/vms.env
+ExecStart=/opt/vms-multimarca/.venv/bin/python -m analytics
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+KillMode=mixed
+StateDirectory=vms-multimarca
+StateDirectoryMode=0750
+# El vídeo en directo tiene prioridad sobre la analítica
+Nice=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

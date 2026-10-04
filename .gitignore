@@ -1,0 +1,42 @@
+# Entorno y cachés
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Temporales de pruebas y simulador
+.tmp/
+
+# Secretos: NUNCA al repositorio
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.token
+credentials.enc
+
+# Binarios descargados (se obtienen con tools/fetch_mediamtx.py)
+bin/
+
+# Material de prueba pesado (se obtiene con tools/download_test_assets.py)
+tests/assets/*
+!tests/assets/.gitkeep
+
+# Modelos exportados (se generan con la herramienta de exportación de la analítica)
+models/*.onnx
+models/*.xml
+models/*.bin
+
+# Datos locales de ejecución
+recordings/
+logs/
+*.log
+
+# Pesos preentrenados descargados por la exportación del modelo (analytics/tools/export_model.py)
+models/weights/

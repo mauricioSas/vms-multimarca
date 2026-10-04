@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Analítica · VMS Multimarca</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/analytics.css">
+</head>
+<body>
+<div class="shell">
+  <aside id="sidebar" class="sidebar"></aside>
+  <div>
+    <button type="button" id="menu-toggle" class="btn menu-toggle" aria-expanded="false" aria-controls="sidebar"></button>
+    <main class="main">
+      <header class="page-head">
+        <div>
+          <div class="kicker">Analítica de tienda</div>
+          <h1>Línea de puerta y zonas de cola</h1>
+        </div>
+      </header>
+
+      <div class="banner info small" role="note">
+        Solo se guardan conteos anónimos por minuto. La imagen de esta página se pide al momento para dibujar
+        y no se guarda en ningún sitio.
+      </div>
+
+      <div class="an-layout">
+        <aside class="an-side">
+          <div class="card card-pad">
+            <div class="field">
+              <label for="an-camera">Cámara</label>
+              <select class="input" id="an-camera"></select>
+            </div>
+            <form id="an-cam-form" class="an-cam-form" novalidate>
+              <label class="check"><input type="checkbox" name="enabled" id="an-enabled"> Analítica activada en esta cámara</label>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="an-fps">Imágenes por segundo</label>
+                  <input class="input mono" type="number" name="fps" id="an-fps" min="0.5" max="30" step="0.5" value="2">
+                  <small>Puerta 10–15 · cajas 1–2</small>
+                </div>
+                <div class="field">
+                  <label for="an-confidence">Confianza mínima</label>
+                  <input class="input mono" type="number" name="confidence" id="an-confidence" min="0.1" max="0.95" step="0.05" value="0.5">
+                </div>
+                <div class="field span-2">
+                  <label for="an-detector">Modelo de detección</label>
+                  <select class="input" name="detector" id="an-detector">
+                    <option value="rfdetr-nano">RF-DETR nano (más rápido)</option>
+                    <option value="rfdetr-small">RF-DETR small</option>
+                    <option value="rfdetr-medium">RF-DETR medium</option>
+                    <option value="rfdetr-base">RF-DETR base (más preciso)</option>
+                  </select>
+                </div>
+              </div>
+              <button type="submit" class="btn btn-sm" id="an-cam-save">Guardar ajustes de la cámara</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="an-rules-head">
+              <h2>Reglas</h2>
+              <span class="muted small" id="an-rules-count"></span>
+            </div>
+            <ul class="an-rules" id="an-rules" aria-label="Reglas de la cámara"></ul>
+          </div>
+        </aside>
+
+        <section class="an-main">
+          <div class="card">
+            <div class="an-toolbar" role="toolbar" aria-label="Herramientas de dibujo">
+              <button type="button" class="btn btn-sm" id="tool-line">+ Línea de puerta</button>
+              <button type="button" class="btn btn-sm" id="tool-zone">+ Zona de cola</button>
+              <span class="an-hint" id="an-hint" aria-live="polite">Elige una herramienta o selecciona una regla para moverla.</span>
+              <button type="button" class="btn btn-ghost btn-sm" id="an-snapshot" style="margin-left:auto">Actualizar imagen</button>
+            </div>
+            <div class="an-stage" id="an-stage">
+              <img id="an-image" alt="Imagen actual de la cámara" draggable="false">
+              <canvas id="an-canvas" aria-label="Lienzo de dibujo de reglas" tabindex="0"></canvas>
+              <div class="an-stage-msg" id="an-stage-msg" hidden></div>
+            </div>
+            <p class="muted small" id="an-rgpd-note">Dibuja la zona de cola sobre el área de clientes, <strong>nunca
+              sobre el puesto de caja</strong>: la analítica no debe medir a los trabajadores (art. 89 LOPDGDD). Solo se
+              guardan conteos anónimos por minuto; la imagen se analiza en memoria y se descarta.</p>
+          </div>
+
+          <form class="card card-pad an-editor" id="rule-form" novalidate hidden>
+            <div class="an-editor-head">
+              <h2 id="rule-title">Regla</h2>
+              <span class="pill plain" id="rule-kind"></span>
+              <span class="pill ok" id="rule-occupancy" hidden></span>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="rule-name">Nombre</label>
+                <input class="input" id="rule-name" name="name" maxlength="60" required>
+              </div>
+              <div class="field" style="justify-content:flex-end">
+                <label class="check"><input type="checkbox" name="enabled" id="rule-enabled" checked> Regla activa</label>
+              </div>
+              <div class="field span-2" data-kind="line">
+                <label class="check"><input type="checkbox" name="invert" id="rule-invert"> Invertir el sentido de entrada</label>
+                <small>La flecha ámbar indica hacia dónde se cuenta una <strong>entrada</strong>. Las personas que crucen al revés cuentan como salida.</small>
+              </div>
+              <div class="field" data-kind="zone">
+                <label for="rule-threshold">Avisar con este número de personas</label>
+                <input class="input mono" type="number" id="rule-threshold" name="alert_threshold" min="1" max="200" value="5">
+              </div>
+              <div class="field" data-kind="zone">
+                <label for="rule-min-seconds">…durante (segundos seguidos)</label>
+                <input class="input mono" type="number" id="rule-min-seconds" name="alert_min_seconds" min="0" max="3600" value="60">
+              </div>
+              <div class="field" data-kind="zone">
+                <label for="rule-cooldown">Tiempo mínimo entre avisos (segundos)</label>
+                <input class="input mono" type="number" id="rule-cooldown" name="alert_cooldown_seconds" min="0" max="86400" value="600">
+              </div>
+              <div class="field" data-kind="zone">
+                <label for="rule-clear">Fin del aviso por debajo de (personas)</label>
+                <input class="input mono" type="number" id="rule-clear" name="clear_below" min="0" placeholder="umbral − 1">
+              </div>
+            </div>
+            <p class="form-error" id="rule-error" role="alert" hidden></p>
+            <div class="an-editor-foot">
+              <button type="button" class="btn btn-danger" id="rule-delete">Borrar regla</button>
+              <button type="button" class="btn" id="rule-redraw">Volver a dibujar</button>
+              <div style="margin-left:auto;display:flex;gap:8px">
+                <button type="button" class="btn" id="rule-cancel">Descartar cambios</button>
+                <button type="submit" class="btn btn-primary" id="rule-save">Guardar regla</button>
+              </div>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script type="module" src="/static/js/analytics.js"></script>
+</body>
+</html>
