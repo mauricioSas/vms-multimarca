@@ -1,0 +1,5 @@
+# Toolchain fijado para builds reproducibles (PLAN-V2 §4.1). Se sube a propósito, nunca solo.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
