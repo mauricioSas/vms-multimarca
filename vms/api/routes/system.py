@@ -9,7 +9,7 @@ from starlette.responses import Response
 
 from vms import __version__
 from vms.core.errors import ValidationFailed
-from vms.core.models import AppConfig, RetentionSettings, SystemSettings
+from vms.core.models import AppConfig, RetentionSettings, SystemSettings, known_fields_only
 
 from ..deps import Principal, get_state, require_admin, require_operator
 from ..errors import json_response
@@ -61,7 +61,8 @@ async def patch_settings(body: dict[str, Any] = Body(...), p: Principal = Depend
                                details={"fields": [{"loc": [k], "msg": "Ajuste desconocido"} for k in sorted(unknown)]})
 
     def mutate(cfg: AppConfig) -> SystemSettings:
-        merged = deep_merge(cfg.settings.model_dump(mode="json"), body)
+        # lo guardado conserva campos de otras versiones; el cuerpo solo aporta campos conocidos
+        merged = deep_merge(cfg.settings.model_dump(mode="json"), known_fields_only(SystemSettings, body))
         cfg.settings = SystemSettings.model_validate(merged)
         return cfg.settings
 

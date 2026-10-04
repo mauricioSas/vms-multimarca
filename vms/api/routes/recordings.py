@@ -23,6 +23,7 @@ from vms.core.errors import EngineUnavailable, NotFoundError, ValidationFailed
 from ..deps import Principal, get_state, require_operator
 from ..errors import error_response, json_response
 from ..security import client_ip
+from ..permissions import ensure_camera_access, visible_camera_ids
 from ..state import AppState
 from .cameras import get_camera
 
@@ -64,11 +65,12 @@ def _local_stamp(dt: datetime, tz_name: str) -> str:
 
 
 @router.get("/summary")
-async def summary(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+async def summary(p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
     cfg = state.config()
     root = Path(state.recordings_dir(cfg))
     out = []
-    for cam in cfg.cameras:
+    visible = visible_camera_ids(state, p, (c.id for c in cfg.cameras), "playback")
+    for cam in (c for c in cfg.cameras if c.id in visible):
         try:
             spans = await state.engine.list_recordings(cam.id, None, None)
         except EngineUnavailable:
@@ -82,7 +84,8 @@ async def summary(_: Principal = Depends(require_operator), state: AppState = De
 
 @router.get("/{camera_id}/timeline")
 async def timeline(camera_id: str, start: datetime | None = None, end: datetime | None = None,
-                   _: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+                   p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+    ensure_camera_access(state, p, camera_id, "playback")
     get_camera(state.config(), camera_id)
     s, e = utc(start), utc(end)
     if s and e and e <= s:
@@ -97,6 +100,7 @@ async def timeline(camera_id: str, start: datetime | None = None, end: datetime 
 async def video(request: Request, camera_id: str, start: datetime, duration: float = Query(..., gt=0),
                 format: Literal["fmp4", "mp4"] = "fmp4", download: bool = False,
                 p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+    ensure_camera_access(state, p, camera_id, "export" if download else "playback")
     cam = get_camera(state.config(), camera_id)
     if duration > MAX_DURATION_S:
         raise ValidationFailed(f"La duración máxima es {int(MAX_DURATION_S)} segundos",

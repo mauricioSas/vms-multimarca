@@ -12,7 +12,7 @@ from pydantic import TypeAdapter
 from starlette.responses import Response
 
 from vms.core.errors import NotFoundError, ValidationFailed
-from vms.core.models import AnalyticsRule, AppConfig, CameraAnalytics, LineRule, ZoneRule
+from vms.core.models import AnalyticsRule, AppConfig, CameraAnalytics, LineRule, ZoneRule, known_fields_only
 
 from ..deps import Principal, get_state, require_admin, require_internal, require_operator
 from ..errors import json_response
@@ -23,6 +23,12 @@ log = logging.getLogger("vms.api.analytics")
 router = APIRouter(prefix="/api", tags=["analytics"])
 
 _rule_adapter: TypeAdapter[LineRule | ZoneRule] = TypeAdapter(AnalyticsRule)
+
+
+def _known(body: dict[str, Any]) -> dict[str, Any]:
+    """Solo los campos del tipo de regla (las reglas guardadas admiten campos de otras versiones)."""
+    model = ZoneRule if body.get("kind") == "zone" else LineRule
+    return known_fields_only(model, body)  # type: ignore[no-any-return]
 
 
 def _get_rule(cfg: AppConfig, rule_id: str) -> LineRule | ZoneRule:
@@ -57,7 +63,7 @@ async def list_rules(camera_id: str | None = None, _: Principal = Depends(requir
 @router.post("/analytics/rules")
 async def create_rule(body: dict[str, Any] = Body(...), p: Principal = Depends(require_admin),
                       state: AppState = Depends(get_state)) -> Response:
-    data = {k: v for k, v in body.items() if k not in ("id", "updated_at")}
+    data = {k: v for k, v in _known(body).items() if k not in ("id", "updated_at")}
     rule = _rule_adapter.validate_python(data)
     _check_rule(rule)
 
@@ -80,7 +86,7 @@ async def get_rule(rule_id: str, _: Principal = Depends(require_operator),
 async def put_rule(rule_id: str, body: dict[str, Any] = Body(...), p: Principal = Depends(require_admin),
                    state: AppState = Depends(get_state)) -> Response:
     current = _get_rule(state.config(), rule_id)
-    data = {**body, "id": rule_id, "updated_at": datetime.now(timezone.utc)}
+    data = {**_known({"kind": current.kind, **body}), "id": rule_id, "updated_at": datetime.now(timezone.utc)}
     data.setdefault("kind", current.kind)
     data.setdefault("camera_id", current.camera_id)
     if data["kind"] != current.kind or data["camera_id"] != current.camera_id:
@@ -123,7 +129,7 @@ async def list_analytics_cameras(_: Principal = Depends(require_operator),
 async def put_analytics_camera(camera_id: str, body: dict[str, Any] = Body(...), p: Principal = Depends(require_admin),
                                state: AppState = Depends(get_state)) -> Response:
     get_camera(state.config(), camera_id)
-    item = CameraAnalytics.model_validate({**body, "camera_id": camera_id})
+    item = CameraAnalytics.model_validate({**known_fields_only(CameraAnalytics, body), "camera_id": camera_id})
 
     def mutate(cfg: AppConfig) -> None:
         get_camera(cfg, camera_id)

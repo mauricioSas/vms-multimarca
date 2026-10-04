@@ -53,6 +53,7 @@ from vms.core.naming import is_valid_id
 from vms.core.rtsp import redact
 
 from . import db
+from .extensions import CentralDeps, extension_builders
 from .heartbeat import MAX_PAYLOAD_BYTES, HeartbeatIn, record_heartbeat
 from .security import (FailureLimiter, Session, SessionStore, SiteTokenStore, hash_password,
                        hash_password_async, verify_password_async)
@@ -663,6 +664,12 @@ def create_app(settings: CentralSettings, *, pool: AsyncConnectionPool[Any] | No
     @app.get("/admin", include_in_schema=False, response_model=None)
     async def page_admin(request: Request) -> Response:
         return _page("admin.html") if _logged(request) else RedirectResponse("/login", status_code=303)
+
+    # ------------------------------------------------------------------ extensiones v2 (fase 0)
+    # B4 (central/updates.py) y B6 (central/ops.py) registran aquí sus rutas sin tocar este archivo.
+    deps = CentralDeps(session=current_session, admin=require_admin, conn=conn, now=now_fn, settings=settings)
+    for build in extension_builders():
+        app.include_router(build(deps))
 
     app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
     return app

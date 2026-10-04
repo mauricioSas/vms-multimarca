@@ -24,7 +24,8 @@ from typing import Any, Awaitable, Callable, TypeVar
 from pydantic import ValidationError
 
 from .atomic import atomic_write_text
-from .models import AppConfig, User
+from .config_migrations import migrate, newer_than_supported
+from .models import CONFIG_VERSION, AppConfig, User
 from .paths import restrict_permissions
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,16 @@ class ConfigStore:
 
     def _read(self, path: Path) -> tuple[AppConfig, list[str]]:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            if newer_than_supported(data):
+                # Escrito por una versión más nueva (p. ej. tras un rollback que no restauró el respaldo).
+                # Se carga conservando lo desconocido; el modo solo lectura lo completa B4 (CONTRATO §13.7).
+                log.warning("config.json es de la versión %s y este programa entiende hasta la %s",
+                            data.get("version"), CONFIG_VERSION)
+            else:
+                data, applied = migrate(data)
+                if applied:
+                    log.info("config.json migrado desde la versión %s a la %s", applied[0], CONFIG_VERSION)
         try:
             cfg = AppConfig.model_validate(data)
         except ValidationError as exc:

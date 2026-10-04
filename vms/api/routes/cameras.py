@@ -18,6 +18,7 @@ from vms.core.mtx_auth import with_reader_credentials
 from ..deps import Principal, get_state, require_admin, require_kiosk
 from ..errors import json_response
 from ..security import client_ip
+from ..permissions import ensure_camera_access, visible_camera_ids
 from ..state import AppState
 from ..views import camera_out
 
@@ -48,10 +49,11 @@ def _validate(cfg: AppConfig, cam: Camera) -> None:
 
 
 @router.get("")
-async def list_cameras(_: Principal = Depends(require_kiosk), state: AppState = Depends(get_state)) -> Response:
+async def list_cameras(p: Principal = Depends(require_kiosk), state: AppState = Depends(get_state)) -> Response:
     cfg = state.config()
     paths = await state.paths_status_safe()
-    return json_response([camera_out(cfg, c, paths) for c in cfg.cameras])
+    visible = visible_camera_ids(state, p, (c.id for c in cfg.cameras), "live")
+    return json_response([camera_out(cfg, c, paths) for c in cfg.cameras if c.id in visible])
 
 
 @router.post("")
@@ -69,7 +71,8 @@ async def create_camera(body: CameraCreate, p: Principal = Depends(require_admin
 
 
 @router.get("/{camera_id}")
-async def get_one(camera_id: str, _: Principal = Depends(require_kiosk), state: AppState = Depends(get_state)) -> Response:
+async def get_one(camera_id: str, p: Principal = Depends(require_kiosk), state: AppState = Depends(get_state)) -> Response:
+    ensure_camera_access(state, p, camera_id, "live")
     cfg = state.config()
     return json_response(camera_out(cfg, get_camera(cfg, camera_id), await state.paths_status_safe()))
 

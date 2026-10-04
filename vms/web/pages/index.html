@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex">
   <title>Panel de control · VMS Multimarca</title>
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/ops.css">
 </head>
 <body>
 <div class="shell">
@@ -14,6 +15,9 @@
     <button type="button" id="menu-toggle" class="btn menu-toggle" aria-expanded="false" aria-controls="sidebar"></button>
     <main class="main" id="main">
       <div id="config-warning" class="banner" role="alert" hidden></div>
+      <!-- Contenedores vacíos de la fase 0 de la v2 (CONTRATO §18.9): los rellena B6 sin tocar el resto. -->
+      <div id="onboarding-root" data-owner="B6" hidden></div>
+      <div id="help-root" data-owner="B6" hidden></div>
 
       <header class="page-head">
         <div>
@@ -111,6 +115,8 @@
       <button type="button" class="btn btn-ghost btn-sm" data-close>Cerrar</button>
     </div>
     <div class="modal-body">
+      <!-- Fase 0 v2: B5 construye aquí el formulario a partir de GET /api/vendors (CONTRATO §16.4). -->
+      <div id="device-form-root" data-owner="B5" hidden></div>
       <div class="form-grid">
         <div class="field">
           <label for="dev-name">Nombre</label>
@@ -292,5 +298,8 @@
 </dialog>
 
 <script type="module" src="/static/js/panel.js"></script>
+<!-- Fase 0 v2: módulos de los bloques (CONTRATO §18.9) -->
+<script type="module" src="/static/js/onboarding.js"></script>
+<script type="module" src="/static/js/help.js"></script>
 </body>
 </html>

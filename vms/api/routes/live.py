@@ -19,6 +19,7 @@ from vms.core.errors import EngineUnavailable, NotFoundError, ValidationFailed
 from ..deps import Principal, get_state, require_kiosk
 from ..errors import error_response, json_response
 from ..security import client_ip
+from ..permissions import ensure_camera_access
 from ..state import AppState
 from .cameras import get_camera
 
@@ -74,8 +75,9 @@ def _pass_headers(resp: httpx.Response) -> dict[str, str]:
 
 
 @router.get("/{camera_id}")
-async def live_info(camera_id: str, stream: Stream = "sub", _: Principal = Depends(require_kiosk),
+async def live_info(camera_id: str, stream: Stream = "sub", p: Principal = Depends(require_kiosk),
                     state: AppState = Depends(get_state)) -> Response:
+    ensure_camera_access(state, p, camera_id, "live")
     eff = _effective_stream(state, camera_id, stream)
     paths = await state.paths_status_safe()
     st = (paths or {}).get(f"{camera_id}/{eff}")
@@ -109,6 +111,7 @@ async def whep_options(camera_id: str, stream: str, _: Principal = Depends(requi
 @router.post("/{camera_id}/{stream}/whep")
 async def whep_offer(camera_id: str, stream: str, request: Request, p: Principal = Depends(require_kiosk),
                      state: AppState = Depends(get_state)) -> Response:
+    ensure_camera_access(state, p, camera_id, "live")
     eff = _effective_stream(state, camera_id, stream)
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
     if ctype != "application/sdp":

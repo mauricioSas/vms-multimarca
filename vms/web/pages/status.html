@@ -6,6 +6,8 @@
   <meta name="robots" content="noindex">
   <title>Estado del sistema · VMS Multimarca</title>
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/ops.css">
+  <link rel="stylesheet" href="/static/css/updates.css">
 </head>
 <body>
 <div class="shell">
@@ -75,9 +77,19 @@
           <dl class="kv" id="st-system"></dl>
         </div>
       </section>
+      <!-- Contenedores vacíos de la fase 0 de la v2 (CONTRATO §15.6 y §18.9). -->
+      <div id="updates-root" data-owner="B4" hidden></div>
+      <div id="health-root" data-owner="B6" hidden></div>
+      <div id="security-audit-root" data-owner="B6" hidden></div>
+      <div id="notifications-root" data-owner="B6" hidden></div>
     </main>
   </div>
 </div>
 <script type="module" src="/static/js/status.js"></script>
+<!-- Fase 0 v2: módulos de los bloques (CONTRATO §18.9) -->
+<script type="module" src="/static/js/updates.js"></script>
+<script type="module" src="/static/js/health.js"></script>
+<script type="module" src="/static/js/security.js"></script>
+<script type="module" src="/static/js/notifications.js"></script>
 </body>
 </html>

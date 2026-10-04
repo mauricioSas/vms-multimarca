@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex">
   <title>Analítica · VMS Multimarca</title>
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/ops.css">
   <link rel="stylesheet" href="/static/css/analytics.css">
 </head>
 <body>
@@ -133,9 +134,13 @@
           </form>
         </section>
       </div>
+      <!-- Contenedor vacío de la fase 0 de la v2 (CONTRATO §18.9). -->
+      <div id="counts-export-root" data-owner="B6" hidden></div>
     </main>
   </div>
 </div>
 <script type="module" src="/static/js/analytics.js"></script>
+<!-- Fase 0 v2: módulos de los bloques (CONTRATO §18.9) -->
+<script type="module" src="/static/js/counts-export.js"></script>
 </body>
 </html>

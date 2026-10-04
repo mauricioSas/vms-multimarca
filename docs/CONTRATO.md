@@ -15,7 +15,7 @@ coinciden, manda el código de `vms/core` y se corrige el texto.**
 
 | Tema | Regla |
 |---|---|
-| Idioma | Identificadores en inglés. Textos de interfaz, mensajes de error al usuario, logs dirigidos al instalador, LEEME y docs en **español neutro con tuteo** (tú/tienes/quieres). **Nunca voseo** (vos/tenés/querés). |
+| Idioma | Identificadores en inglés. Textos de interfaz, mensajes de error al usuario, logs dirigidos al instalador, LEEME y docs en **español neutro con tuteo** (tú/tienes/quieres). **Nunca voseo** (`vos`/`tenés`/`querés`; lo comprueba `tests/test_spanish_style.py`). |
 | Entregable | No mencionar en código, comentarios ni docs herramientas internas de desarrollo ni autoría por IA. El informe semanal usa un «proveedor LLM configurable» (eso sí se documenta). |
 | Licencias | Solo MIT/BSD/Apache/PSF/ISC/MPL y LGPL con enlace dinámico. Prohibido: ver §10. Ante la duda, no se usa. `tests/test_licenses.py` lo vigila. |
 | RGPD | La analítica procesa cada frame en memoria y lo descarta. **Nunca** se guardan imágenes ni vídeo de la analítica, ni identificadores de personas, ni reconocimiento facial, ni nada que mida a trabajadores. Solo conteos anónimos agregados. El snapshot para dibujar zonas se sirve en memoria y **no se escribe en disco**. |

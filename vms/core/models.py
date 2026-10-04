@@ -7,12 +7,23 @@ Convenciones:
   independientes de la resolución del flujo.
 - Las contraseñas de equipos NUNCA forman parte de estos modelos persistentes: van al
   almacén de credenciales (vms.core.credentials). Las de usuarios se guardan como hash argon2.
+
+Compatibilidad entre versiones (v2, CONTRATO §13.7 y PLAN-V2 §2.8):
+- Los modelos PERSISTENTES (lo que se guarda en config.json y users.json) usan `extra="allow"`: una
+  versión N-1 (por ejemplo tras un rollback) conserva los campos que no conoce en vez de borrarlos.
+- Los modelos de PETICIÓN (…Create, …Update, …Request) siguen con `extra="ignore"`. Los cuerpos que
+  llegan como dict se filtran con `known_fields_only()` antes de mezclarse con lo guardado.
+- `Vendor` es un identificador de driver (texto) y no una lista cerrada: el alta lo valida contra el
+  registro de drivers (`known_vendor_ids()`), pero un equipo guardado con una marca que esta versión
+  no conoce se conserva («Driver no disponible en esta versión»).
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Union
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import (BaseModel, ConfigDict, Field, SecretStr, field_validator,
                       model_validator)
@@ -20,8 +31,10 @@ from pydantic import (BaseModel, ConfigDict, Field, SecretStr, field_validator,
 from . import rtsp
 from .naming import ID_PATTERN, new_id
 
-Vendor = Literal["hikvision", "dahua", "onvif", "generic"]
-DeviceKind = Literal["camera", "nvr"]
+VENDOR_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{1,31}$"
+Vendor = Annotated[str, Field(pattern=VENDOR_ID_PATTERN)]
+# «dvr» y «xvr» (grabadores analógicos/híbridos) entran en la v2: aditivo, la interfaz v1 solo ofrece camera/nvr.
+DeviceKind = Literal["camera", "nvr", "dvr", "xvr"]
 Role = Literal["admin", "operator"]
 GridSize = Literal[1, 4, 9, 16]
 StreamKind = Literal["main", "sub"]
@@ -37,12 +50,68 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Marcas que esta versión sabe manejar. El registro de drivers (vms/vendors/registry.py, B5) las
+# amplía con register_vendor_ids() al importarse; estas cuatro son las de la v1.
+_KNOWN_VENDORS: set[str] = {"hikvision", "dahua", "onvif", "generic"}
+
+
+def register_vendor_ids(ids: Iterable[str]) -> None:
+    """Lo llama el registro de drivers al cargarse (aditivo)."""
+    _KNOWN_VENDORS.update(ids)
+
+
+def known_vendor_ids() -> frozenset[str]:
+    return frozenset(_KNOWN_VENDORS)
+
+
+def _check_known_vendor(v: str) -> str:
+    if v not in _KNOWN_VENDORS:
+        raise ValueError("Marca no disponible en esta versión del programa")
+    return v
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
 
+class _Persisted(_Model):
+    """Modelo que se guarda en disco: conserva los campos desconocidos (escritos por otra versión)."""
+
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+
+def _model_in(annotation: Any) -> type[BaseModel] | None:
+    """El BaseModel que hay dentro de una anotación (X, X | None, Annotated[X, ...]), si lo hay."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _model_in(get_args(annotation)[0])
+    if origin in (Union, UnionType):
+        found = [m for m in (_model_in(a) for a in get_args(annotation)) if m is not None]
+        return found[0] if len(found) == 1 else None
+    return None
+
+
+def known_fields_only(model: type[BaseModel], data: Any) -> Any:
+    """Quita de un cuerpo de petición (dict) las claves que `model` no conoce, también en submodelos.
+
+    Con `extra="allow"` en los modelos persistentes, un cuerpo con claves inventadas acabaría en
+    config.json; se filtra antes de mezclarlo con lo guardado (que sí conserva lo de otras versiones)."""
+    if not isinstance(data, dict):
+        return data
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            continue
+        sub = _model_in(field.annotation)
+        out[key] = known_fields_only(sub, value) if sub is not None else value
+    return out
+
+
 # --------------------------------------------------------------------------- sede
-class Site(_Model):
+class Site(_Persisted):
     id: EntityId = "site-local"
     name: str = Field("Sede", min_length=1, max_length=80)
     code: str = Field("", max_length=32, description="Código interno de tienda del cliente")
@@ -71,6 +140,11 @@ class DeviceBase(_Model):
     username: str = Field("", max_length=64)
     enabled: bool = True
     notes: str = Field("", max_length=500)
+    # v2 (CONTRATO §16.3): permitir autenticación Basic con este equipo (por defecto no: Digest).
+    allow_basic: bool = False
+    # v2: seguir al equipo si cambia de IP (misma serie o MAC en el descubrimiento). Por defecto no:
+    # la interfaz propone el cambio y el administrador confirma (PLAN-V2 §3.2 punto 11).
+    follow_ip: bool = False
 
     @field_validator("host")
     @classmethod
@@ -85,21 +159,47 @@ class DeviceBase(_Model):
         return v.strip()
 
 
+class DeviceIdentity(_Persisted):
+    """Identidad estable del equipo para encontrarlo si cambia de IP (CONTRATO §16.3)."""
+
+    serial: str = Field("", max_length=64)
+    mac: str = Field("", max_length=32, description="aa:bb:cc:dd:ee:ff en minúsculas")
+    source: Literal["api", "onvif", "wsd", "sadp", "dhip", "manual", ""] = ""
+    seen_at: datetime | None = None
+
+
 class Device(DeviceBase):
     """Equipo físico (cámara IP o NVR). Las credenciales se guardan aparte, por id."""
+
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     id: EntityId = Field(default_factory=lambda: new_id("dev"))
     model: str = ""
     serial: str = ""
     firmware: str = ""
+    identity: DeviceIdentity | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_plaintext_password(cls, data: Any) -> Any:
+        # Una contraseña en claro dentro de config.json (configuraciones antiguas o editadas a mano)
+        # nunca se conserva, aunque el modelo admita campos desconocidos. ConfigStore avisa de ello.
+        if isinstance(data, dict) and "password" in data:
+            data = {k: v for k, v in data.items() if k != "password"}
+        return data
 
 
 class DeviceCreate(DeviceBase):
     password: SecretStr | None = None
     import_channels: list[int] | Literal["all"] | None = Field(
         None, description="Canales a dar de alta como cámaras tras crear el equipo")
+
+    @field_validator("vendor")
+    @classmethod
+    def _vendor_known(cls, v: str) -> str:
+        return _check_known_vendor(v)
 
 
 class DeviceUpdate(_Model):
@@ -117,11 +217,18 @@ class DeviceUpdate(_Model):
     password: SecretStr | None = None
     enabled: bool | None = None
     notes: str | None = Field(None, max_length=500)
+    allow_basic: bool | None = None
+    follow_ip: bool | None = None
 
     @field_validator("host")
     @classmethod
     def _host(cls, v: str | None) -> str | None:
         return None if v is None else _check_host(v)
+
+    @field_validator("vendor")
+    @classmethod
+    def _vendor_known(cls, v: str | None) -> str | None:
+        return None if v is None else _check_known_vendor(v)
 
 
 class DeviceTestRequest(DeviceBase):
@@ -129,6 +236,11 @@ class DeviceTestRequest(DeviceBase):
 
     name: str = "prueba"
     password: SecretStr | None = None
+
+    @field_validator("vendor")
+    @classmethod
+    def _vendor_known(cls, v: str) -> str:
+        return _check_known_vendor(v)
 
 
 # --------------------------------------------------------------------------- cámaras
@@ -160,9 +272,21 @@ class CameraBase(_Model):
         return _check_rtsp_path(v)
 
 
+class CameraHealthConfig(_Persisted):
+    """Ajustes de «salud de imagen» de una cámara (CONTRATO §18.2). Sin imágenes: solo geometría."""
+
+    enabled: bool = True
+    # Zonas que no se comparan con la referencia (puertas automáticas, pantallas, reloj del OSD):
+    # polígonos normalizados 0..1 como las reglas de analítica.
+    masks: list[list[tuple[float, float]]] = Field(default_factory=list, max_length=16)
+
+
 class Camera(CameraBase):
     """Canal de vídeo (una cámara IP = canal 1; un NVR = un canal por cámara)."""
 
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+    health: CameraHealthConfig = Field(default_factory=CameraHealthConfig)
     id: EntityId = Field(default_factory=lambda: new_id("cam"))
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -189,13 +313,17 @@ class CameraUpdate(_Model):
 
 
 # --------------------------------------------------------------------------- muros
-class WallLayout(_Model):
+def _empty_cells() -> list[str | None]:
+    return [None] * WALL_SLOTS
+
+
+class WallLayout(_Persisted):
     """Disposición de un monitor. Siempre 16 celdas para no perder asignaciones al cambiar grid."""
 
     monitor: int = Field(ge=1, le=MAX_MONITORS)
     name: str = Field("", max_length=40)
     grid: GridSize = 4
-    cells: list[EntityId | None] = Field(default_factory=lambda: [None] * WALL_SLOTS)
+    cells: list[EntityId | None] = Field(default_factory=lambda: _empty_cells())
 
     @field_validator("cells", mode="before")
     @classmethod
@@ -219,12 +347,25 @@ class WallUpdate(_Model):
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._\-]{3,32}$")
 
 
-class UserPublic(_Model):
+class CameraScope(_Persisted):
+    """Permisos por cámara de un operador (CONTRATO §18.8). `None` en el usuario = todas (como en la v1).
+
+    Los administradores no tienen ámbito: ven y hacen todo."""
+
+    cameras: list[EntityId] = Field(default_factory=list, description="Cámaras que puede ver")
+    live: bool = True
+    playback: bool = True
+    export: bool = False
+    bookmark: bool = True
+
+
+class UserPublic(_Persisted):
     username: str
     role: Role
     enabled: bool = True
     created_at: datetime = Field(default_factory=utcnow)
     last_login_at: datetime | None = None
+    camera_scope: CameraScope | None = None
 
 
 class User(UserPublic):
@@ -278,7 +419,7 @@ def _check_point(p: tuple[float, float]) -> tuple[float, float]:
     return (float(x), float(y))
 
 
-class _RuleBase(_Model):
+class _RuleBase(_Persisted):
     id: EntityId = Field(default_factory=lambda: new_id("rule"))
     camera_id: EntityId
     name: str = Field(min_length=1, max_length=60)
@@ -341,7 +482,7 @@ class ZoneRule(_RuleBase):
 AnalyticsRule = Annotated[Union[LineRule, ZoneRule], Field(discriminator="kind")]
 
 
-class CameraAnalytics(_Model):
+class CameraAnalytics(_Persisted):
     camera_id: EntityId
     enabled: bool = False
     fps: float = Field(2.0, ge=0.5, le=30.0, description="Puerta 10-15, cajas 1-2")
@@ -351,36 +492,77 @@ class CameraAnalytics(_Model):
 
 
 # --------------------------------------------------------------------------- ajustes
-class RetentionSettings(_Model):
+class RetentionSettings(_Persisted):
     days: int = Field(30, ge=1, le=3650, description="MediaMTX recordDeleteAfter")
     disk_guard_percent: int = Field(
         90, ge=0, le=99,
         description="Si el disco de grabación supera este %, el motor borra lo más antiguo. 0 = desactivado")
 
 
-class RecordingSettings(_Model):
+class RecordingSettings(_Persisted):
     segment_seconds: int = Field(900, ge=60, le=86400, description="MediaMTX recordSegmentDuration")
     part_seconds: int = Field(1, ge=1, le=10, description="MediaMTX recordPartDuration (pérdida máx. ante corte)")
     recordings_dir: str | None = Field(None, description="None = <datos>/recordings")
 
 
-class AlertSettings(_Model):
+class AlertSettings(_Persisted):
     telegram_enabled: bool = False
     telegram_chat_id: str | None = Field(None, max_length=64)
 
 
-class SystemSettings(_Model):
+class NotificationRule(_Persisted):
+    """Qué avisos salen por qué canal (CONTRATO §18.6). Sin imágenes salvo `attach_snapshot` en sabotaje."""
+
+    kinds: list[str] = Field(default_factory=lambda: ["camera_down", "tamper", "disk", "recording_gap",
+                                                      "clock_skew", "retention_forecast", "update_failed"])
+    min_severity: Literal["info", "warning", "critical"] = "warning"
+    channels: list[Literal["email", "webhook", "telegram"]] = Field(default_factory=list)
+    quiet_hours: tuple[str, str] | None = Field(None, description="(«22:00», «07:00») hora local de la sede")
+    group_seconds: int = Field(120, ge=0, le=3600, description="Agrupa avisos parecidos en este intervalo")
+    attach_snapshot: bool = False
+
+
+class NotificationSettings(_Persisted):
+    """Correo y webhook (CONTRATO §18.6). Las contraseñas y tokens van al almacén de credenciales,
+    nunca aquí: `smtp_password` y `webhook_secret` se guardan con CredentialStore bajo `notify:*`."""
+
+    email_enabled: bool = False
+    smtp_host: str = Field("", max_length=253)
+    smtp_port: int = Field(587, ge=1, le=65535)
+    smtp_starttls: bool = True
+    smtp_username: str = Field("", max_length=128)
+    email_from: str = Field("", max_length=254)
+    email_to: list[str] = Field(default_factory=list, max_length=20)
+    webhook_enabled: bool = False
+    webhook_url: str = Field("", max_length=500)
+    rules: list[NotificationRule] = Field(default_factory=lambda: [NotificationRule()])
+
+
+class HealthSettings(_Persisted):
+    """Salud de imagen, desfase horario y previsión de grabación (CONTRATO §18.2-§18.4)."""
+
+    enabled: bool = True
+    check_interval_s: int = Field(180, ge=60, le=3600, description="Una comprobación por cámara cada N s")
+    hysteresis: int = Field(3, ge=1, le=10, description="Comprobaciones seguidas antes de avisar")
+    clock_warn_s: float = Field(2.0, ge=0.5, le=600)
+    clock_critical_s: float = Field(30.0, ge=1, le=3600)
+
+
+class SystemSettings(_Persisted):
     site: Site = Field(default_factory=Site)
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     alerts: AlertSettings = Field(default_factory=AlertSettings)
+    notifications: NotificationSettings = Field(default_factory=NotificationSettings)
+    health: HealthSettings = Field(default_factory=HealthSettings)
 
 
 # --------------------------------------------------------------------------- raíz
-CONFIG_VERSION = 1
+# 2 = v2.0 (campos nuevos con valor por defecto; migración v1→v2 en vms/core/config_migrations.py).
+CONFIG_VERSION = 2
 
 
-class AppConfig(_Model):
+class AppConfig(_Persisted):
     """Contenido completo de config.json."""
 
     version: int = CONFIG_VERSION

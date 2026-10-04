@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex">
   <title>Reproducción · VMS Multimarca</title>
   <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/ops.css">
   <link rel="stylesheet" href="/static/css/playback.css">
 </head>
 <body>
@@ -103,9 +104,17 @@
         </div>
         <p class="muted small" style="margin:10px 0 0">El clip se genera desde la grabación original, sin recomprimir.</p>
       </section>
+      <!-- Contenedores vacíos de la fase 0 de la v2 (CONTRATO §18.9). -->
+      <div id="timeline-events-root" data-owner="B6" hidden></div>
+      <div id="bookmarks-root" data-owner="B6" hidden></div>
+      <div id="evidence-root" data-owner="B6" hidden></div>
     </main>
   </div>
 </div>
 <script type="module" src="/static/js/playback.js"></script>
+<!-- Fase 0 v2: módulos de los bloques (CONTRATO §18.9) -->
+<script type="module" src="/static/js/timeline-events.js"></script>
+<script type="module" src="/static/js/bookmarks.js"></script>
+<script type="module" src="/static/js/evidence.js"></script>
 </body>
 </html>
