@@ -7,4 +7,4 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/api/analytics/counts", tags=["counts"])
+router = APIRouter(prefix="/api/analytics", tags=["counts"])   # GET /api/analytics/counts.csv

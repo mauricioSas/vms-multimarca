@@ -50,9 +50,9 @@ function Read-Json([string] $path) { Get-Content -Raw -LiteralPath $path | Conve
 function Heartbeat { Read-Json (Join-Path $Root 'state\heartbeat.json') }
 function Pointer { Read-Json (Join-Path $Root 'state\active.json') }
 function HostStatus { Read-Json (Join-Path $Root 'state\host-status.json') }
-function Host-Exe { Join-Path $Root 'bin\vmshost-s4.exe' }
+function Get-HostExe { Join-Path $Root 'bin\vmshost-s4.exe' }
 
-function Fresh-Heartbeat([string] $version, [int] $seconds = 30) {
+function Wait-Heartbeat([string] $version, [int] $seconds = 30) {
     Wait-Until { $h = Heartbeat; $h.version -eq $version -and ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $h.ts) -le 3 } $seconds "latido de $version"
 }
 
@@ -73,7 +73,7 @@ Step 'disposicion' {
     foreach ($v in '1.0.0', '1.1.0', '2.0.0') { Copy-Item (Join-Path $BuildDir 'hola.exe') (Join-Path $Root "versions\$v\") }
     Set-Content -LiteralPath (Join-Path $Root 'versions\2.0.0\CRASH') -Value 'versión rota a propósito'
     '{"last_good":"1.0.0"}' | Set-Content -LiteralPath (Join-Path $Root 'state\journal.json') -Encoding ascii
-    & (Host-Exe) show --root $Root | Out-Null      # crea active.json desde el diario
+    & (Get-HostExe) show --root $Root | Out-Null      # crea active.json desde el diario
     if ((Pointer).active -ne '1.0.0') { throw 'active.json no se creó con 1.0.0' }
     'versions 1.0.0, 1.1.0 y 2.0.0 (rota); active.json reconstruido desde el diario'
 }
@@ -83,7 +83,7 @@ Step 'instalar_servicio' {
     # Sin comillas internas a propósito (la ruta no lleva espacios): evita las diferencias de paso de
     # argumentos entre PowerShell 5.1 y 7 al llamar a sc.exe.
     if ($Root -match '\s') { throw 'Esta prueba exige una carpeta sin espacios' }
-    $bin = "$(Host-Exe) service --name $ServiceName --root $Root --confirm-timeout 25"
+    $bin = "$(Get-HostExe) service --name $ServiceName --root $Root --confirm-timeout 25"
     $out = & sc.exe create $ServiceName binPath= $bin obj= "NT SERVICE\$ServiceName" type= own start= demand
     if ($LASTEXITCODE -ne 0) { throw "sc create: $out" }
     & sc.exe failure $ServiceName reset= 86400 actions= restart/1000/restart/5000/restart/30000 | Out-Null
@@ -101,7 +101,7 @@ Step 'instalar_servicio' {
 Step 'arrancar_y_consultar' {
     Start-Service -Name $ServiceName
     Wait-Until { (Get-Service $ServiceName).Status -eq 'Running' } 20 'servicio en marcha'
-    Fresh-Heartbeat '1.0.0'
+    Wait-Heartbeat '1.0.0'
     $hs = HostStatus
     if (-not $hs.child_in_job) { throw 'el hijo no está dentro del Job Object' }
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($hs.child_pid)"
@@ -120,14 +120,14 @@ Step 'job_object_mata_hijos' {
     Wait-Until { -not (Get-Process -Id $child -ErrorAction SilentlyContinue) } 10 'que el hijo muera con el arrancador'
     # El SCM relanza el servicio por las acciones de recuperación (1 s)
     Wait-Until { (Get-Service $ServiceName).Status -eq 'Running' -and (HostStatus).host_pid -ne $hs.host_pid } 30 'reinicio por recuperación del SCM'
-    Fresh-Heartbeat '1.0.0'
+    Wait-Heartbeat '1.0.0'
     "hijo $child terminado al matar el arrancador; el SCM lo relanzó (pid $((HostStatus).host_pid))"
 }
 
 Step 'version_rota_vuelve_atras' {
-    & (Host-Exe) switch --root $Root --to 2.0.0 | Out-Null
+    & (Get-HostExe) switch --root $Root --to 2.0.0 | Out-Null
     Wait-Until { $p = Pointer; $p.active -eq '1.0.0' -and -not $p.trial -and $p.previous -eq '2.0.0' } 60 'vuelta atrás tras 3 caídas'
-    Fresh-Heartbeat '1.0.0'
+    Wait-Heartbeat '1.0.0'
     $hs = HostStatus
     "3 caídas de 2.0.0 → active.json vuelve a 1.0.0 (vueltas atrás: $($hs.rollbacks)); $($hs.last_event)"
 }
@@ -136,28 +136,28 @@ Step 'puntero_corrupto_se_reconstruye' {
     Stop-Service -Name $ServiceName
     Set-Content -LiteralPath (Join-Path $Root 'state\active.json') -Value '{basura' -Encoding ascii
     Start-Service -Name $ServiceName
-    Fresh-Heartbeat '1.0.0'
+    Wait-Heartbeat '1.0.0'
     if ((Pointer).active -ne '1.0.0') { throw 'el puntero no se reconstruyó' }
     'active.json corrupto → reconstruido con last_good del diario (1.0.0)'
 }
 
 Step 'sin_confirmar_vuelve_atras_por_tiempo' {
-    & (Host-Exe) switch --root $Root --to 1.1.0 | Out-Null
-    Fresh-Heartbeat '1.1.0'
+    & (Get-HostExe) switch --root $Root --to 1.1.0 | Out-Null
+    Wait-Heartbeat '1.1.0'
     Wait-Until { $p = Pointer; $p.active -eq '1.0.0' -and $p.previous -eq '1.1.0' } 60 'vuelta atrás por plazo de confirmación (25 s)'
-    Fresh-Heartbeat '1.0.0'
+    Wait-Heartbeat '1.0.0'
     '1.1.0 arrancó pero nadie la confirmó en 25 s → vuelta a 1.0.0'
 }
 
 Step 'confirmada_se_queda' {
-    & (Host-Exe) switch --root $Root --to 1.1.0 | Out-Null
-    Fresh-Heartbeat '1.1.0'
-    & (Host-Exe) confirm --root $Root | Out-Null
+    & (Get-HostExe) switch --root $Root --to 1.1.0 | Out-Null
+    Wait-Heartbeat '1.1.0'
+    & (Get-HostExe) confirm --root $Root | Out-Null
     Start-Sleep -Seconds 30
     $p = Pointer
     if ($p.active -ne '1.1.0' -or $p.trial) { throw "estado inesperado: $($p | ConvertTo-Json -Compress)" }
     if ((Read-Json (Join-Path $Root 'state\journal.json')).last_good -ne '1.1.0') { throw 'el diario no apunta a 1.1.0' }
-    Fresh-Heartbeat '1.1.0'
+    Wait-Heartbeat '1.1.0'
     '1.1.0 confirmada: sigue activa pasado el plazo y el diario la marca como buena'
 }
 

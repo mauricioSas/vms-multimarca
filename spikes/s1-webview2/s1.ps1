@@ -183,7 +183,7 @@ paths:
             gpu_3d_max = [math]::Round(($g3d | Measure-Object -Maximum).Maximum, 1)
         })
     }
-    function Run-Viewer([string] $phase, [string[]] $viewerArgs, [int] $timeoutSeconds) {
+    function Invoke-Viewer([string] $phase, [string[]] $viewerArgs, [int] $timeoutSeconds) {
         Say "Fase ${phase}: abriendo el visor…"
         $v = Start-Process -FilePath $Viewer -ArgumentList $viewerArgs -PassThru
         [void] $script:procs.Add($v)
@@ -198,18 +198,18 @@ paths:
     # ------------------------------------------------------------------ 4. fase A
     $statsA = Join-Path $Out 'stats-h264.jsonl'; Remove-Item $statsA -ErrorAction SilentlyContinue
     Say "Fase A: $Windows ventanas × $Cells flujos H.264 durante $Minutes min. Puedes mirar, pero no cierres las ventanas."
-    Run-Viewer 'A' @('--windows', $Windows, '--cells', $Cells, '--prefix', 'h264-', '--minutes', $Minutes, '--out', "`"$statsA`"") ($Minutes * 60 + 120)
+    Invoke-Viewer 'A' @('--windows', $Windows, '--cells', $Cells, '--prefix', 'h264-', '--minutes', $Minutes, '--out', "`"$statsA`"") ($Minutes * 60 + 120)
 
     # ------------------------------------------------------------------ 5-6. HEVC
     $statsB = Join-Path $Out 'stats-h265.jsonl'; Remove-Item $statsB -ErrorAction SilentlyContinue
     $statsC = Join-Path $Out 'stats-hevc-file.jsonl'; Remove-Item $statsC -ErrorAction SilentlyContinue
     if (-not $SkipHevc) {
-        Run-Viewer 'B' @('--windows', 1, '--cells', 4, '--prefix', 'h265-', '--minutes', 2, '--out', "`"$statsB`"") 200
+        Invoke-Viewer 'B' @('--windows', 1, '--cells', 4, '--prefix', 'h265-', '--minutes', 2, '--out', "`"$statsB`"") 200
         $list = Invoke-RestMethod 'http://127.0.0.1:9996/list?path=h265-rec'
         $start = ($list | Select-Object -First 1).start
         $src = "http://127.0.0.1:9996/get?path=h265-rec&start=$([uri]::EscapeDataString($start))&duration=20&format=fmp4"
         $query = 'src=' + [uri]::EscapeDataString($src) + '&seconds=40'
-        Run-Viewer 'C' @('--windows', 1, '--page', 's1-file.html', '--query', "`"$query`"", '--out', "`"$statsC`"") 90
+        Invoke-Viewer 'C' @('--windows', 1, '--page', 's1-file.html', '--query', "`"$query`"", '--out', "`"$statsC`"") 90
     }
 
     # ------------------------------------------------------------------ 7. veredicto
