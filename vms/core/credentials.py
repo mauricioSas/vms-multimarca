@@ -49,14 +49,14 @@ class SecretBackend(Protocol):
     def delete(self, key: str) -> None: ...
 
 
-class MemoryKeyring(KeyringBackend):  # type: ignore[misc,valid-type]
+class MemoryKeyring(KeyringBackend):
     """Backend de keyring en memoria para pruebas
     (PYTHON_KEYRING_BACKEND=vms.core.credentials.MemoryKeyring)."""
 
-    priority = 1  # type: ignore[assignment]
+    priority = 1
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__()  # type: ignore[no-untyped-call]
         self._data: dict[tuple[str, str], str] = {}
 
     def get_password(self, service: str, username: str) -> str | None:

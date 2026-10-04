@@ -374,7 +374,10 @@ def test_deliverable_text_rules(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     if path.name == "THIRD_PARTY_NOTICES.txt":  # los textos de licencia de terceros no son nuestros
         text = text.split("3. TEXTOS DE LICENCIA", 1)[0]
-    m = VOSEO.search(text)
+    # En Markdown, lo que va entre comillas invertidas es una cita (p. ej. PLAN-V2 §4.1 lista las formas
+    # prohibidas). Misma excepción que tests/test_spanish_style.py, que es la comprobación completa.
+    plain = re.sub(r"`[^`\n]*`", "``", text) if path.suffix == ".md" else text
+    m = VOSEO.search(plain)
     assert not m, f"voseo en {path.name}: «{m.group(0) if m else ''}»"
     m2 = FORBIDDEN.search(text)
     assert not m2, f"mención no permitida en {path.name}: «{m2.group(0) if m2 else ''}»"

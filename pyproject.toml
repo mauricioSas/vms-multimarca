@@ -29,6 +29,9 @@ vms = [
     "onvif-zeep-async>=4.3",
     "psutil>=6",
     "psycopg[binary]>=3.2",
+    # v2 (B6, salud de imagen en el backend: también en puestos sin analítica). OpenCV clásico, sin modelos.
+    "numpy>=2",
+    "opencv-python-headless>=4.10",
 ]
 # Analítica en la sede: SOLO inferencia (modelo RF-DETR ya exportado a ONNX/OpenVINO).
 # No incluye torch: en Linux arrastraría las wheels CUDA (varios GB) a un mini PC sin GPU.
@@ -60,15 +63,26 @@ central = [
     "psycopg-pool>=3.2",
     "anthropic>=0.40",
 ]
-dev = [
-    "vms-multimarca[vms,analytics,central,export]",
+# Herramientas de prueba y calidad (sin dependencias de producto). Licencias verificadas el
+# 5-oct-2026 (PyPI): ruff MIT, mypy MIT (+ mypy_extensions MIT, librt MIT, ast-serialize MIT,
+# pathspec MPL-2.0), pytest-cov MIT (+ coverage Apache-2.0), pytest-randomly MIT, types-PyYAML
+# Apache-2.0. Nada de esto se distribuye en el instalador. Lo usa CI con los locks de sede.
+test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-timeout>=2.3",
+    "pytest-cov>=7",
+    "pytest-randomly>=5",
     "respx>=0.21",
     "playwright>=1.48",
     "pgserver>=0.1.4",
     "pip-licenses>=5",
+    "ruff>=0.16",
+    "mypy>=2.4",
+    "types-PyYAML>=6",
+]
+dev = [
+    "vms-multimarca[vms,analytics,central,export,test]",
 ]
 
 [project.scripts]
@@ -88,6 +102,8 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 180
+# pytest-randomly (orden aleatorio) está activo: la semilla sale en la cabecera. Para repetir un
+# orden concreto: --randomly-seed=<n>; para desactivarlo: -p no:randomly.
 addopts = "-ra --strict-markers"
 markers = [
     "slow: pruebas lentas (procesos externos, vídeo, modelos)",
@@ -105,3 +121,29 @@ filterwarnings = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = ["legacy", "native", "spikes/s1-webview2"]
+
+[tool.ruff.lint]
+# Conjunto clásico (pyflakes + errores de pycodestyle) + bugbear. Se amplía por bloques, nunca a la baja.
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = ["B008"]   # Depends()/Query() de FastAPI en los valores por defecto es el patrón documentado
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["^legacy/", "^tests/", "^spikes/", "^native/", "^build/", "^dist/"]
+
+# PLAN-V2 §4.1: estricto en vms/core (fase 0); B5 lo extiende a vms/vendors y B4 a updater.
+[[tool.mypy.overrides]]
+module = ["vms.core.*"]
+strict = true
+
+[tool.coverage.run]
+source = ["vms", "analytics", "central"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+skip_empty = true
+precision = 1

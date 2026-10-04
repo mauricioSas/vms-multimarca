@@ -85,7 +85,7 @@ def locked_packages() -> list[str]:
 
 
 def license_of(meta: object) -> str:
-    get = getattr(meta, "get")
+    get = meta.get  # type: ignore[attr-defined]
     expr = get("License-Expression")
     if expr:
         return str(expr).strip()

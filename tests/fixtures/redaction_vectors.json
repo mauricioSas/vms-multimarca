@@ -1,0 +1,105 @@
+{
+  "_comment": "Vectores de ocultación de credenciales compartidos por Python (vms.core.rtsp.redact) y Rust (native/common). Dueño: B1. B5 pide aquí los formatos de URL nuevos de cada marca. Cada caso: entrada → salida esperada; la salida nunca debe contener la contraseña.",
+  "version": 1,
+  "secrets": [
+    "Sim%23Pass%3A1%40%2Fx",
+    "Cl4ve%21",
+    "12345",
+    "s3cr3t",
+    "p%40ss",
+    "pa%24s",
+    "abc123",
+    "uno",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "YWRtaW46MTIzNDU=",
+    "eyJhbGciOiJIUzI1NiJ9",
+    "AAE-abc_DEF123"
+  ],
+  "cases": [
+    {
+      "name": "url_rtsp_codificada",
+      "input": "rtsp://admin:Sim%23Pass%3A1%40%2Fx@192.168.1.64:554/Streaming/Channels/101",
+      "expected": "rtsp://***:***@192.168.1.64:554/Streaming/Channels/101"
+    },
+    {
+      "name": "url_rtsps",
+      "input": "rtsps://visor:Cl4ve%21@nvr.tienda.local:322/cam/realmonitor?channel=1&subtype=0",
+      "expected": "rtsps://***:***@nvr.tienda.local:322/cam/realmonitor?channel=1&subtype=0"
+    },
+    {
+      "name": "url_http_con_ruta",
+      "input": "GET http://admin:12345@10.0.0.20/ISAPI/System/deviceInfo HTTP/1.1",
+      "expected": "GET http://***:***@10.0.0.20/ISAPI/System/deviceInfo HTTP/1.1"
+    },
+    {
+      "name": "url_postgresql",
+      "input": "VMS_PG_DSN=postgresql://vms:s3cr3t@central.vpn:5432/vms",
+      "expected": "VMS_PG_DSN=postgresql://***:***@central.vpn:5432/vms"
+    },
+    {
+      "name": "url_ipv6",
+      "input": "rtsp://u:p%40ss@[fe80::1]:554/stream1",
+      "expected": "rtsp://***:***@[fe80::1]:554/stream1"
+    },
+    {
+      "name": "url_solo_usuario",
+      "input": "rtsp://admin@10.0.0.1:554/h264/ch1/main/av_stream",
+      "expected": "rtsp://***:***@10.0.0.1:554/h264/ch1/main/av_stream"
+    },
+    {
+      "name": "dos_urls_en_una_linea",
+      "input": "origen rtsp://a:b@1.2.3.4/x → destino rtsp://c:d@5.6.7.8/y",
+      "expected": "origen rtsp://***:***@1.2.3.4/x → destino rtsp://***:***@5.6.7.8/y"
+    },
+    {
+      "name": "log_mediamtx_401",
+      "input": "2026/10/05 10:00:00 ERR [path cam-1a2b3c4d/main] [RTSP source] rtsp://admin:pa%24s@10.1.1.1:554/Streaming/Channels/101: 401 Unauthorized",
+      "expected": "2026/10/05 10:00:00 ERR [path cam-1a2b3c4d/main] [RTSP source] rtsp://***:***@10.1.1.1:554/Streaming/Channels/101: 401 Unauthorized"
+    },
+    {
+      "name": "query_password",
+      "input": "/cgi-bin/configManager.cgi?action=getConfig&password=abc123&user=admin",
+      "expected": "/cgi-bin/configManager.cgi?action=getConfig&password=***&user=admin"
+    },
+    {
+      "name": "query_varias_claves",
+      "input": "pwd=uno&passwd=dos&pass=tres&token=cuatro&api_key=cinco&apikey=seis&secret=siete",
+      "expected": "pwd=***&passwd=***&pass=***&token=***&api_key=***&apikey=***&secret=***"
+    },
+    {
+      "name": "cabecera_digest",
+      "input": "Authorization: Digest username=\"admin\", realm=\"IP Camera\", nonce=\"abc\", response=\"0123\"",
+      "expected": "Authorization: Digest ***"
+    },
+    {
+      "name": "cabecera_basic",
+      "input": "authorization: Basic YWRtaW46MTIzNDU=",
+      "expected": "authorization: Basic ***"
+    },
+    {
+      "name": "cabecera_bearer",
+      "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.x",
+      "expected": "Authorization: Bearer ***"
+    },
+    {
+      "name": "telegram_bot",
+      "input": "POST https://api.telegram.org/bot123456789:AAE-abc_DEF123/sendMessage",
+      "expected": "POST https://api.telegram.org/bot***/sendMessage"
+    },
+    {
+      "name": "sin_secretos",
+      "input": "Cámara «Puerta» sin señal desde 10:42 (rtsp://10.0.0.5:554/stream1)",
+      "expected": "Cámara «Puerta» sin señal desde 10:42 (rtsp://10.0.0.5:554/stream1)"
+    },
+    {
+      "name": "vacio",
+      "input": "",
+      "expected": ""
+    }
+  ]
+}

@@ -17,7 +17,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -155,7 +155,7 @@ def env_files(data_dir: Path | None = None) -> list[Path]:
     return [p for p in candidates if p.is_file()]
 
 
-def load_settings(env_file: Path | None = None, **overrides: object) -> VmsSettings:
+def load_settings(env_file: Path | None = None, **overrides: Any) -> VmsSettings:
     """Carga los ajustes. `env_file` sustituye a la búsqueda automática (útil en pruebas)."""
     files = [env_file] if env_file else env_files()
-    return VmsSettings(_env_file=[str(f) for f in files] or None, **overrides)  # type: ignore[call-arg]
+    return VmsSettings(_env_file=[str(f) for f in files] or None, **overrides)

@@ -40,3 +40,14 @@ logs/
 
 # Pesos preentrenados descargados por la exportación del modelo (analytics/tools/export_model.py)
 models/weights/
+
+# v2: Rust, informes de CI y pruebas de concepto
+target/
+coverage.xml
+junit-*.xml
+.coverage
+spikes/**/s*-result.json
+
+# S1: iconos generados por make_icons.py y esquemas de Tauri
+spikes/s1-webview2/app/src-tauri/icons/
+spikes/s1-webview2/app/src-tauri/gen/

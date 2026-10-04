@@ -67,7 +67,8 @@ def mediamtx_bin() -> str:
 
 @pytest.fixture(scope="session")
 def ffmpeg_bin() -> str:
-    for c in (os.environ.get("VMS_TEST_FFMPEG"), shutil.which("ffmpeg"), "/opt/homebrew/bin/ffmpeg"):
+    # Sin rutas fijas de Homebrew (PLAN-V2 §5): VMS_TEST_FFMPEG o el PATH, igual en Windows, Linux y macOS.
+    for c in (os.environ.get("VMS_TEST_FFMPEG"), shutil.which("ffmpeg")):
         if c and Path(c).is_file():
             return c
     pytest.skip("Falta ffmpeg (solo para generar flujos de prueba); define VMS_TEST_FFMPEG")
@@ -78,10 +79,10 @@ def ffprobe_bin(ffmpeg_bin: str) -> str:
     probe = Path(ffmpeg_bin).with_name("ffprobe" + (".exe" if sys.platform == "win32" else ""))
     if probe.is_file():
         return str(probe)
-    found = shutil.which("ffprobe")
+    found = os.environ.get("VMS_TEST_FFPROBE") or shutil.which("ffprobe")
     if found:
         return found
-    pytest.skip("Falta ffprobe")
+    pytest.skip("Falta ffprobe (PATH o VMS_TEST_FFPROBE)")
 
 
 @pytest.fixture(scope="session")

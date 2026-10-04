@@ -73,7 +73,7 @@ async def test_repository_rejects_invalid_change_without_saving(app_paths: AppPa
     def bad(cfg: AppConfig) -> None:
         cfg.cameras.append(Camera.model_construct(name="", device_id="x", channel=0))
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - cualquier error de validación vale: lo que importa es que no guarde
         await repo.update(bad)
     assert repo.config.cameras == [] and not app_paths.config_file.exists()
 

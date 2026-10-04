@@ -48,8 +48,8 @@ def free_port() -> int:
 
 
 def find_ffmpeg() -> str:
-    exe = os.environ.get("VMS_TEST_FFMPEG") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
-    if not Path(exe).is_file():
+    exe = os.environ.get("VMS_TEST_FFMPEG") or shutil.which("ffmpeg")
+    if not exe or not Path(exe).is_file():
         raise RuntimeError("No se encontró ffmpeg (define VMS_TEST_FFMPEG)")
     return exe
 

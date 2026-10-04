@@ -55,7 +55,7 @@ SITE_ID = "site-e2e-001"
 TG_TOKEN = "123456:TEST-token-de-pruebas"
 TG_CHAT = "-1009876543210"
 MADRID = ZoneInfo("Europe/Madrid")
-FFPROBE = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+FFPROBE = os.environ.get("VMS_TEST_FFPROBE") or shutil.which("ffprobe") or "ffprobe"
 
 PC_TRACKER = """
 (() => {

@@ -17,7 +17,7 @@ _sys.modules.setdefault("openvino_telemetry", None)  # type: ignore[arg-type]
 
 # OpenCV/FFmpeg escriben sus propios avisos directamente en la consola (fuera de nuestros logs,
 # que ya registran cada fallo de vídeo en español). Se silencian antes de importar cv2.
-import os as _os
+import os as _os  # noqa: E402 - va después de bloquear módulos en sys.modules (arriba)
 
 _os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 _os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")   # AV_LOG_QUIET

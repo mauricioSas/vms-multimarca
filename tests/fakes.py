@@ -6,9 +6,11 @@ ampliarlos; si cambia un Protocol, se actualizan aquí en el mismo cambio.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from vms.core.errors import DeviceAuthFailed, DeviceUnreachable, EngineUnavailable
 from vms.core.interfaces import (CameraSource, ChannelInfo, DeviceInfo, DiskUsage, EngineStatus,
@@ -19,8 +21,23 @@ from vms.core.naming import mtx_path
 SNAPSHOT = (Path(__file__).resolve().parents[1] / "tools" / "mocks" / "assets" / "snapshot.jpg").read_bytes()
 
 
+SITE_TZ = ZoneInfo("Europe/Madrid")   # zona por defecto de la sede (Site.timezone)
+
+
+def default_spans(now: datetime, tz: ZoneInfo = SITE_TZ) -> list[RecordingSpan]:
+    """Grabaciones simuladas de HOY a mediodía en la zona de la sede (10:00-11:00 y 11:05-11:35).
+
+    Antes eran «hace 2 h en UTC» y, entre las 00:00 y las ~02:00 de Madrid, caían en el día anterior:
+    la línea de tiempo de «hoy» salía vacía (prueba dependiente de la hora, PLAN-V2 §5)."""
+    local_day = now.astimezone(tz).date()
+    base = datetime(local_day.year, local_day.month, local_day.day, 10, 0, tzinfo=tz).astimezone(timezone.utc)
+    return [RecordingSpan(start=base, duration=3600.0),
+            RecordingSpan(start=base + timedelta(hours=1, minutes=5), duration=1800.0)]
+
+
 class FakeEngine:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
+        self.clock = clock
         self.running = False
         self.sources: dict[str, CameraSource] = {}
         self.recording: RecordingSettings | None = None
@@ -66,9 +83,7 @@ class FakeEngine:
                               end: datetime | None) -> list[RecordingSpan]:
         spans = self.spans.get(camera_id)
         if spans is None:
-            base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
-            spans = [RecordingSpan(start=base, duration=3600.0),
-                     RecordingSpan(start=base + timedelta(hours=1, minutes=5), duration=1800.0)]
+            spans = default_spans(self.clock())
         return [s for s in spans if (start is None or s.end > start) and (end is None or s.start < end)]
 
     def playback_get_url(self, camera_id: str, start: datetime, duration: float,

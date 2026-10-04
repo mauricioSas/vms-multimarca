@@ -15,7 +15,7 @@ def supported() -> bool:
 
 
 def is_enabled(value_name: str) -> bool:
-    if not supported():
+    if sys.platform != "win32":   # (comprobación literal: así mypy sabe que winreg solo se usa en Windows)
         return False
     import winreg
     try:
@@ -28,7 +28,7 @@ def is_enabled(value_name: str) -> bool:
 
 def set_enabled(value_name: str, command: str | None, enabled: bool) -> None:
     """Activa (con `command`, ya entrecomillado) o desactiva el arranque automático."""
-    if not supported():
+    if sys.platform != "win32":
         raise RuntimeError("El arranque automático solo está disponible en Windows")
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
