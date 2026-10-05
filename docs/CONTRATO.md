@@ -511,6 +511,22 @@ Cada `interval_s`: upsert de `sites`, de `site_cameras` (desde `payload.cameras`
  "analytics": {"running": true, "stale": false}}
 ```
 
+### 7.3 bis Campos del latido que aportan los bloques de la v2
+
+`vms/core/heartbeat_extras.py` (dueño: arquitecto) declara qué clave añade cada bloque y de dónde sale; el
+backend (`AppState.heartbeat_payload`) y el agente (`central/agent.py`) ya la recogen desde la fase 0:
+
+| Clave | Proveedor (`módulo:función`) | Bloque | Contenido |
+|---|---|---|---|
+| `update` | `vms_updater.heartbeat:payload_update` | B4 | campos de `public-status.json` (§15.6) |
+| `health` | `vms.ops.heartbeat:payload_health` | B6 | §18.5 |
+| `evidence_key` | `vms.ops.heartbeat:payload_evidence_key` | B6 | `{"key_id", "public_key"}` (§18.7) |
+
+Un proveedor es `def f(paths: AppPaths) -> dict | None`, síncrono y rápido: solo lee archivos locales (nunca
+red ni base de datos), sin imágenes, IP ni secretos. Si el módulo aún no existe, lanza, o devuelve algo que
+no es un objeto JSON de ≤ 8 KB, esa clave no se envía y el resto del latido sale igual. `HeartbeatPayload`
+admite campos extra, así que nadie toca `central/heartbeat.py`. Una clave nueva se pide por §12.
+
 ### 7.4 Panel central [central-deploy]
 
 `python -m central` (FastAPI, puerto 8700, usuarios propios con el mismo esquema que §3.5 en su
@@ -806,6 +822,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-04 | corrector final | Despliegue: los lock de sede (`requirements-vms/analytics/central.txt`) llevan SHA-256 de PyPI y los instaladores usan `--require-hashes` (comprobado con `pip download --require-hashes` para win_amd64 y manylinux x86_64). Windows: `Protect-Path` sobre toda la carpeta de datos; `models\weights` y `*.pth` no se copian. `THIRD_PARTY_NOTICES.txt` incluye RF-DETR, DINOv2 y COCO. |
 | 2026-10-04 | corrector final | §6.12 (encontrado por la prueba de sistema): los formularios de login y primer administrador (VMS y panel central) llegan con el botón desactivado y `method="post"`; el script lo activa al enganchar el envío. Antes, un clic antes de cargar el script enviaba el formulario por GET con la contraseña en la URL. |
 | 2026-10-05 | arquitecto | **Versión 2.0 (fase 0 de la v2).** Nuevas §13-§18. Cambios en lo existente, todos compatibles: `CONFIG_VERSION` 2 con migración automática (§13.8); modelos persistentes con `extra="allow"` y cuerpos de petición filtrados con `known_fields_only`; `Vendor` pasa de lista cerrada a identificador validado contra el registro (`DeviceCreate` sigue respondiendo 422 con una marca desconocida); `DeviceKind` admite `dvr` y `xvr`; `DeviceInfo.firmware_date`; extra `[vms]` con `numpy` y `opencv-python-headless` (B6); extra `[test]` y `requirements-test.txt`; `FakeEngine(clock=…)`; rutas de cámaras, vivo y grabaciones llaman a `vms/api/permissions.py` (sin efecto hasta B6); routers vacíos registrados; `devices.js` separado de `panel.js`; contenedores y módulos vacíos en las páginas (§18.9); punto de extensión del panel central (`central/extensions.py`). |
+| 2026-10-05 | arquitecto | **Revisión de la fase 0** (antes de lanzar los bloques). Compatibles: §7.3 bis (proveedores del latido por bloque, `vms/core/heartbeat_extras.py`, ya llamado por backend y agente); `VmsSettings.engine_mode` (`VMS_ENGINE_MODE`, `child`) y `update_source` (`VMS_UPDATE_SOURCE`, `https://`, `http://` o `file:///`); §17.3 `events.py` del arquitecto hasta que B2 arranque y eventos v2 congelados; §18.8 ganchos de ámbito también en muros, analítica y `/api/status` (**cambio de comportamiento solo cuando B6 active el ámbito**: un operador con ámbito recibe 422 al añadir una cámara ajena a un muro); §18.12 y §13.1 una sola regla para la tabla de avisos (`data\advisories.json` de la versión desaparece: va dentro de `app\vms\ops\security\`); §13.10 `recordSegmentDuration` medido. Pruebas de concepto: S4 con los nombres de §13.4 (`trial_since_unix`, `updated_unix`), campos desconocidos conservados y espera creciente; S3 con rollback de `snapshot` y clave sustituida rechazada. |
 
 ---
 
@@ -829,7 +846,6 @@ C:\Program Files\VMSMultimarca\
 │   ├── engine\                        mediamtx.exe, MEDIAMTX-LICENSE.txt
 │   ├── viewer\VMS.exe
 │   ├── models\                        rfdetr-*.xml/.bin, LICENSE
-│   ├── data\advisories.json           tabla de avisos de seguridad (§18.12)
 │   ├── THIRD_PARTY_NOTICES.txt
 │   └── release.json                   copia del descriptor firmado (§15.4)
 └── updater\slot-a\ y slot-b\          vmsctl.exe + runtime mínimo + vms_updater
@@ -840,7 +856,7 @@ C:\ProgramData\VMSMultimarca\          (= carpeta de datos, §3.2) +
 ├── updater\public-status.json         legible por Usuarios (§15.6); cache\; blacklist.json
 ├── mediamtx\mediamtx.yml              fuente única de rutas (§13.10); ACL estricta
 ├── secrets\                           DPAPI de máquina + ACL por SID (§13.9)
-├── ops\                               datos de B6 (§18.17)
+├── ops\                               datos de B6 (§18.17); ops\advisories\ lo escribe solo VMSUpdater (§18.12)
 └── evidence\                          evidencias protegidas y exportaciones (§18.6-§18.7)
 ```
 Sin junctions. Lo que no cambia entre versiones se copia con enlaces duros. `PYTHONDONTWRITEBYTECODE=1`
@@ -1050,8 +1066,9 @@ anuncia en `public-status.json`).
 ### 15.4 Repositorio, descriptor y canales
 
 Formato de PLAN-V2 §2.7 sin cambios (TUF con `consistent_snapshot`, `bundles/`, `components/<c>/`,
-`channels/`, `installers/`, y además `data/advisories-<AAAAMMDD>.json` como componente `data`, sin reinicio,
-§18.12). `root` y `targets`: **ECDSA P-256** (S3: verificado con python-tuf 7.0.1 + securesystemslib 1.5.1;
+`channels/`, `installers/`, y además `data/advisories-<AAAAMMDD>.json` como componente `data`, sin reinicio:
+`VMSUpdater` lo verifica, valida el esquema y lo escribe con `atomic_write` en
+`<datos>\ops\advisories\advisories.json`; regla de cuál manda en §18.12). `root` y `targets`: **ECDSA P-256** (S3: verificado con python-tuf 7.0.1 + securesystemslib 1.5.1;
 `HSMSigner` usa python-pkcs11, MIT). `snapshot`/`timestamp`: ed25519.
 **Claves de desarrollo:** se generan fuera del repositorio (`%USERPROFILE%\.vms-dev-keys\` o el token SoftHSM
 `vms-dev`), sus archivos y etiquetas empiezan por `dev-` y el `root` de desarrollo lleva
@@ -1132,12 +1149,14 @@ cambia. Un usuario fuera del grupo ve «Sin permiso para abrir los muros».
 Todas las ventanas comparten la carpeta de datos de WebView2. Páginas remotas sin IPC (capacidades de
 Tauri solo para `tauri://localhost`). Fijación del certificado del servidor remoto: **pendiente de S5**.
 
-### 17.3 Eventos SSE nuevos (`vms/api/events.py`, dueño B2)
+### 17.3 Eventos SSE nuevos (`vms/api/events.py`: dueño el arquitecto hasta que B2 arranque; después B2)
 
 `engine` (`{"state": "started|restarted|down", "pid", "at"}`, lo emite B1: el muro pone a cero su espera)
 y `update` (`{"version", "viewer_restart", "state", "message_es"}`, lo emite B4). Además B6 emite
 `health`, `bookmark`, `evidence` y `notice` (§18.18). Nombres y cargas declarados en código
-(`V2_EVENTS` y los `TypedDict`); nadie inventa otros sin pasar por aquí.
+(`V2_EVENTS`, los `TypedDict` y las funciones `publish_engine`, `publish_update`, `publish_health`,
+`publish_bookmark`, `publish_evidence` y `publish_notice`). Están **congelados**: emitirlos no exige tocar el
+archivo, y un evento o un campo nuevo se pide por §12 (lo aplica el arquitecto mientras B2 espera a S1).
 
 ## 18. Operación, IA de verificación y onboarding [B6]
 
@@ -1260,8 +1279,16 @@ cuadra). Nunca se recodifica (sin libx264); H.265 se entrega tal cual.
 
 `User.camera_scope: CameraScope | None` (`cameras`, `live`, `playback`, `export`, `bookmark`). `None` =
 todas (compatibilidad v1); los administradores no tienen ámbito; el kiosco ve el vivo de las cámaras de
-los muros. Se aplica **solo** en `vms/api/permissions.py` (ya llamado desde cámaras, vivo, grabaciones y
-descargas); una cámara fuera del ámbito responde 404. Lo administra `PATCH /api/users/{username}` con
+los muros. Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la fase 0 en:
+- cámaras, vivo, grabaciones y descargas: una cámara fuera del ámbito responde 404;
+- `PUT /api/walls/{monitor}`: una cámara que se **añade** al muro tiene que estar en el ámbito `live` (si
+  no, 422 «La cámara no existe», como una inexistente); las que ya estaban se pueden dejar o quitar. Así un
+  operador con ámbito no puede ver una cámara ajena a través del kiosco;
+- analítica: `GET /api/analytics/rules` y `/analytics/cameras` filtran, `GET /api/analytics/rules/{id}` de
+  una cámara ajena responde 404 y `GET /api/analytics/status` solo trae sus cámaras (`live`);
+- `GET /api/status`: `cameras` y `analytics.cameras` filtradas (`live`). El usuario del agente de sede
+  (`VMS_AGENT_USERNAME`) tiene que ser un operador **sin** ámbito, o el latido saldría incompleto.
+`GET /api/walls` no se filtra (el kiosco necesita los identificadores; no lleva nombres). Lo administra `PATCH /api/users/{username}` con
 `camera_scope` (router `users`, dueño B6 en la v2). Pendiente de pedir a B2: filtrar el evento SSE
 `status` por ámbito.
 
@@ -1318,8 +1345,15 @@ sin credenciales), Telnet/SSH/HTTP sin TLS/puertos SDK/UPnP/P2P (TCP con tiempo 
 de administrador, `security_read`), firmware con CVE y hora. Resultado: «Vulnerable (KEV)», «Probablemente
 vulnerable», «Sin CVE conocidos en la tabla» o «Desconocido». **Nunca «seguro».**
 
-**Tabla de avisos propia** (`AdvisoryTable`, `schema` 1): `vms/ops/security/advisories.json` en cada
-versión y, entre versiones, como componente TUF `data` (§15.4). La prepara Unmanned en el PC de
+**Tabla de avisos propia** (`AdvisoryTable`, `schema` 1). Hay **dos copias** y una sola regla:
+- **la de la versión**: `vms/ops/security/advisories.json` (en disco, `versions\<X>\app\vms\ops\security\`;
+  la mantiene B6). Es la base y la que vale si no hay otra;
+- **la que llega entre versiones**: componente TUF `data` (§15.4, PLAN-V2 §2.7) que `VMSUpdater` escribe con
+  `atomic_write` en `<datos>\ops\advisories\advisories.json` (nadie más la escribe);
+- el backend (B6, `vms/ops/security/`) lee las dos y usa la **válida** (esquema `AdvisoryTable` 1) con el
+  **`generated_at` más reciente**; con el mismo `generated_at`, la de la versión. Una copia inválida se
+  ignora con un aviso en el registro. `GET /api/security-audit/advisories` dice cuál usa
+  (`"origin": "version" | "update"`, `generated_at`, `kev_catalog_version`). La prepara Unmanned en el PC de
 publicación (NVD API 2.0 + catálogo KEV de CISA, CC0 + EPSS de FIRST), así **ni las tiendas ni la central
 salen a Internet** y la tabla va firmada como cualquier otra parte del producto.
 ```json

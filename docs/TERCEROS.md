@@ -16,6 +16,11 @@ biblioteca sin modificar y enlazada dinámicamente. **Prohibido** en el producto
 ZoneMinder, Shinobi, Moonfire, Bluecherry), pesos RF-DETR XL/2XL (licencia PML) y SDK
 propietarios de Hikvision/Dahua. `tests/test_licenses.py` vigila el entorno.
 
+En Rust (`native/`) la lista está en `native/deny.toml` y la comprueba `cargo deny` en CI (job B1): además
+de las anteriores se aceptan Unicode-3.0, 0BSD, MIT-0 y CC0-1.0, y las expresiones «A OR B» que incluyan una
+permitida (PLAN-V2 §9.2). Dueño de este archivo, de `THIRD_PARTY_NOTICES.txt`, de `tests/test_licenses.py` y
+de `native/deny.toml`: el arquitecto; los bloques piden las filas nuevas por CONTRATO §12.
+
 ## Código de terceros incorporado al repositorio
 
 | Archivo | Origen | Licencia | Nota |

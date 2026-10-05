@@ -1,7 +1,8 @@
 # Plan v2 — VMS Multimarca como app de Windows con actualizaciones y compatibilidad multimarca verificada
 
-**Fecha:** 5 de octubre de 2026 · **Versión del plan:** 1.2 (1.1 = revisión crítica, §8; 1.2 = bloque
-B6 «Operación, IA de verificación y onboarding» y las decisiones de la noche del 5/10, §9) ·
+**Fecha:** 5 de octubre de 2026 · **Versión del plan:** 1.3 (1.1 = revisión crítica, §8; 1.2 = bloque
+B6 «Operación, IA de verificación y onboarding» y las decisiones de la noche del 5/10, §9; 1.3 = revisión de
+la fase 0: dueños de los archivos compartidos, componente `data` y licencias Rust, §6.2, §2.7 y §9.2) ·
 **Producto actual:** 0.1.0 (fases 1-2 construidas, primera instalación real en Windows 11
 10.0.26200 el 4-oct-2026) · **Fase 0:** hecha en la rama `v2` (resultado de las pruebas de concepto en
 [`investigacion-v2/spikes.md`](investigacion-v2/spikes.md)).
@@ -87,7 +88,7 @@ cambiaría.
       --platform win_amd64 --python-version 3.12 --implementation cp --abi cp312 \
       --only-binary=:all: --no-deps --require-hashes \
       -r requirements-vms.txt -r requirements-analytics.txt -r requirements-central.txt \
-      -r packaging/runtime/requirements-windows-extra.txt
+      -r distribution/runtime/requirements-windows-extra.txt
   ```
   `python312._pth` incluye `Lib\site-packages` y `..\app` (el código del producto, §2.4).
 - **Bytecode:** los `.pyc` se compilan **en CI** (`python -m compileall --invalidation-mode
@@ -188,7 +189,7 @@ Dos ejecutables firmados hechos con
   licencia comercial a quien facture más de 5.000 USD, pero dice que **no es estrictamente
   obligatoria** (perpetua, con 2 años de actualizaciones; el precio no aparece en la página: **no
   verificado**). **Decisión del usuario D3** (§7.4).
-- **Asistente** (`packaging/installer/VMSMultimarca.iss`, español por defecto, inglés opcional):
+- **Asistente** (`distribution/installer/VMSMultimarca.iss`, español por defecto, inglés opcional):
   1. Bienvenida y licencia de uso (EULA de Unmanned Studio + avisos de terceros).
   2. **Tipo de puesto** (tipos de Inno con componentes):
 
@@ -738,6 +739,7 @@ targets/<sha256>.components/models/models-rfdetr-2026.10.zip
 targets/<sha256>.components/updater/updater-2.1.0.zip
 targets/<sha256>.channels/stable.json  channels/pilot.json
 targets/<sha256>.installers/VMSMultimarca-Setup-2.1.0.exe
+targets/<sha256>.data/advisories-20261005.json
 ```
 
 **Entrada en `targets.json`** (campos `custom` permitidos por TUF):
@@ -787,6 +789,16 @@ targets/<sha256>.installers/VMSMultimarca-Setup-2.1.0.exe
   }
 }
 ```
+
+**Componente `data` (tabla de avisos de seguridad, CONTRATO §18.12).** No va en ningún descriptor de
+versión ni reinicia nada. Entrada en `targets.json`:
+`"data/advisories-20261005.json": {"length": …, "hashes": {"sha256": "…"}, "custom": {"kind": "data", "data": "advisories", "schema": 1, "generated_at": "2026-10-05T00:00:00Z"}}`.
+En cada comprobación, `VMSUpdater` (con la misma verificación TUF que el resto) toma la entrada `data`
+`advisories` con el `generated_at` más reciente; si es más nueva que la instalada, la descarga, valida el
+esquema (`AdvisoryTable`, `schema` 1) y la escribe con `atomic_write` en `<datos>\ops\advisories\advisories.json`
+(solo la escribe `VMSUpdater`). El backend elige entre esa y la que trae la versión
+(`app\vms\ops\security\advisories.json`) la **válida con `generated_at` más reciente**. Se publica con
+`python -m tools.release data advisories <archivo>` (firma de `targets`, como un canal).
 
 **Canal `channels/stable.json`:**
 ```json
@@ -1079,7 +1091,7 @@ terminadas **con hardware**: fixtures reales, 72 h y madurez `verified`. Sin eso
   ninguna omisión «por falta de herramienta»: el workflow instala MediaMTX, ffmpeg de pruebas,
   Chromium y pwsh.
 - **Textos sin voseo (comprobable, no opinable):** `tests/test_spanish_style.py` busca en
-  `vms/web/`, `native/viewer/ui/`, `packaging/installer/lang/` y `docs/` una lista de formas
+  `vms/web/`, `native/viewer/ui/`, `distribution/installer/lang/` y `docs/` una lista de formas
   prohibidas (`vos`, `tenés`, `querés`, `podés`, `sabés`, `hacé`, `mirá`, `instalá`,
   `ingresá`, `fijate`, etc., con límites de palabra y lista de excepciones; este plan y el propio
   test, que citan las formas prohibidas, están exceptuados). Falla el CI si aparece
@@ -1392,7 +1404,12 @@ Sin esto, los bloques se pisarían. Entregables:
 | `native/Cargo.toml` (workspace) y `native/common/` | B1 | B2 |
 | `vms/core/models.py`, `vms/core/interfaces.py` | B5 (tras la fase 0) | B1, B4, B6 |
 | `vms/core/config_migrations.py` | B4 | B5 (si cambia un modelo persistente, entrega la migración como petición) |
-| `vms/api/events.py` | B2 | B1 (estado del motor), B4 (evento `update`), B6 (`health`, `bookmark`, `evidence`, `notice`) |
+| `vms/api/events.py` | **arquitecto hasta que B2 arranque** (veredicto de S1); después, B2 | B1, B4 y B6. Los 6 eventos de la v2 (`V2_EVENTS`, sus `TypedDict` y sus `publish_*`) ya están declarados y **congelados**: emitirlos no exige tocar el archivo. Un evento o campo nuevo se pide por CONTRATO §12 |
+| `vms/core/settings.py` | arquitecto | todos. Ya declara `VMS_ENGINE_MODE` (B1), `VMS_UPDATE_SOURCE` (B4) y los `VMS_LLM_*` (B6); una variable nueva se pide por CONTRATO §12 |
+| `vms/core/heartbeat_extras.py`, `central/agent.py`, `central/heartbeat.py`, `vms/api/state.py` | arquitecto | nadie en el caso normal: el latido ya recoge `update` (B4, `vms_updater/heartbeat.py`) y `health` y `evidence_key` (B6, `vms/ops/heartbeat.py`); cada bloque solo escribe su proveedor en su carpeta (CONTRATO §7.3 bis) |
+| `vms/__main__.py` | B1 (`engine-config`, `engine-run`) | B4 y B6 si necesitan una orden en `python -m vms` (lo normal es su propio `python -m vms_updater …` o `python -m vms.ops.evidence …`) |
+| `docs/TERCEROS.md`, `THIRD_PARTY_NOTICES.txt`, `deploy/third_party_notices.py`, `tests/test_licenses.py`, `native/deny.toml` | arquitecto | B5 (`rroller/dahua`), B6 (Driver.js) y B2 (crates del visor): la petición trae origen, versión o commit, licencia y texto del aviso |
+| `vms/api/routes/analytics.py`, `vms/api/routes/system.py` | arquitecto | B6 (los ganchos de ámbito ya están: CONTRATO §18.8) |
 | `vms/api/app.py` | arquitecto (solo en la fase 0 y en la integración) | todos |
 | `tests/windows/` (arnés, pasos 1-5 y 10-12) | B3 | — |
 | `tests/windows/test_update_*.py` (pasos 6-9) | B4 | B3 le da el arnés |
@@ -1411,9 +1428,9 @@ Sin esto, los bloques se pisarían. Entregables:
 
 | | |
 |---|---|
-| **Carpetas propias** | `native/vmshost/`, `native/vmsctl/`, `native/common/`, `native/Cargo.toml`, `packaging/runtime/`, `vms/engine/` (modo `attach`, YAML como fuente única, `logtail.py`), `vms/core/winsec.py` (nuevo), `vms/core/atomic.py`, `vms/core/credentials.py` (solo el backend DPAPI), `tests/engine/test_attach_*.py`, `tests/core/test_winsec.py`, `tests/core/test_atomic.py`, `tests/fixtures/redaction_vectors.json` |
+| **Carpetas propias** | `native/vmshost/`, `native/vmsctl/`, `native/common/`, `native/Cargo.toml`, `distribution/runtime/`, `vms/engine/` (modo `attach`, YAML como fuente única, `logtail.py`), `vms/core/winsec.py` (nuevo), `vms/core/atomic.py`, `vms/core/credentials.py` (solo el backend DPAPI), `tests/engine/test_attach_*.py`, `tests/core/test_winsec.py`, `tests/core/test_atomic.py`, `tests/fixtures/redaction_vectors.json` |
 | **Entradas** | CONTRATO §13-§14 (fase 0); `install.ps1` actual como referencia funcional; S2 y S4 |
-| **Salidas** | `vmshost.exe` (puntero, vigilancia de la versión a prueba, reconstrucción de `active.json`); `vmsctl.exe` (todas las órdenes de §1.3); `python -m packaging.runtime.build --out build/runtime` (runtime win_amd64 con `.pyc` compilados y `MANIFEST.sha256`); modo `VMS_ENGINE_MODE=attach` con YAML atómico; `python -m vms engine-config` y `python -m vms engine-run` (desarrollo); DPAPI de máquina + ACL con migración desde la v1; `vmsctl migrate-from-v1` |
+| **Salidas** | `vmshost.exe` (puntero, vigilancia de la versión a prueba, reconstrucción de `active.json`); `vmsctl.exe` (todas las órdenes de §1.3); `python -m distribution.runtime.build --out build/runtime` (runtime win_amd64 con `.pyc` compilados y `MANIFEST.sha256`); modo `VMS_ENGINE_MODE=attach` con YAML atómico; `python -m vms engine-config` y `python -m vms engine-run` (desarrollo); DPAPI de máquina + ACL con migración desde la v1; `vmsctl migrate-from-v1` |
 | **Terminado cuando** | (1) `cargo test` + `clippy` verdes, con pruebas de los dobles de SCM, firewall y ACL, y de `vmshost` (puntero ausente o corrupto, hijo que cae 3 veces, versión a prueba que no se confirma); (2) `pytest tests/engine` verde en modo `child` **y** `attach`; (3) prueba macOS: backend reiniciado 5 veces con el motor aparte → **0 huecos** en `/list`, y motor reiniciado con el backend parado → vuelve a grabar; (4) en `windows-latest` (job de B1 en `ci.yml`): `vmsctl services install --role store` con un payload mínimo → servicios con `NT SERVICE\…` y `ImagePath` en `vmshost`, `vmsctl health wait` = 0, `services uninstall` limpio; (5) los vectores de redacción pasan en pytest y en cargo; (6) `atomic_write` con prueba de fallo inyectado entre escribir y renombrar |
 
 #### B2 — App de escritorio (visor) y experiencia en vivo — **arranca tras el veredicto de S1**
@@ -1429,10 +1446,10 @@ Sin esto, los bloques se pisarían. Entregables:
 
 | | |
 |---|---|
-| **Carpetas propias** | `packaging/installer/` (`VMSMultimarca.iss`, `pascal/*.pas`, `lang/`, `assets/` con iconos y banner), `packaging/layout.py` (monta `versions\X.Y.Z` desde los artefactos), `tools/build/` (`all`, `sign`, `sbom`), `.github/workflows/` (todos), `tests/windows/` (arnés y pasos 1-5, 10-12), `docs/INSTALACION-WINDOWS.md` (reescrita para el asistente) |
+| **Carpetas propias** | `distribution/installer/` (`VMSMultimarca.iss`, `pascal/*.pas`, `lang/`, `assets/` con iconos y banner), `distribution/layout.py` (monta `versions\X.Y.Z` desde los artefactos), `tools/build/` (`all`, `sign`, `sbom`), `.github/workflows/` (todos), `tests/windows/` (arnés y pasos 1-5, 10-12), `docs/INSTALACION-WINDOWS.md` (reescrita para el asistente) |
 | **Entradas** | Salidas de B1 (`vmshost.exe`, `vmsctl.exe`, runtime) y B2 (`VMS.exe`). Mientras no estén: **dobles** (un `vmsctl.exe` de prueba que registra las llamadas, construido desde `native/vmsctl` con `--features fake`, y un visor de prueba que solo abre una ventana) |
 | **Salidas** | `VMSMultimarca-Setup-X.Y.Z.exe`; instalación silenciosa con `/LOADINF` + `/SECRETS`; negativa a bajar de versión; desinstalador con conservar/`/PURGE`; e2e de Windows completo (§4.6 pasos 1-5 y 10-12; los pasos 6-9 los escribe B4 sobre este arnés); aviso de Windows 10 |
-| **Terminado cuando** | (1) `build.yml` produce el instalador desde un commit limpio; dos builds dan el **mismo SHA-256 del payload Python/web** (alcance de §4.1); (2) e2e pasos 1-5 y 10-12 verdes en `windows-latest`; (3) instalar el Setup 2.0 encima de una v1 de `install.ps1` conserva configuración y grabaciones; (4) el asistente tiene capturas de cada página en los artefactos de CI y `tests/test_spanish_style.py` pasa sobre `packaging/installer/lang/`; (5) `tools.build all` funciona igual en un Windows sin GitHub (documentado en `docs/EMPAQUETADO.md`) |
+| **Terminado cuando** | (1) `build.yml` produce el instalador desde un commit limpio; dos builds dan el **mismo SHA-256 del payload Python/web** (alcance de §4.1); (2) e2e pasos 1-5 y 10-12 verdes en `windows-latest`; (3) instalar el Setup 2.0 encima de una v1 de `install.ps1` conserva configuración y grabaciones; (4) el asistente tiene capturas de cada página en los artefactos de CI y `tests/test_spanish_style.py` pasa sobre `distribution/installer/lang/`; (5) `tools.build all` funciona igual en un Windows sin GitHub (documentado en `docs/EMPAQUETADO.md`) |
 
 #### B4 — Actualizaciones, publicación y migraciones
 
@@ -1440,7 +1457,7 @@ Sin esto, los bloques se pisarían. Entregables:
 |---|---|
 | **Carpetas propias** | `updater/` (paquete `vms_updater`: `client.py`, `journal.py`, `apply.py`, `health.py`, `models.py`, `control_pipe.py`), `tools/release/` (`tuf_repo.py`, `publish.py`, `channel.py`, `mirror.py`, `site_token.py`), `infra/update-worker/`, `vms/core/config_migrations.py`, `vms/api/routes/updates.py`, `vms/web/static/js/updates.js`, `central/updates.py` + vistas del panel central para versiones, `vms/db/migrations/0003_site_updates.sql`, `tests/updater/`, `tests/windows/test_update_*.py`, `tests/windows/powercut/`, `tests/core/test_config_migrations.py`, `docs/PUBLICAR-VERSION.md` |
 | **Entradas** | CONTRATO §13 y §15; formato §2.7; `vmsctl version switch` y `services` (B1; mientras tanto, un doble Python con la misma CLI); arnés de `tests/windows/` (B3); S3 |
-| **Salidas** | Servicio actualizador con diario y A/B; repositorios TUF `online` y `offline`, y herramientas de publicación con firma local por YubiKey; Worker multicliente; panel central con canal por sede, retener y rollback; `/status` con el estado de la actualización; migraciones de configuración; descriptor y canales; prueba de corte de luz |
+| **Salidas** | Servicio actualizador con diario y A/B; repositorios TUF `online` y `offline`, y herramientas de publicación con firma local por YubiKey; Worker multicliente; panel central con canal por sede, retener y rollback; componente `data` (tabla de avisos, §2.7) instalado en `<datos>\ops\advisories\`; proveedor `update` del latido (`vms_updater/heartbeat.py`); `/status` con el estado de la actualización; migraciones de configuración; descriptor y canales; prueba de corte de luz |
 | **Terminado cuando** | (1) todos los casos de §4.4 verdes; (2) e2e de Windows pasos 6-9 verdes sobre el arnés de B3; (3) `python -m tools.release publish --dry-run` genera un repositorio que `ngclient` valida, con `root`/`targets` ECDSA P-256 (SoftHSM en CI); (4) prueba del Worker con Miniflare (sin token → 401; token revocado → 401; token de otro cliente → 403; metadatos públicos); (5) `docs/PUBLICAR-VERSION.md`: publicar, pausar, revertir, preparar USB y **«Si roban una llave»**, ensayado una vez de verdad; (6) §4.4 bis ejecutado en la VM Hyper-V con el resultado en `tests/e2e/RESULTADOS.md` |
 
 #### B5 — Drivers multimarca y compatibilidad
@@ -1462,7 +1479,7 @@ prioridades 1-13 (las 14-21 quedan para la v2.1 o si Covert las pide). Contrato:
 | **Carpetas propias** | `vms/ops/` (salud de imagen, informe, hora, previsión, evidencias y marcadores, avisos, diagnóstico, auditoría de seguridad con `security/advisories.json`, almacén `ops.sqlite3`), `vms/api/permissions.py`, `vms/api/routes/` `health.py`, `evidence.py`, `notifications.py`, `diagnostics.py`, `security_audit.py`, `timeline.py`, `onboarding.py`, `counts.py` y `users.py`, `vms/web/static/js/` `onboarding.js`, `help.js`, `health.js`, `security.js`, `notifications.js`, `timeline-events.js`, `bookmarks.js`, `evidence.js`, `counts-export.js`, `vms/web/static/css/ops.css`, `vms/web/static/help/`, `vms/web/vendor/driver.js/` (Driver.js 1.9.0, MIT, con su LICENSE), `central/ops.py` y sus vistas, `tests/ops/`, la sección «Salud de cámara» de `docs/RGPD-EIPD.md` |
 | **Entradas** | CONTRATO §18; capacidades `time_read` y `security_read` de B5 (mientras no lleguen, dobles en `tests/ops/`); `winsec` de B1 para guardar la clave de firma de evidencias con DPAPI; eventos SSE ya declarados (§17.3); la tabla de avisos la publica B4 como componente TUF `data` |
 | **Salidas** | Prioridades 1-13: (1) salud/sabotaje 0-100 con OpenCV clásico y causas; (2) informe de salud por tienda + vista central «tiendas con problemas hoy» + CSV; (3) desfase horario cámara↔PC; (4) previsión de días de grabación con simulador; (5) exportación de evidencias con SHA-256, manifiesto firmado Ed25519, acta y visor HTML portátil con marca de agua (no quemada); (6) marcadores con bloqueo de retención; (7) avisos por correo y webhook con agrupación; (8) CSV de conteos; (9) «¿por qué no conecta?» por reglas (LLM opcional solo para redactar); (10) onboarding: asistente de primer uso, «?» contextual, estados vacíos y recorridos con Driver.js; (11) auditoría de seguridad con la tabla de avisos propia + KEV/NVD; (12) permisos por cámara; (13) línea de tiempo con eventos |
-| **Terminado cuando** | (1) batería de imágenes **sintéticas** (generadas en la prueba, nunca fotos de personas) para cada causa con la causa y la puntuación esperadas, y 50 fotogramas normales sin falsos positivos; < 20 ms por comprobación a 640 px; histéresis probada; (2) desfase con mocks ONVIF/ISAPI/CGI a ±2 h y con `timeMode` manual; (3) previsión con un disco simulado; (4) `python -m vms.ops.evidence verify` acepta el paquete y falla si se cambia un byte; `visor.html` abre sin red en Chromium y detecta el cambio; (5) un tramo protegido sobrevive al borrado de MediaMTX y caduca; (6) correo con un servidor SMTP simulado y webhook con firma HMAC verificada; avisos agrupados; (7) diagnóstico: cada regla con su mock y exactamente **1** intento con credenciales; (8) auditoría: la tabla valida su esquema, casos Hikvision (fecha de build) y Dahua (versión), RTSP anónimo detectado con `rtsp_chaos`, sin salir a Internet; (9) asistente completo con Playwright y nunca en `/wall/N`; (10) operador con ámbito: 404 en cámaras fuera de su ámbito (vivo, grabación, descarga) y el kiosco igual que antes; (11) informe y latido con `payload.health`; vista central y CSV; (12) RGPD: tras una ejecución completa, `ops\` solo contiene referencias de cámara y metadatos; EIPD actualizada; (13) `pytest` completo y `test_spanish_style.py` verdes; licencias revisadas (`tests/test_licenses.py`) |
+| **Terminado cuando** | (1) batería de imágenes **sintéticas** (generadas en la prueba, nunca fotos de personas) para cada causa con la causa y la puntuación esperadas, y 50 fotogramas normales sin falsos positivos; < 20 ms por comprobación a 640 px; histéresis probada; (2) desfase con mocks ONVIF/ISAPI/CGI a ±2 h y con `timeMode` manual; (3) previsión con un disco simulado; (4) `python -m vms.ops.evidence verify` acepta el paquete y falla si se cambia un byte; `visor.html` abre sin red en Chromium y detecta el cambio; (5) un tramo protegido sobrevive al borrado de MediaMTX y caduca; (6) correo con un servidor SMTP simulado y webhook con firma HMAC verificada; avisos agrupados; (7) diagnóstico: cada regla con su mock y exactamente **1** intento con credenciales; (8) auditoría: la tabla valida su esquema, casos Hikvision (fecha de build) y Dahua (versión), RTSP anónimo detectado con `rtsp_chaos`, sin salir a Internet; (9) asistente completo con Playwright y nunca en `/wall/N`; (10) operador con ámbito: 404 en cámaras fuera de su ámbito (vivo, grabación, descarga, reglas de analítica), no las ve en `/api/status` ni puede añadirlas a un muro (422), y el kiosco igual que antes; (11) informe y latido con `payload.health`; vista central y CSV; (12) RGPD: tras una ejecución completa, `ops\` solo contiene referencias de cámara y metadatos; EIPD actualizada; (13) `pytest` completo y `test_spanish_style.py` verdes; licencias revisadas (`tests/test_licenses.py`) |
 
 ### 6.3 Integración y revisión
 
@@ -1631,6 +1648,10 @@ donde choque.
 | Puntero `active.json` | Solo lo escriben el actualizador (LocalSystem) y el instalador; un servicio sin privilegios pide la vuelta atrás con `state\rollback-request.json` | Hallazgo de S4: con el diseño de la prueba, todas las cuentas virtuales tendrían que poder escribir el puntero (CONTRATO §13.3, a cerrar por B1) |
 | Retención en MediaMTX | `recordDeleteAfter` se queda en el YAML; cambiarla abre un segmento nuevo en todas las cámaras (≤ 1 GOP de hueco, medido en S2) y se avisa | Así la retención funciona aunque el backend esté caído días |
 | Firma TUF por PKCS#11 | `HSMSigner` de securesystemslib 1.5.1 usa **python-pkcs11 (MIT)**, no PyKCS11 (GPL) | Comprobado en el código de la versión 1.5.1 (S3) |
-| Calidad en CI | `ruff` (E4, E7, E9, F, B), `mypy --strict` en `vms/core` (ya pasa) y normal en `vms/ops`; el resto se suma por bloques. `pytest-randomly` activo por defecto; `pytest-cov` con informe en CI (el umbral del 80 % se fija cuando haya una medida de CI) | Que CI quede verde hoy sin rebajar nada que ya se cumpla |
+| Calidad en CI | `ruff` (E4, E7, E9, F, B), `mypy --strict` en `vms/core` (ya pasa) y normal en `vms/ops`; el resto se suma por bloques. `pytest-randomly` activo por defecto; `pytest-cov` en CI con el **umbral del 80 % ya exigido** (`--cov-fail-under=80` en `pytest-ubuntu`; primera medida: 83,34 %). Se sube por bloques, nunca se baja | Que CI quede verde hoy sin rebajar nada que ya se cumpla |
+| Licencias Rust | Además de MIT/BSD/Apache-2.0/ISC/Zlib/MPL-2.0 se aceptan **Unicode-3.0** (tablas Unicode que usan `regex` y 18 crates de Tauri), **0BSD**, **MIT-0** y **CC0-1.0** (más permisivas que MIT), y las expresiones `OR` que incluyan una permitida (p. ej. `r-efi`: MIT o Apache-2.0 o LGPL; se elige MIT). `native/deny.toml` lo fija y `cargo deny check licenses bans sources` corre en el job B1 | Son permisivas y sin copyleft; la lista literal del responsable no las nombraba. B2 amplía `deny.toml` (por petición) cuando el visor entre en `native/` |
+| Tabla de avisos: dónde vive y cuál manda | La de la versión va dentro del código (`app\vms\ops\security\advisories.json`); la que llega por TUF entre versiones la escribe **solo `VMSUpdater`** con `atomic_write` en `<datos>\ops\advisories\advisories.json`. Manda la **válida con `generated_at` más reciente**; la de la versión es la base (CONTRATO §18.12, §2.7) | Revisión de la fase 0: B4 y B6 tocaban el mismo dato desde dos lados sin regla |
+| Ganchos de ámbito por cámara | También en `PUT /api/walls/{monitor}` (cámaras que se añaden), listas y estado de analítica y `/api/status` | Revisión de la fase 0: un operador con ámbito podía poner en un muro una cámara ajena y verla en el kiosco |
+| Latido y ajustes compartidos | `vms/core/heartbeat_extras.py` (proveedores por bloque) y `VMS_ENGINE_MODE`/`VMS_UPDATE_SOURCE` declarados en la fase 0 | Revisión de la fase 0: B1, B4 y B6 iban a editar los mismos archivos |
 | CI en GitHub | `ci.yml` y `s1-kit.yml` en la rama `v2`, validados con actionlint y ejecutados en GitHub. El token de `gh` de este equipo no tiene el permiso `workflow` (GitHub rechaza subir flujos con él): los commits se subieron por SSH con la clave ya configurada en el equipo. Para que `gh` pueda tocar flujos: `gh auth refresh -h github.com -s workflow` | Sin ese permiso, cualquier cambio de un flujo se sube por SSH |
 
