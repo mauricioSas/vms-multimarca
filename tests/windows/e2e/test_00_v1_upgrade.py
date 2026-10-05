@@ -53,7 +53,8 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
 
     base = "http://127.0.0.1:8600"
     assert h.wait_until(lambda: _health(base), 180, 2), "el backend de la v1 no responde"
-    with httpx.Client(base_url=base, timeout=20) as c:
+    # la v1 exige la cabecera anti-CSRF en toda petición que cambia algo (como hace su interfaz)
+    with httpx.Client(base_url=base, timeout=20, headers={"X-Requested-With": "vms"}) as c:
         r = c.post("/api/auth/setup", json={"username": "admin", "password": V1_PASSWORD})
         assert r.status_code == 201, r.text
         r = c.patch("/api/settings", json={"site": {"name": "Tienda v1 e2e"}})
