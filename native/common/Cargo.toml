@@ -1,6 +1,6 @@
 [package]
 name = "vms-common"
-description = "Piezas compartidas por vmshost, vmsctl y el visor: escritura atómica y ocultación de credenciales"
+description = "Piezas compartidas por vmshost, vmsctl y el visor: estado, escritura atómica, registros, secretos y ocultación de credenciales"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,10 +9,11 @@ rust-version.workspace = true
 
 [dependencies]
 regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true

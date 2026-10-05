@@ -11,11 +11,25 @@ publish = false
 rust-version = "1.85"
 
 [workspace.dependencies]
+# Compresión «deflate» de `vmsctl diag bundle` (MIT o Zlib o Apache-2.0, sin C).
+miniz_oxide = "0.8"
 regex = "1.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.27"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+# Servicios de Windows (SCM) en vmshost y vmsctl: MIT/Apache-2.0 (mullvad/windows-service-rs).
+windows-service = "0.8.1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 lto = true
