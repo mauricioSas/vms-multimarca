@@ -1251,6 +1251,14 @@ Lectura por `DeviceClockClient.device_time()` (B5; ONVIF `GetSystemDateAndTime` 
 `/ISAPI/System/time`, Dahua `getCurrentTime`) y hora del PC (en Windows, estado de `w32tm` por API, sin
 analizar texto). Desfase = hora del equipo − hora del PC a mitad del viaje. Umbrales
 `settings.health.clock_warn_s` (2 s) y `clock_critical_s` (30 s); también aviso si `time_mode` es manual.
+**Misma semántica en todas las marcas (revisión v2):** `DeviceTime.device_time` es el instante real del reloj
+del equipo y el desfase se mide en UTC; `DeviceTime.utc_offset_s` es la zona con la que el equipo sobreimprime
+la hora (Hikvision: `localTime`/`timeZone` POSIX con su horario de verano; Dahua: `NTP.TimeZone` + `Locales`;
+ONVIF: sin dato). Si se conoce y no coincide con la del PC, `warning` aparte («la hora que sale en la imagen no
+es la de la tienda»), aunque el reloj esté en hora. Una hora local sin zona cuya regla no se entiende no se
+adivina (lectura fallida, «Desconocido»). Si ONVIF lee la hora sin autenticar pero rechaza la contraseña en
+`GetNTP`, devuelve la hora con `credentials_rejected` y B6 deja de usar esa contraseña 30 min (como con un
+`DeviceAuthFailed`) para no bloquear el usuario del equipo.
 Cada medida se guarda (§18.17) y la exportación incluye la última en el manifiesto.
 Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck]}`; `POST /api/clock/check` (A).
 
@@ -1259,6 +1267,7 @@ Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck]}`; `
 Tasa real por cámara (bytes/hora en `recordings\` de las últimas 24 h) frente a disco libre + lo que la
 retención borrará. `GET /api/retention-forecast` (O) → `RetentionForecast`;
 `POST /api/retention-forecast/simulate` (A) `{"add_cameras": 4, "bitrate_mbps": 4.0}` → `RetentionForecast`.
+Un operador con ámbito por cámara solo recibe en `cameras` las suyas (los totales del disco son de la tienda).
 Aviso si los días previstos < `settings.retention.days`; aviso RGPD si el objetivo > 30 días.
 
 ### 18.5 Informe de salud (prioridad 2)
@@ -1358,6 +1367,11 @@ Rutas (router `notifications`): `GET/PUT /api/notifications/settings` (A; nunca 
 `has_smtp_password`), `PUT /api/notifications/secrets` (A), `POST /api/notifications/test` (A,
 `{"channel": "email"|"webhook"}`), `GET /api/notifications/log` (A) → `[NotificationRecord]`. Telegram
 sigue como en la v1 (§8.5).
+**Destino del webhook (revisión v2, SSRF):** solo `https://` a un servidor público (`vms/ops/netguard.py`): se
+rechazan al guardar (422) y al enviar, también tras resolver el DNS, loopback, privadas, link-local
+(`169.254.169.254`), CGNAT, multicast, reservadas, `localhost`/`.local` y URL con usuario. No se siguen
+redirecciones. El error que se guarda es el mismo si no conecta o si responde con error (no sirve para barrer
+puertos); el detalle solo va al registro de depuración.
 
 ### 18.11 «¿Por qué no conecta?» (prioridad 9)
 
@@ -1366,7 +1380,8 @@ sigue como en la v1 (§8.5).
 `ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` → `codec` →
 `clock` → `engine` → `path_ready`. **Un solo intento con credenciales** (respeta `LockoutPolicy`). Cada paso
 trae la causa probable y la acción en lenguaje claro. El LLM es opcional (`VMS_LLM_*`) y solo reescribe
-`summary_es` a partir de los pasos, **sin IP, usuarios ni contraseñas** (`llm_used`).
+`summary_es` a partir de los pasos, **sin IP, usuarios ni contraseñas** (`llm_used`), ni la dirección
+(aunque sea un nombre DNS) ni el nombre del equipo: se sanea lo que va (resumen y pasos) y lo que vuelve.
 
 ### 18.12 Auditoría de seguridad de equipos (prioridad 11)
 

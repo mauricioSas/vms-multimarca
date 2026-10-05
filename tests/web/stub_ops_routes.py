@@ -4,9 +4,7 @@ El backend de pruebas imita la API de la v1 para probar la interfaz sin el backe
 cargan los módulos de B6, que piden sus rutas al abrirse; sin ellas, el navegador registra «404» en la consola
 y las pruebas de `tests/web` (que no admiten errores de consola) fallan.
 
-Petición al dueño de `tests/web/stub_backend.py` (CONTRATO §12): en `StubBackend._build`, antes de
-`mount_web(app)`, llamar a `install_ops_routes(app, self)`. Mientras no esté, se puede comprobar con
-`pytest -p tests.ops.stub_plugin tests/web`.
+`StubBackend._build` las monta con `install_ops_routes(app, self)` antes de `mount_web(app)`.
 
 Las respuestas son las de un sistema recién instalado (sin referencias, sin medidas, sin marcadores); el
 asistente de primer uso no aparece para no tapar las pruebas de la v1. La lógica real se prueba en `tests/ops`

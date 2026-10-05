@@ -384,7 +384,10 @@ archivo <span class="mono">visor.html</span> recalcula las huellas en el navegad
 completa se hace con <span class="mono">python -m vms.ops.evidence verify &lt;paquete&gt; --key-id &lt;key_id&gt;</span>.
 Si un solo byte cambia, la huella deja de coincidir.</p>
 <p><b>La firma solo prueba el origen si la clave es la de la tienda:</b> el key_id del apartado 1 de esta acta
-(impresa y firmada al entregar) tiene que coincidir con el que muestre la verificación.</p>
+(impresa y firmada al entregar) tiene que coincidir con el que muestre la verificación. Y la verificación tiene
+que hacerla un programa de fuente fiable (la central o <span class="mono">python -m vms.ops.evidence verify</span>):
+el <span class="mono">visor.html</span> que viaja dentro del paquete lo podría haber cambiado quien manipuló el
+paquete, así que sirve para ver los vídeos y una primera comprobación, no como prueba de origen.</p>
 <h2>5. Entrega y recepción</h2>
 <div class="sign">
 <div class="box"><b>Entrega</b><br>Nombre y apellidos:<br><br>DNI / cargo:<br><br>Fecha y hora:<br><br>Firma:</div>
@@ -421,6 +424,9 @@ tienda) o cópialo del acta original firmada en papel, y compáralo.
 1. Sin instalar nada: abre visor.html, pega el key_id de la tienda y elige la carpeta. Si todo
    coincide verás «Todo coincide». Sin el key_id, el visor avisa de que la clave no está comprobada.
    Si un archivo se ha cambiado, el visor lo marca en rojo.
+   OJO: este visor.html viaja dentro del paquete y quien lo manipulara podría haberlo cambiado también.
+   Sirve para ver los vídeos y como primera comprobación; como PRUEBA DE ORIGEN vale solo la de un
+   programa de fuente fiable: la central o el punto 2.
 2. Comprobación completa (huellas + firma + clave), en un equipo con el programa:
        python -m vms.ops.evidence verify {exp.export_id}.zip --key-id <key_id de la tienda>
    Sale con 0 si todo cuadra, 1 si algo no coincide y 3 si falta --key-id (paquete coherente pero

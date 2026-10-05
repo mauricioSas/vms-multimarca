@@ -106,6 +106,7 @@ exclude = ["tests*", "tools*", "legacy*"]
 [tool.setuptools.package-data]
 "vms.db" = ["migrations/*.sql"]
 "vms.web" = ["**/*"]
+"vms.ops" = ["security/*.json", "evidence/templates/*.html"]
 "central" = ["web/*.html", "web/static/*"]
 
 [tool.pytest.ini_options]

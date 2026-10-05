@@ -26,7 +26,7 @@ import json
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -81,6 +81,9 @@ class DahuaMock:
     lock_after: int | None = 5
     clock_offset_s: float = 0.0
     ntp_enable: bool = True
+    # zona del equipo (horas respecto a UTC, sin horario de verano). None = la del PC y sin `NTP.TimeZone`
+    # (como un firmware que no la expone): `getCurrentTime` da la hora local de esa zona.
+    tz_hours: float | None = None
     security: dict[str, bool] = field(default_factory=lambda: {
         "Telnet": False, "SSHD": False, "UPnP": True, "T2UServer": True})
     requests: list[str] = field(default_factory=list)
@@ -171,8 +174,14 @@ class DahuaMock:
             return self._lines([("table.Network.eth0.IPAddress", "192.168.1.108"),
                                 ("table.Network.eth0.PhysicalAddress", self.mac), ("table.Network.TCPPort", 37777)])
         if name == "NTP":
-            return self._lines([("table.NTP.Enable", "true" if self.ntp_enable else "false"),
-                                ("table.NTP.Address", "pool.ntp.org"), ("table.NTP.Port", 123)])
+            pairs = [("table.NTP.Enable", "true" if self.ntp_enable else "false"),
+                     ("table.NTP.Address", "pool.ntp.org"), ("table.NTP.Port", 123)]
+            if self.tz_hours is not None:
+                from vms.vendors.dahua import DAHUA_TIME_ZONES
+                pairs.append(("table.NTP.TimeZone", DAHUA_TIME_ZONES.index(self.tz_hours)))
+            return self._lines(pairs)
+        if name == "Locales" and self.tz_hours is not None:
+            return self._lines([("table.Locales.DSTEnable", "false"), ("table.Locales.TimeFormat", "yyyy-MM-dd HH:mm:ss")])
         if name in ("Telnet", "SSHD", "UPnP", "T2UServer"):
             return self._lines([(f"table.{name}.Enable", "true" if self.security.get(name) else "false")])
         if name == "Web":
@@ -199,7 +208,11 @@ class DahuaMock:
     async def global_cgi(self, request: Request) -> Response:
         if request.query_params.get("action") != "getCurrentTime":
             return PlainTextResponse(BAD_REQUEST, status_code=400)
-        now = datetime.now().astimezone() + timedelta(seconds=self.clock_offset_s)
+        if self.tz_hours is None:
+            now = datetime.now().astimezone()
+        else:
+            now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=self.tz_hours)))
+        now += timedelta(seconds=self.clock_offset_s)
         return self._lines([("result", now.strftime("%Y-%m-%d %H:%M:%S"))])
 
     async def logic_device(self, request: Request) -> Response:

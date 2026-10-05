@@ -33,6 +33,7 @@ from vms.core.credentials import CredentialStore
 from vms.core.models import NotificationRule, NotificationSettings, Site
 from vms.core.rtsp import redact
 
+from . import netguard
 from .models import NotificationRecord, Severity
 from .store import OpsStore
 
@@ -154,11 +155,23 @@ async def smtp_send(cfg: NotificationSettings, password: str, subject: str, body
     await asyncio.to_thread(send)
 
 
+WEBHOOK_FAILED = "el servidor del webhook no aceptó el aviso (sin conexión o respondió con un error)"
+
+
 async def http_post(url: str, body: bytes, headers: dict[str, str]) -> None:
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as client:
-        r = await client.post(url, content=body, headers=headers)
+    """POST del webhook. Solo a servidores públicos por HTTPS (`netguard`) y sin seguir redirecciones. El error
+    que se guarda (y ve el administrador) es el mismo si no conecta o si responde con error: no sirve para barrer
+    puertos; el detalle va solo al registro de depuración."""
+    await netguard.resolve_public(url)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as client:
+            r = await client.post(url, content=body, headers=headers)
+    except httpx.HTTPError as exc:
+        log.debug("Webhook: %s", type(exc).__name__)
+        raise RuntimeError(WEBHOOK_FAILED) from None
     if r.status_code >= 300:
-        raise RuntimeError(f"el servidor respondió {r.status_code}")
+        log.debug("Webhook: HTTP %s", r.status_code)
+        raise RuntimeError(WEBHOOK_FAILED)
 
 
 async def telegram_send(token: str, chat_id: str, text: str) -> None:

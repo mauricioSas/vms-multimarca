@@ -218,8 +218,15 @@ async def put_clock_settings(body: ClockSettings, request: Request, p: Principal
 
 # --------------------------------------------------------------------------- previsión
 @router.get("/retention-forecast")
-async def get_forecast(_: Principal = Depends(require_operator), ops: "OpsService" = Depends(get_ops)) -> Response:
-    return json_response(await asyncio.to_thread(ops.forecast))
+async def get_forecast(p: Principal = Depends(require_operator), state: AppState = Depends(get_state),
+                       ops: "OpsService" = Depends(get_ops)) -> Response:
+    fc = await asyncio.to_thread(ops.forecast)
+    if p.role != "admin":
+        # el detalle por cámara solo de las que ve (ámbito por cámara: no se revela que existen las demás); los
+        # totales del disco son de la tienda y se dejan
+        visible = visible_camera_ids(state, p, (c.camera_id for c in fc.cameras), "live")
+        fc = fc.model_copy(update={"cameras": [c for c in fc.cameras if c.camera_id in visible]})
+    return json_response(fc)
 
 
 class SimulateRequest(BaseModel):

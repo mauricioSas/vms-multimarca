@@ -386,6 +386,8 @@ class OpsService:
             if not isinstance(client, DeviceClockClient):
                 return clockmod.failed_check(dev.id, cam_id, "Esta versión aún no sabe leer la hora de esta marca.")
             dt = await client.device_time()
+            if dt.credentials_rejected:
+                self.auth_backoff.block(dev.id, password)   # la hora vale, pero no se vuelve a gastar un intento
             return clockmod.device_check(dev.id, cam_id, dt, warn, critical)
         except DeviceAuthFailed as exc:
             self.auth_backoff.block(dev.id, password)

@@ -24,6 +24,7 @@ from starlette.responses import Response
 from vms.core.audit import audit
 from vms.core.errors import ValidationFailed
 from vms.core.models import AppConfig, NotificationSettings, known_fields_only
+from vms.ops import netguard
 from vms.ops.notify import SMTP_PASSWORD_KEY, WEBHOOK_SECRET_KEY
 
 from ..deps import Principal, get_state, require_admin
@@ -58,8 +59,11 @@ def _validate(cfg: NotificationSettings) -> None:
     if cfg.email_enabled and (not cfg.smtp_host or not cfg.email_to or not cfg.email_from):
         errors.append({"loc": ["smtp_host"], "msg": "Para activar el correo faltan el servidor, el remitente o los "
                                                      "destinatarios"})
-    if cfg.webhook_url and not cfg.webhook_url.lower().startswith(("https://", "http://")):
-        errors.append({"loc": ["webhook_url"], "msg": "La dirección tiene que empezar por https:// o http://"})
+    if cfg.webhook_url:
+        try:
+            netguard.check_url(cfg.webhook_url)   # https y servidor público (al enviar se comprueba también el DNS)
+        except netguard.UnsafeUrl as exc:
+            errors.append({"loc": ["webhook_url"], "msg": str(exc)})
     if cfg.webhook_enabled and not cfg.webhook_url:
         errors.append({"loc": ["webhook_url"], "msg": "Falta la dirección del webhook"})
     for i, rule in enumerate(cfg.rules):

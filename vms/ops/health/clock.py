@@ -13,6 +13,10 @@
 
 Umbrales: `settings.health.clock_warn_s` (2 s) y `clock_critical_s` (30 s). También se avisa si el
 equipo está en hora manual (sin NTP): con el tiempo deriva.
+
+El desfase se mide SIEMPRE en UTC, igual en todas las marcas: un equipo con NTP bien y la zona de fábrica
+(p. ej. China, UTC+8) tiene el reloj en hora. Pero la hora que sobreimprime en la imagen va en su zona: si el
+driver la conoce (`DeviceTime.utc_offset_s`) y no coincide con la del PC, es un aviso aparte (`warning`).
 """
 from __future__ import annotations
 
@@ -89,10 +93,37 @@ def evaluate_pc(skew_s: float, time_mode: str, warn_s: float, critical_s: float,
     return status, msg
 
 
+def _fmt_offset(seconds: int) -> str:
+    sign = "+" if seconds >= 0 else "−"
+    h, rem = divmod(abs(seconds), 3600)
+    return f"UTC{sign}{h}" + (f":{rem // 60:02d}" if rem else "")
+
+
+def zone_mismatch(dt: DeviceTime, pc_offset_s: int | None = None) -> str | None:
+    """Frase si la zona del equipo (la de la hora que sale en la imagen) no es la del PC; None si coincide o
+    no se sabe. `pc_offset_s`: zona del PC en ese instante (por defecto, la del sistema)."""
+    if dt.utc_offset_s is None:
+        return None
+    if pc_offset_s is None:
+        off = dt.device_time.astimezone().utcoffset()
+        if off is None:
+            return None
+        pc_offset_s = int(off.total_seconds())
+    if abs(dt.utc_offset_s - pc_offset_s) < 60:
+        return None
+    return (f"El equipo usa otra zona horaria ({_fmt_offset(dt.utc_offset_s)}) que este PC "
+            f"({_fmt_offset(pc_offset_s)}): la hora que sale en la imagen no es la de la tienda. Pon la zona "
+            "horaria correcta en el equipo.")
+
+
 def device_check(device_id: str, camera_id: str | None, dt: DeviceTime, warn_s: float,
-                 critical_s: float) -> ClockCheck:
+                 critical_s: float, pc_offset_s: int | None = None) -> ClockCheck:
     skew = dt.skew_s
     status, msg = evaluate(skew, dt.time_mode, warn_s, critical_s)
+    zone = zone_mismatch(dt, pc_offset_s)
+    if zone is not None:
+        status = "warning" if status == "ok" else status
+        msg += " " + zone
     return ClockCheck(camera_id=camera_id, device_id=device_id, at=dt.measured_at, skew_s=round(skew, 3),
                       round_trip_ms=round(dt.round_trip_ms, 1), time_mode=dt.time_mode, status=status,
                       message_es=msg)

@@ -326,10 +326,14 @@ class Diagnoser:
         result = DiagnosisResult(device_id=inp.device_id, camera_id=inp.camera_id, steps=steps,
                                  probable_cause_es=cause, summary_es=summary)
         if self.rewriter is not None and failed:
+            # al LLM solo va texto saneado: sin IP, credenciales, ni la dirección o el nombre del equipo (un host
+            # DNS o un nombre como «Caja Gran Vía 32» no los tapa la expresión de IP)
+            private = (inp.device.host, inp.device.name)
             try:
-                text = await self.rewriter(summary, [sanitize_step(s) for s in steps])
+                text = await self.rewriter(sanitize_text(summary, private),
+                                           [sanitize_step(s, private) for s in steps])
                 if text and len(text) < 1500:
-                    result.summary_es = sanitize_text(text)
+                    result.summary_es = sanitize_text(text, private)
                     result.llm_used = True
             except Exception as exc:  # noqa: BLE001 - el LLM es opcional
                 log.info("El LLM no pudo redactar el diagnóstico: %s", type(exc).__name__)
@@ -339,13 +343,19 @@ class Diagnoser:
 _IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\[[0-9a-fA-F:]+\]")
 
 
-def sanitize_text(text: str) -> str:
-    """Sin IP ni credenciales (lo que viaja al LLM y lo que vuelve)."""
-    return _IP_RE.sub("<IP>", redact(text))
+def sanitize_text(text: str, private: tuple[str, ...] = ()) -> str:
+    """Sin IP ni credenciales (lo que viaja al LLM y lo que vuelve). `private`: textos literales que tampoco
+    salen (dirección y nombre del equipo): la dirección pasa a «<IP>» y el resto a «el equipo»."""
+    out = redact(text)
+    host = private[0].strip() if private else ""
+    for literal in sorted({p.strip() for p in private if p and p.strip()}, key=len, reverse=True):
+        out = re.sub(re.escape(literal), "<IP>" if literal == host else "el equipo", out, flags=re.IGNORECASE)
+    return _IP_RE.sub("<IP>", out)
 
 
-def sanitize_step(s: DiagnosisStep) -> DiagnosisStep:
-    return s.model_copy(update={"detail_es": sanitize_text(s.detail_es), "action_es": sanitize_text(s.action_es)})
+def sanitize_step(s: DiagnosisStep, private: tuple[str, ...] = ()) -> DiagnosisStep:
+    return s.model_copy(update={"detail_es": sanitize_text(s.detail_es, private),
+                                "action_es": sanitize_text(s.action_es, private)})
 
 
 def llm_rewriter_from_settings(settings: Any) -> Rewriter | None:

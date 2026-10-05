@@ -224,7 +224,15 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
     renderFiles();
     setResult("info", "Comprobando las huellas…");
     const sigFile = state.files.get("manifiesto.sig");
-    state.signature = sigFile ? await verifySignature(manifestBytes, await sigFile.text(), m.signing_key && m.signing_key.public_key) : "missing";
+    const pub = m.signing_key && m.signing_key.public_key;
+    state.signature = sigFile ? await verifySignature(manifestBytes, await sigFile.text(), pub) : "missing";
+    // key_id REAL = SHA-256 de la clave pública que firma; el texto «key_id» del manifiesto lo escribe quien firma
+    // y un falsificador puede poner ahí el de la tienda
+    try {
+      state.realKid = pub ? hex(await crypto.subtle.digest("SHA-256", b64(pub))) : "";
+    } catch {
+      state.realKid = "";
+    }
     let bad = 0;
     for (const f of m.files) {
       const file = state.files.get(f.path);
@@ -248,15 +256,18 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
     if (!m || !state.done) return;
     const bad = state.bad || 0;
     const n = m.files.length;
-    const kid = String((m.signing_key && m.signing_key.key_id) || "").toLowerCase();
+    const declared = String((m.signing_key && m.signing_key.key_id) || "").toLowerCase();
+    const kid = state.realKid || "";
+    const kidLie = !kid || declared !== kid;
     const expected = $("expect-key").value.trim().toLowerCase();
-    state.keyCheck = !expected ? "unchecked" : expected === kid ? "match" : "other";
-    if (bad || state.signature === "bad" || state.signature === "missing" || state.keyCheck === "other") {
+    state.keyCheck = !expected ? "unchecked" : (!kidLie && expected === kid) ? "match" : "other";
+    if (bad || state.signature === "bad" || state.signature === "missing" || kidLie || state.keyCheck === "other") {
       state.summary = "mismatch";
       const parts = [];
       if (bad) parts.push(`${bad} de ${n} archivos no coinciden con el manifiesto (modificados o ausentes)`);
       if (state.signature === "bad") parts.push("la firma del manifiesto NO es válida");
       if (state.signature === "missing") parts.push("falta la firma (manifiesto.sig)");
+      if (kidLie) parts.push("el key_id del manifiesto NO corresponde a la clave que firma");
       if (state.keyCheck === "other") parts.push("la firma es de OTRA clave, no de la de la tienda");
       setResult("bad", `Atención: ${parts.join("; ")}. No te fíes de este paquete.`);
     } else if (state.signature === "unsupported") {

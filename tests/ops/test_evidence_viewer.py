@@ -8,6 +8,8 @@ de un segmento y tiene que detectarlo. La marca de agua va superpuesta (no quema
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import base64
 import json
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -16,11 +18,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tests.ops.conftest import write_segments
 from vms.core.paths import AppPaths
 from vms.ops.evidence.export import CameraInfo, EvidenceBuilder, ExportContext
 from vms.ops.evidence.keys import load_or_create
+from vms.ops.evidence.verify import verify
 from vms.ops.models import EvidenceExport, EvidenceExportRequest
 
 pytestmark = pytest.mark.needs_browser
@@ -90,3 +95,31 @@ def test_viewer_verifies_offline_and_detects_a_changed_byte(browser: Any, tmp_pa
     seg.write_bytes(bytes(data))
     state, text, _ = _check(browser, folder, key_id=kid)
     assert state == "mismatch" and "no coinciden" in text and "1 de" in text, text
+
+
+# Revisión v2 (Seg A1): el key_id del manifiesto lo escribe quien firma; el visor tiene que calcularlo de la clave.
+def test_viewer_rejects_package_signed_by_another_key_with_the_store_key_id(browser: Any, tmp_path: Path) -> None:
+    folder = _build(tmp_path)
+    mpath = folder / "manifiesto.json"
+    m = json.loads(mpath.read_text(encoding="utf-8"))
+    store_kid = m["signing_key"]["key_id"]
+    assert _check(browser, folder, key_id=store_kid)[0] == "ok"
+
+    seg = next((folder / "video" / "cam-00000001" / "segments").glob("*.mp4"))
+    seg.write_bytes(b"VIDEO MANIPULADO" * 1000)
+    forger = Ed25519PrivateKey.generate()
+    pub_raw = forger.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    (folder / "clave-publica.pem").write_bytes(forger.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+    m["signing_key"]["public_key"] = base64.b64encode(pub_raw).decode()
+    m["signing_key"]["key_id"] = store_kid                       # el falsificador copia el de la tienda
+    for f in m["files"]:
+        data = (folder / f["path"]).read_bytes()
+        f["bytes"], f["sha256"] = len(data), hashlib.sha256(data).hexdigest()
+    raw = json.dumps(m, ensure_ascii=False, indent=2).encode("utf-8")
+    mpath.write_bytes(raw)
+    (folder / "manifiesto.sig").write_text(base64.b64encode(forger.sign(raw)).decode())
+
+    state, text, _ = _check(browser, folder, key_id=store_kid)
+    assert state == "mismatch" and "NO corresponde a la clave que firma" in text
+    assert not verify(folder, expect_key_id=store_kid).ok

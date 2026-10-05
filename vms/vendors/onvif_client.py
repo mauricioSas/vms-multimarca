@@ -481,16 +481,21 @@ class OnvifClient:
         if self.device_utc is None:
             raise DeviceProtocolError(f"{self.label} no devolvió su hora por ONVIF")
         ntp = ""
+        rejected = False
         if self.time_mode == "ntp" and self.device.username and self._failure is None:
             try:
                 r = await self._soap(self.device_xaddr, NS_DEVICE, "GetNTP")
                 ntp = _t(r, ".//DNSname") or _t(r, ".//IPv4Address")
-            except DeviceAuthFailed:
-                raise
+            except DeviceAuthFailed as exc:
+                # la hora ya se leyó sin autenticar: se devuelve igual (sin servidor NTP) y se avisa de que la
+                # contraseña guardada no vale, para que quien llama no la vuelva a gastar (bloqueo del usuario)
+                log.info("GetNTP rechazó la contraseña en %s: %s", self.label, exc.message)
+                rejected = True
             except DeviceError as exc:
                 log.debug("GetNTP no disponible en %s: %s", self.label, exc)
         return DeviceTime(device_time=self.device_utc, measured_at=self._measured,
-                          round_trip_ms=round(self._rtt, 1), time_mode=self.time_mode, ntp_server=ntp, source="onvif")
+                          round_trip_ms=round(self._rtt, 1), time_mode=self.time_mode, ntp_server=ntp, source="onvif",
+                          credentials_rejected=rejected)
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:

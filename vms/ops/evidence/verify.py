@@ -60,6 +60,14 @@ class _ZipSource:
     def __init__(self, path: Path) -> None:
         self.zf = zipfile.ZipFile(path)
         names = [n for n in self.zf.namelist() if not n.endswith("/")]
+        # Dos entradas con el mismo nombre (o que solo cambian en mayúsculas, que en Windows son el mismo archivo):
+        # zipfile lee la ÚLTIMA y el Explorador o 7-Zip pueden enseñar la primera. Un paquete así no se verifica.
+        seen: set[str] = set()
+        for n in names:
+            key = n.replace("\\", "/").casefold()
+            if key in seen:
+                raise ValueError(f"El paquete tiene archivos repetidos con el mismo nombre ({n}): está manipulado")
+            seen.add(key)
         manifests = [n for n in names if n == MANIFEST or n.endswith("/" + MANIFEST)]
         if len(manifests) != 1:
             raise ValueError("El paquete no tiene exactamente un manifiesto.json")

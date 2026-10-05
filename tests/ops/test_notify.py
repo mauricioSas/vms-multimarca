@@ -22,7 +22,7 @@ from tests.ops.conftest import Harness
 from tests.ops.doubles import SmtpDouble
 from tools.mocks.server import MockHttpServer
 from vms.core.models import NotificationRule, NotificationSettings, Site
-from vms.ops.notify import SIGNATURE_HEADER, Alert, Notifier, in_quiet_hours, sign, verify_signature
+from vms.ops.notify import SIGNATURE_HEADER, WEBHOOK_FAILED, Alert, Notifier, in_quiet_hours, sign, verify_signature
 
 
 class WebhookReceiver:
@@ -49,7 +49,17 @@ class WebhookReceiver:
 
 
 @pytest.fixture
-def receiver() -> Any:
+def receiver(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Receptor en 127.0.0.1 por HTTP: en producción `netguard` lo rechaza (SSRF), así que aquí se permite."""
+    from urllib.parse import urlsplit
+
+    from vms.ops import netguard
+
+    async def resolve_public(url: str) -> None:
+        return None
+
+    monkeypatch.setattr(netguard, "check_url", lambda url: urlsplit(url).hostname or "")
+    monkeypatch.setattr(netguard, "resolve_public", resolve_public)
     r = WebhookReceiver("secreto-del-receptor-0123456789")
     yield r
     r.server.stop()
@@ -97,7 +107,8 @@ async def test_email_and_signed_webhook_end_to_end(api: Harness, receiver: Webho
     # con otro secreto, el receptor lo rechaza y queda en el registro como fallido
     await admin.put("/api/notifications/secrets", json={"webhook_secret": "otro-secreto-distinto-0000"})
     rec = (await admin.post("/api/notifications/test", json={"channel": "webhook"})).json()
-    assert rec["ok"] is False and "401" in rec["error"] and receiver.rejected == 1
+    # el error no dice el código HTTP (ni si el puerto estaba cerrado): no sirve para barrer puertos (SSRF)
+    assert rec["ok"] is False and rec["error"] == WEBHOOK_FAILED and receiver.rejected == 1
     # «Generar secreto» lo enseña una sola vez
     r = (await admin.put("/api/notifications/secrets", json={"generate_webhook_secret": True})).json()
     assert len(r["webhook_secret"]) >= 32 and "webhook_secret" not in (await admin.get("/api/notifications/settings")).json()

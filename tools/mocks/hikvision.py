@@ -91,6 +91,7 @@ class HikvisionMock:
     lock_minutes: int = 30
     clock_offset_s: float = 0.0
     time_mode: str = "NTP"
+    tz_hours: float | None = None   # zona del equipo; None = la del PC (misma tienda)
     ntp_server: str = "pool.ntp.org"
     security: dict[str, bool] = field(default_factory=lambda: {
         "telnetd": False, "ssh": False, "UPnP": True, "EZVIZ": True, "https": False, "sdk": True})
@@ -266,10 +267,14 @@ class HikvisionMock:
 
     async def time(self, request: Request) -> Response:
         now = datetime.now(timezone.utc) + timedelta(seconds=self.clock_offset_s)
-        local = now.astimezone(timezone(timedelta(hours=2)))
+        # zona del equipo: la del PC (misma tienda) salvo que la prueba fije otra con `tz_hours`
+        local = now.astimezone() if self.tz_hours is None else now.astimezone(timezone(timedelta(hours=self.tz_hours)))
+        off = local.utcoffset() or timedelta(0)
+        minutes = int(off.total_seconds() // 60)
+        posix = f"CST{'-' if minutes >= 0 else '+'}{abs(minutes) // 60}:{abs(minutes) % 60:02d}:00"  # POSIX: signo al revés
         body = (f'<?xml version="1.0" encoding="UTF-8"?>\n<Time version="2.0" xmlns="{NS}">\n'
                 f"<timeMode>{self.time_mode}</timeMode>\n<localTime>{local.isoformat(timespec='seconds')}</localTime>\n"
-                "<timeZone>CST-2:00:00</timeZone>\n</Time>\n")
+                f"<timeZone>{posix}</timeZone>\n</Time>\n")
         return Response(body, media_type=XML)
 
     async def ntp_servers(self, request: Request) -> Response:

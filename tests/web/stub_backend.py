@@ -47,6 +47,8 @@ from vms.core.paths import AppPaths
 from vms.core.sources import build_camera_sources
 from vms.web import mount_web
 
+from tests.web.stub_ops_routes import install_ops_routes
+
 log = logging.getLogger("tests.web.stub")
 
 DEFAULT_USERS = {"admin": ("admin-pass-1234", "admin"), "operador": ("operador-pass-1234", "operator")}
@@ -242,6 +244,7 @@ class StubBackend:
         self._routes_live(app)
         self._routes_recordings(app)
         self._routes_misc(app)
+        install_ops_routes(app, self)   # rutas de B6 (operación) que piden las páginas de la v2
         mount_web(app)
         return app
 
@@ -725,9 +728,8 @@ class StubBackend:
             return {"engine": dump(st), "disk": dump(disk), "cameras": cams, "analytics": analytics,
                     "credential_backend": b.creds.backend_name, "config_warning": b.repo.load_warning}
 
-        # v2 · B4 (CONTRATO §15.6): /status carga updates.js, que pide esto. Mismo cuerpo que la ruta real.
-        # Pendiente de aprobación del dueño de este archivo (petición de B4): sin esta ruta, el 404 rompe
-        # tests/web/test_ui.py::test_status_page por el error de consola.
+        # v2 · B4 (CONTRATO §15.6): /status carga updates.js, que pide esto. Mismo cuerpo que la ruta real (sin
+        # ella, el 404 rompe tests/web/test_ui.py::test_status_page por el error de consola).
         @app.get("/api/updates/status")
         async def updates_status(request: Request) -> dict[str, Any]:
             b._session(request, "operator")
