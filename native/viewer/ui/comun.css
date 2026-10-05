@@ -138,3 +138,4 @@ pre.avisos {
   padding: 12px;
 }
 .espacio { margin-top: 12px; }
+.acciones + p { margin-top: 14px; }

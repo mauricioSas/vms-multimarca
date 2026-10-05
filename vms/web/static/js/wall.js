@@ -5,9 +5,14 @@
 // - Vídeo en vivo por WebRTC (WHEP) con el subflujo; la celda ampliada y el layout de 1 usan el principal.
 // - Doble clic (o Intro) amplía una celda; doble clic o Escape vuelve a la rejilla.
 // - Solo se reconstruyen las celdas que cambian: las demás no cortan su vídeo.
+// - Eventos del servidor por UNA conexión compartida entre muros (SharedWorker wall-events.js).
+// - Motor reiniciado (evento SSE «engine», o el estado pasa de caído a en marcha): todas las celdas reconectan
+//   ya, con la espera corta (objetivo: vídeo en ≤ 6 s, PLAN-V2 §5 pendiente 4a).
+// - Versión nueva del servicio (evento «update» o /api/health): el muro se recarga una vez, solo.
+// - Muro oculto más de 60 s (monitor desconectado, ventana minimizada): se para el vídeo hasta que vuelva.
 
-import { ApiError, get, put, subscribeEvents, isId, enc } from "./api.js";
-import { WhepReader } from "./whep.js";
+import { ApiError, get, put, isId, enc } from "./api.js";
+import { WhepReader, noteEngineEvent } from "./whep.js";
 
 const GRIDS = [1, 4, 9, 16];
 const STATE_TEXT = {
@@ -23,6 +28,10 @@ const IDLE_MS = 3000;
 // cualquier recurso que el navegador no haya devuelto en días de funcionamiento continuo.
 const DAILY_RELOAD_HOUR = 4;
 const DAILY_RELOAD_MIN_UPTIME_MS = 20 * 3600 * 1000;
+const STALE_EVENTS_MS = 45000;
+const RESTART_SPREAD_MS = 400;         // reparte las reconexiones de un muro de 16 tras reiniciarse el motor
+const HIDDEN_STOP_MS = 60000;
+const SSE_NAMES = ["config", "status", "engine", "update"];
 
 const monitorMatch = location.pathname.match(/^\/wall\/([1-4])\/?$/);
 const monitor = monitorMatch ? Number(monitorMatch[1]) : 1;
@@ -41,6 +50,12 @@ const cells = new Map();           // índice → Cell
 let reloadTimer = null;
 let loading = false;
 let pendingReload = false;
+let engineRunning = null;          // último estado del motor visto en los eventos «status»
+let serverVersion = null;          // versión del servicio al abrir el muro (/api/health)
+let versionReloadTimer = null;
+let hiddenTimer = null;
+let pausedHidden = false;
+const eventStats = { transport: "", engineRestarts: 0, opens: 0 };
 
 class Cell {
   constructor(index, cameraId) {
@@ -86,7 +101,7 @@ class Cell {
   sync(active) {
     const cam = this.camera;
     const stream = this.wantedStream();
-    const shouldPlay = active && cam && cam.enabled !== false && stream && isId(cam.id);
+    const shouldPlay = active && !pausedHidden && cam && cam.enabled !== false && stream && isId(cam.id);
     if (!shouldPlay) {
       this.stopReader();
       this.refresh();
@@ -264,8 +279,55 @@ function scheduleReload(ms = 300) {
   reloadTimer = setTimeout(load, ms);
 }
 
+/**
+ * El motor se reinició (o volvió tras caerse): las celdas reconectan ya, repartidas en 400 ms. Con
+ * `onlyStalled`, solo las que no están en vivo (un «started» puede llegar con el vídeo ya funcionando).
+ */
+function engineRestarted(reason, onlyStalled = false) {
+  noteEngineEvent();
+  eventStats.engineRestarts++;
+  console.info(`Motor de vídeo ${reason}: reconectando las celdas`);
+  for (const cell of cells.values()) {
+    if (!cell.reader || (onlyStalled && cell.reader.state === "live")) continue;
+    cell.reader.restart(Math.round(Math.random() * RESTART_SPREAD_MS));
+  }
+}
+
+function onEngine(data) {
+  const state = data && data.state;
+  if (state === "restarted") {
+    engineRunning = true;
+    engineRestarted("reiniciado (evento)");
+  } else if (state === "started") {
+    engineRunning = true;
+    engineRestarted("en marcha (evento)", true);
+  } else if (state === "down") {
+    engineRunning = false;
+    noteEngineEvent();   // los reintentos van con la espera corta hasta que vuelva
+  }
+}
+
+function onUpdate(data) {
+  const version = data && typeof data.version === "string" ? data.version : null;
+  if (version) versionChanged(version);
+}
+
+/** Versión nueva del servicio: se recarga el muro una vez (2-8 s al azar, para no hacerlo todos a la vez). */
+function versionChanged(version) {
+  if (!serverVersion || version === serverVersion || versionReloadTimer) return;
+  console.info(`Servicio actualizado de ${serverVersion} a ${version}: se recarga el muro`);
+  versionReloadTimer = setTimeout(() => location.reload(), 2000 + Math.round(Math.random() * 6000));
+}
+
 function onStatus(data) {
   if (!data || !Array.isArray(data.cameras)) return;
+  const running = data.engine && typeof data.engine.running === "boolean" ? data.engine.running : null;
+  if (running !== null) {
+    // sin el evento «engine», el paso de caído a en marcha también reinicia las celdas
+    if (running && engineRunning === false) engineRestarted("de nuevo en marcha (estado)");
+    else if (!running && engineRunning !== false) noteEngineEvent();
+    engineRunning = running;
+  }
   for (const c of data.cameras) {
     const was = online.get(c.camera_id);
     online.set(c.camera_id, !!c.online);
@@ -291,6 +353,99 @@ function showFatal(title, detail) {
 
 function hideFatal() {
   fatalEl.hidden = true;
+}
+
+// ------------------------------------------------------------------ eventos del servidor
+function dispatch(name, raw, handlers) {
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    console.warn("Evento SSE no válido", name, err);
+    return;
+  }
+  handlers[name]?.(data);
+}
+
+/**
+ * Eventos de /api/events. Con SharedWorker, una conexión para todos los muros del navegador; si no se puede,
+ * una EventSource propia (con el mismo vigilante que api.js: 45 s sin nada = se reabre).
+ */
+function subscribeWallEvents(handlers) {
+  if (typeof SharedWorker === "function") {
+    try {
+      const worker = new SharedWorker("/static/js/wall-events.js", { name: "vms-muros" });
+      worker.port.onmessage = (m) => {
+        const msg = m.data || {};
+        if (msg.type === "open") {
+          eventStats.opens++;
+          handlers.onOpen?.();
+        } else if (msg.type === "event") {
+          dispatch(msg.name, msg.data, handlers);
+        }
+      };
+      worker.onerror = (e) => console.warn("Error en el worker de eventos", e);
+      worker.port.start();
+      window.addEventListener("pagehide", () => worker.port.postMessage("bye"));
+      eventStats.transport = "shared-worker";
+      return;
+    } catch (err) {
+      console.warn("Sin SharedWorker; se usa una conexión de eventos propia", err);
+    }
+  }
+  eventStats.transport = "event-source";
+  let es = null;
+  let lastSeen = Date.now();
+  const open = () => {
+    if (es) es.close();
+    es = new EventSource("/api/events", { withCredentials: true });
+    lastSeen = Date.now();
+    es.onopen = () => {
+      lastSeen = Date.now();
+      eventStats.opens++;
+      handlers.onOpen?.();
+    };
+    es.onmessage = () => { lastSeen = Date.now(); };
+    for (const name of SSE_NAMES) {
+      es.addEventListener(name, (ev) => {
+        lastSeen = Date.now();
+        dispatch(name, ev.data, handlers);
+      });
+    }
+  };
+  open();
+  setInterval(() => {
+    if (Date.now() - lastSeen > STALE_EVENTS_MS) {
+      console.warn("Sin eventos del servidor; se reabre la conexión SSE");
+      open();
+    }
+  }, 15000);
+}
+
+// ------------------------------------------------------------------ muro oculto
+function onVisibility() {
+  clearTimeout(hiddenTimer);
+  if (document.visibilityState === "hidden") {
+    hiddenTimer = setTimeout(() => {
+      pausedHidden = true;
+      for (const cell of cells.values()) cell.stopReader();
+    }, HIDDEN_STOP_MS);
+  } else if (pausedHidden) {
+    pausedHidden = false;
+    render();
+  }
+}
+
+async function readServerVersion() {
+  try {
+    const h = await get("/api/health", { auth: false });
+    if (h && typeof h.version === "string") {
+      if (serverVersion === null) serverVersion = h.version;
+      else versionChanged(h.version);
+    }
+  } catch (err) {
+    console.debug("Sin /api/health", err);
+  }
 }
 
 // ------------------------------------------------------------------ HUD y controles
@@ -379,15 +534,22 @@ async function main() {
   wake();
   tickClock();
   setInterval(tickClock, 1000);
+  await readServerVersion();
   await load();
-  subscribeEvents({
+  subscribeWallEvents({
     config: (data) => {
       if (data && (data.scope === "walls" || data.scope === "cameras" || data.scope === "devices")) scheduleReload(300);
     },
     status: onStatus,
-    onOpen: () => scheduleReload(300),   // tras una caída del servidor, vuelve a leer el layout
+    engine: onEngine,
+    update: onUpdate,
+    onOpen: () => {
+      scheduleReload(300);   // tras una caída del servidor, vuelve a leer el layout
+      readServerVersion();   // y comprueba si volvió con otra versión
+    },
   });
   setInterval(() => scheduleReload(0), SAFETY_REFRESH_MS);
+  document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("pagehide", () => {
     for (const cell of cells.values()) cell.stopReader();
   });
@@ -398,10 +560,12 @@ window.__vmsWall = {
   monitor,
   get layout() { return layout; },
   get expanded() { return expanded; },
+  get events() { return { ...eventStats, engineRunning, serverVersion }; },
   cells() {
     return [...cells.values()].map((c) => ({
       index: c.index, cameraId: c.cameraId, stream: c.stream, state: c.el.dataset.state,
-      reader: c.reader ? { attempts: c.reader.stats.attempts, reconnects: c.reader.stats.reconnects } : null,
+      reader: c.reader ? { attempts: c.reader.stats.attempts, reconnects: c.reader.stats.reconnects,
+        restarts: c.reader.stats.restarts, fps: Math.round(c.reader.fps * 10) / 10, error: c.reader.lastError } : null,
     }));
   },
 };
