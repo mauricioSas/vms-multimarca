@@ -1,0 +1,23 @@
+# Configuración del Worker para cuando exista la cuenta de Cloudflare (decisión D5). NO se despliega todavía.
+# Despliegue (PC de publicación, con wrangler instalado aparte): npx wrangler deploy
+# Los identificadores de abajo son marcadores: se rellenan al crear el bucket R2 y el espacio KV.
+name = "vms-updates"
+main = "src/worker.ts"
+compatibility_date = "2026-08-01"
+workers_dev = false
+routes = [{ pattern = "updates.<dominio>/*", zone_name = "<dominio>" }]
+
+[vars]
+REPO_PREFIX = "online"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "vms-updates"
+
+[[kv_namespaces]]
+binding = "SITE_TOKENS"
+id = "<id del espacio KV site_tokens>"
+
+[[analytics_engine_datasets]]
+binding = "DOWNLOADS"
+dataset = "vms_update_downloads"
