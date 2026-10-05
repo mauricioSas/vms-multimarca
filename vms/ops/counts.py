@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from vms.core.errors import ValidationFailed
 
+from .csvsafe import text_cell
+
 Bucket = Literal["hour", "day"]
 MAX_DAYS = {"hour": 62, "day": 400}
 
@@ -112,7 +114,7 @@ def render_csv(rows: list[CountRow], bucket: Bucket) -> bytes:
     w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
     w.writerow(["tienda", "fecha", "hora", "entradas", "salidas", "cola_media", "cola_max"])
     for r in rows:
-        w.writerow([r.site, r.local.strftime("%d/%m/%Y"), r.local.strftime("%H:%M") if bucket == "hour" else "",
+        w.writerow([text_cell(r.site), r.local.strftime("%d/%m/%Y"), r.local.strftime("%H:%M") if bucket == "hour" else "",
                     r.entries, r.exits, _dec(r.queue_avg), "" if r.queue_max is None else r.queue_max])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 

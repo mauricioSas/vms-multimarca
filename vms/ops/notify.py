@@ -54,6 +54,7 @@ GROUP_TITLES: dict[str, tuple[str, str]] = {
     "disk": ("Disco de grabación: {name}", "{n} avisos de disco"),
     "retention_forecast": ("Previsión de grabación: {name}", "{n} avisos de previsión de grabación"),
     "recording_gap": ("Hueco de grabación: {name}", "{n} huecos de grabación"),
+    "recording_gap_cleared": ("Vuelve a grabar: {name}", "{n} cámaras vuelven a grabar"),
     "test": ("Aviso de prueba", "{n} avisos de prueba"),
 }
 
@@ -100,6 +101,11 @@ def in_quiet_hours(rule: NotificationRule, now: datetime, tz_name: str) -> bool:
         return False
     t = now.astimezone(tz).time()
     return (a <= t < b) if a <= b else (t >= a or t < b)
+
+
+# Recuperación → aviso que cierra. Las recuperaciones son «info»: con la gravedad mínima por defecto
+# («warning») no saldrían nunca; por eso una recuperación sale SIEMPRE que su aviso salió por esa regla.
+RECOVERY_OF = {"camera_up": "camera_down", "tamper_cleared": "tamper", "recording_gap_cleared": "recording_gap"}
 
 
 def rule_matches(rule: NotificationRule, kind: str, severity: str) -> bool:
@@ -181,6 +187,7 @@ class Notifier:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._groups: dict[tuple[int, str, str], _Group] = {}
         self._pending: set[asyncio.Task[None]] = set()
+        self._open: set[tuple[int, str, str]] = set()     # (regla, tipo, cámara) de avisos enviados sin cerrar
 
     # ------------------------------------------------------------------ entrada
     async def emit(self, alert: Alert) -> None:
@@ -189,12 +196,23 @@ class Notifier:
         site = self.site()
         if self.publish_notice is not None:
             self.publish_notice({"severity": alert.severity, "kind": alert.kind, "title_es": alert.title_es,
-                                 "count": 1})
+                                 "count": 1, "camera_ids": [alert.camera_id] if alert.camera_id else []})
+        problem = RECOVERY_OF.get(alert.kind)
         for i, rule in enumerate(cfg.rules):
-            if not rule.channels or not rule_matches(rule, alert.kind, alert.severity):
+            if not rule.channels:
                 continue
-            if in_quiet_hours(rule, alert.at, site.timezone) and alert.severity != "critical":
+            recovers_sent = False
+            if problem is not None:
+                okey = (i, problem, alert.camera_id or "")
+                recovers_sent = okey in self._open
+                self._open.discard(okey)
+            if not recovers_sent and not rule_matches(rule, alert.kind, alert.severity):
                 continue
+            if (not recovers_sent and in_quiet_hours(rule, alert.at, site.timezone)
+                    and alert.severity != "critical"):
+                continue
+            if alert.kind in RECOVERY_OF.values():
+                self._open.add((i, alert.kind, alert.camera_id or ""))
             key = (i, alert.kind, alert.severity)
             group = self._groups.get(key)
             if group is not None:
@@ -234,7 +252,8 @@ class Notifier:
         title = group_title(group.kind, group.alerts, site)
         if len(group.alerts) > 1 and self.publish_notice is not None:
             self.publish_notice({"severity": group.severity, "kind": group.kind, "title_es": title,
-                                 "count": len(group.alerts)})
+                                 "count": len(group.alerts),
+                                 "camera_ids": sorted({a.camera_id for a in group.alerts if a.camera_id})})
         for channel in rule.channels:
             await self._send(channel, cfg, site, group.kind, group.severity, title, group.alerts)
 

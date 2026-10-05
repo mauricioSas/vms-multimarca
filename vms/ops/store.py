@@ -5,7 +5,8 @@ SQLite de la biblioteca estándar en modo WAL, con un solo escritor (el backend)
 y eventos de la línea de tiempo. Nunca imágenes ni datos de personas (RGPD, docs/RGPD-EIPD.md §2.5).
 
 Conservación: `health_checks` 90 días, `clock_checks` 400 días, `notifications_log` 90 días y
-`timeline_events` 400 días (`prune`). Los marcadores y las exportaciones se conservan mientras existan.
+`timeline_events` 400 días (`prune`). Los marcadores se conservan mientras existan; las exportaciones (el
+registro y su ZIP) caducan a los `export_retention_days` días (30 por defecto, `OpsService.maintenance`).
 
 Fechas: texto ISO 8601 en UTC con microsegundos (`2026-10-05T10:00:00.000000+00:00`); así el orden de
 texto coincide con el orden temporal y las consultas por intervalo usan el índice.
@@ -165,14 +166,35 @@ class OpsStore:
                                             "metrics": json.loads(r["metrics"]), "reference": r["reference"],
                                             "duration_ms": r["duration_ms"]}) for r in rows]
 
-    def health_min_scores(self, start: datetime, end: datetime) -> dict[str, tuple[int | None, list[str]]]:
-        """Por cámara: puntuación mínima del intervalo y las causas de esa comprobación."""
-        out: dict[str, tuple[int | None, list[str]]] = {}
+    def health_day_scores(self, start: datetime, end: datetime, run: int = 1) \
+            -> dict[str, tuple[int | None, list[str]]]:
+        """Por cámara: la peor puntuación **sostenida** del intervalo y sus causas.
+
+        «Sostenida» = la que se mantuvo al menos `run` comprobaciones seguidas (la histéresis del estado,
+        `settings.health.hysteresis`): para cada ventana de `run` comprobaciones consecutivas se toma la MEJOR
+        puntuación de la ventana y, de todas las ventanas, la peor. Así una comprobación suelta (alguien que
+        pasa pegado a la cámara, un destello) no marca el día como grave, igual que no cambia el estado
+        consolidado ni genera avisos. Con menos de `run` comprobaciones en el día se toma la mejor de ellas.
+        """
+        run = max(1, int(run))
         rows = self._all("SELECT camera_id, score, causes FROM health_checks WHERE at >= ? AND at < ? "
-                         "AND score IS NOT NULL ORDER BY camera_id, score ASC, at ASC", (iso(start), iso(end)))
+                         "AND score IS NOT NULL ORDER BY camera_id, at, id", (iso(start), iso(end)))
+        per_cam: dict[str, list[tuple[int, str]]] = {}
         for r in rows:
-            if r["camera_id"] not in out:
-                out[r["camera_id"]] = (r["score"], json.loads(r["causes"]))
+            per_cam.setdefault(r["camera_id"], []).append((int(r["score"]), r["causes"]))
+        out: dict[str, tuple[int | None, list[str]]] = {}
+        for cid, checks in per_cam.items():
+            if len(checks) < run:
+                best = max(checks, key=lambda c: c[0])
+                out[cid] = (best[0], json.loads(best[1]))
+                continue
+            worst: tuple[int, str] | None = None
+            for i in range(len(checks) - run + 1):
+                window_best = max(checks[i:i + run], key=lambda c: c[0])
+                if worst is None or window_best[0] < worst[0]:
+                    worst = window_best
+            assert worst is not None
+            out[cid] = (worst[0], json.loads(worst[1]))
         return out
 
     # ------------------------------------------------------------------ hora
@@ -245,8 +267,24 @@ class OpsStore:
         r = self._one("SELECT data FROM evidence_exports WHERE export_id = ?", (export_id,))
         return EvidenceExport.model_validate_json(r["data"]) if r else None
 
-    def exports(self, limit: int = 50) -> list[EvidenceExport]:
-        rows = self._all("SELECT data FROM evidence_exports ORDER BY created_at DESC LIMIT ?", (limit,))
+    def exports(self, limit: int = 50, offset: int = 0, created_by: str | None = None) -> list[EvidenceExport]:
+        """Exportaciones de la más reciente a la más antigua (paginadas); `created_by` = solo las de ese usuario."""
+        sql = "SELECT data FROM evidence_exports"
+        params: list[Any] = []
+        if created_by is not None:
+            sql += " WHERE json_extract(data, '$.created_by') = ?"
+            params.append(created_by)
+        sql += " ORDER BY created_at DESC, export_id DESC LIMIT ? OFFSET ?"
+        params += [max(1, limit), max(0, offset)]
+        return [EvidenceExport.model_validate_json(r["data"]) for r in self._all(sql, tuple(params))]
+
+    def exports_in_state(self, *states: str) -> list[EvidenceExport]:
+        rows = self._all("SELECT data FROM evidence_exports")
+        items = [EvidenceExport.model_validate_json(r["data"]) for r in rows]
+        return [e for e in items if e.state in states]
+
+    def exports_created_before(self, cutoff: datetime) -> list[EvidenceExport]:
+        rows = self._all("SELECT data FROM evidence_exports WHERE created_at < ? ORDER BY created_at", (iso(cutoff),))
         return [EvidenceExport.model_validate_json(r["data"]) for r in rows]
 
     def delete_export(self, export_id: str) -> None:

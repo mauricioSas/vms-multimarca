@@ -9,6 +9,8 @@ import "./help.js";
 const root = document.getElementById("evidence-root");
 let user = null;
 let listBox = null;
+let offset = 0;
+const PAGE = 20;
 const progress = new Map();
 
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -21,16 +23,20 @@ const STATE = { queued: ["unknown", "En cola"], running: ["unknown", "Preparando
 async function loadList() {
   if (!listBox) return;
   let items = [];
-  try { items = await get("/api/evidence/exports"); } catch (err) {
+  // se pide uno de más para saber si hay una página siguiente
+  try { items = await get(`/api/evidence/exports?limit=${PAGE + 1}&offset=${offset}`); } catch (err) {
     clear(listBox).append(h("p", { class: "form-error" }, err.message));
     return;
   }
   clear(listBox);
+  if (!items.length && offset > 0) { offset = 0; loadList(); return; }
   if (!items.length) {
     listBox.append(emptyState({ title: "Todavía no has exportado ninguna evidencia",
-      text: "Los paquetes que prepares aparecerán aquí para descargarlos. Se guardan en el PC hasta que un administrador los borre." }));
+      text: "Los paquetes que prepares aparecerán aquí para descargarlos. Se borran solos del PC a los 30 días: descárgalos y entrégalos antes." }));
     return;
   }
+  const more = items.length > PAGE;
+  items = items.slice(0, PAGE);
   listBox.append(h("div", { class: "card table-wrap" }, h("table", { class: "table" },
     h("thead", {}, h("tr", {}, ["Paquete", "Motivo", "Estado", "Tamaño"].map((x) => h("th", { scope: "col" }, x)),
       h("th", { scope: "col" }, h("span", { class: "sr-only" }, "Acciones")))),
@@ -55,6 +61,13 @@ async function loadList() {
         h("td", { class: "mono" }, e.bytes ? fmtBytes(e.bytes) : "—"),
         h("td", {}, actions));
     })))));
+  if (offset > 0 || more) {
+    listBox.append(h("div", { class: "row-actions ops-pager" },
+      h("button", { type: "button", class: "btn btn-sm", disabled: offset === 0,
+        onclick: () => { offset = Math.max(0, offset - PAGE); loadList(); } }, "Más recientes"),
+      h("button", { type: "button", class: "btn btn-sm", disabled: !more,
+        onclick: () => { offset += PAGE; loadList(); } }, "Más antiguos")));
+  }
 }
 
 async function main() {

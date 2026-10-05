@@ -31,7 +31,7 @@ class FrameFeed:
         self.i = 0
         self.served: list[np.ndarray] = []
 
-    async def __call__(self, state: Any, cam: Any) -> np.ndarray:
+    async def __call__(self, state: Any, cam: Any, backoff: Any = None) -> np.ndarray:
         self.i += 1
         img = syn.normal_frame(self.base, self.i) if self.mode == "normal" else syn.alterations(self.base)[self.mode]
         self.served.append(img)

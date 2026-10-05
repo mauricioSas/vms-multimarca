@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..models import EvidenceExport, EvidenceFile, EvidenceManifest
@@ -45,8 +45,10 @@ log = logging.getLogger("vms.ops.evidence.export")
 MAX_EXPORT_SPAN = timedelta(hours=12)
 MP4_CHUNK_S = 3600.0
 COPY_CHUNK = 1024 * 1024
+SPACE_MARGIN = 256 * 1024 * 1024        # acta, visor, manifiesto y holgura del sistema de archivos
 MANIFEST, SIGNATURE, PUBKEY = "manifiesto.json", "manifiesto.sig", "clave-publica.pem"
 
+AuxKind = Literal["key", "viewer", "report", "other"]
 FetchMp4 = Callable[[str, datetime, float], AsyncIterator[bytes]]
 Progress = Callable[[float, str], Awaitable[None] | None]
 
@@ -91,18 +93,6 @@ class ExportContext:
     pc_clock: dict[str, Any] = field(default_factory=dict)
 
 
-def _copy_hash(src: Path, dst: Path) -> tuple[str, int]:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha256()
-    n = 0
-    with open(src, "rb") as fi, open(dst, "wb") as fo:
-        while chunk := fi.read(COPY_CHUNK):
-            h.update(chunk)
-            fo.write(chunk)
-            n += len(chunk)
-    return h.hexdigest(), n
-
-
 def sha256_file(path: Path) -> tuple[str, int]:
     h = hashlib.sha256()
     n = 0
@@ -113,29 +103,84 @@ def sha256_file(path: Path) -> tuple[str, int]:
     return h.hexdigest(), n
 
 
+def _zinfo(name: str, size: int) -> zipfile.ZipInfo:
+    zi = zipfile.ZipInfo(name, date_time=datetime.now().timetuple()[:6])
+    zi.compress_type = zipfile.ZIP_STORED
+    zi.file_size = size            # con el tamaño conocido, zipfile decide si hace falta ZIP64
+    return zi
+
+
+def _copy_into_zip(zf: zipfile.ZipFile, src: Path, name: str) -> tuple[str, int]:
+    """Copia `src` dentro del ZIP calculando su SHA-256 al vuelo (sin copia intermedia en disco)."""
+    h = hashlib.sha256()
+    n = 0
+    with open(src, "rb") as fi, zf.open(_zinfo(name, src.stat().st_size), "w") as fo:
+        while chunk := fi.read(COPY_CHUNK):
+            h.update(chunk)
+            fo.write(chunk)
+            n += len(chunk)
+    return h.hexdigest(), n
+
+
 def _template(name: str) -> str:
-    return resources.files("vms.ops.evidence").joinpath("templates", name).read_text(encoding="utf-8")
+    try:
+        return resources.files("vms.ops.evidence").joinpath("templates", name).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:   # instalación incompleta (p. ej. wheel sin los datos del paquete)
+        raise ValueError(f"Falta la plantilla {name} del paquete de evidencias: reinstala el programa") from exc
+
+
+class NotEnoughSpace(ValueError):
+    """No cabe la exportación en el disco (mensaje para el usuario)."""
 
 
 class EvidenceBuilder:
-    def __init__(self, exports_dir: Path) -> None:
+    def __init__(self, exports_dir: Path, *, disk_free: Callable[[Path], int] | None = None) -> None:
         self.exports_dir = Path(exports_dir)
+        self.disk_free = disk_free or (lambda p: shutil.disk_usage(p).free)
 
     def zip_path(self, export_id: str) -> Path:
         return self.exports_dir / f"{export_id}.zip"
 
+    def part_path(self, export_id: str) -> Path:
+        return self.exports_dir / f"{export_id}.zip.part"
+
+    def scratch_dir(self, export_id: str) -> Path:
+        return self.exports_dir / f".{export_id}.tmp"
+
+    def cleanup_leftovers(self) -> list[str]:
+        """Borra restos de exportaciones interrumpidas (`*.zip.part` y `.*.tmp`). Devuelve lo borrado."""
+        removed: list[str] = []
+        if not self.exports_dir.is_dir():
+            return removed
+        for p in self.exports_dir.iterdir():
+            try:
+                if p.is_dir() and p.name.startswith(".") and p.name.endswith(".tmp"):
+                    shutil.rmtree(p)
+                    removed.append(p.name)
+                elif p.is_file() and p.name.endswith(".zip.part"):
+                    p.unlink()
+                    removed.append(p.name)
+            except OSError as exc:
+                log.warning("No se pudo borrar el resto de exportación %s: %s", p.name, exc)
+        return removed
+
+    def check_space(self, needed: int) -> None:
+        self.exports_dir.mkdir(parents=True, exist_ok=True)
+        free = self.disk_free(self.exports_dir)
+        if free < needed:
+            raise NotEnoughSpace(
+                f"No hay espacio libre suficiente para la exportación: hacen falta unos {_gb(needed)} y quedan "
+                f"{_gb(free)}. Acorta el intervalo, quita cámaras o borra exportaciones antiguas.")
+
     async def build(self, exp: EvidenceExport, ctx: ExportContext, progress: Progress | None = None) -> tuple[Path, str, int]:
-        """Crea `<exports>/<export_id>.zip`. Devuelve (ruta, SHA-256 del manifiesto, número de archivos)."""
+        """Crea `<exports>/<export_id>.zip` escribiendo directamente en el ZIP (sin copia intermedia de los
+        segmentos). Devuelve (ruta, SHA-256 del manifiesto, número de archivos)."""
         req = exp.request
         start, end = _utc(req.start), _utc(req.end)
         if end <= start:
             raise ValueError("El final debe ser posterior al inicio")
         if end - start > MAX_EXPORT_SPAN:
             raise ValueError("Una exportación no puede pasar de 12 horas; divídela en varias")
-        staging = self.exports_dir / f".{exp.export_id}.tmp"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
 
         async def report(p: float, msg: str) -> None:
             if progress is not None:
@@ -143,88 +188,107 @@ class EvidenceBuilder:
                 if asyncio.iscoroutine(r):
                     await r
 
+        plan = {cid: segments_in_range(ctx.recordings_dir, ctx.protected_dir, cid, start, end, ctx.segment_seconds)
+                for cid in req.camera_ids}
+        if not any(plan.values()):
+            raise ValueError("No hay grabación de esas cámaras en ese intervalo")
+        total = sum(s.size for segs in plan.values() for s in segs) or 1
+        with_mp4 = req.include_mp4 and ctx.fetch_mp4 is not None
+        # Los segmentos van una vez al ZIP; el MP4 unido ocupa más o menos lo mismo otra vez (y un trozo de
+        # hasta 1 h pasa por un temporal). Margen fijo para el acta, el visor y el sistema de archivos.
+        self.check_space(total * (2 if with_mp4 else 1) + SPACE_MARGIN)
+        part = self.part_path(exp.export_id)
+        scratch = self.scratch_dir(exp.export_id)
+        prefix = f"{exp.export_id}/"
         try:
             files: list[EvidenceFile] = []
             notes: list[str] = []
-            plan = {cid: segments_in_range(ctx.recordings_dir, ctx.protected_dir, cid, start, end, ctx.segment_seconds)
-                    for cid in req.camera_ids}
-            if not any(plan.values()):
-                raise ValueError("No hay grabación de esas cámaras en ese intervalo")
-            total = sum(s.size for segs in plan.values() for s in segs) or 1
-            done = 0
-            for cid, segs in plan.items():
-                if not segs:
-                    notes.append(f"La cámara {ctx.cameras.get(cid, CameraInfo(cid, cid)).name} no tiene grabación "
-                                 "en ese intervalo.")
-                for s in segs:
-                    rel = f"video/{cid}/segments/{s.name}"
-                    digest, size = await asyncio.to_thread(_copy_hash, s.path, staging / rel)
-                    files.append(EvidenceFile(path=rel, sha256=digest, bytes=size, camera_id=cid, kind="segment"))
-                    done += s.size
-                    await report(0.75 * done / total, f"Copiando segmentos originales ({len(files)})")
-            if req.include_mp4 and ctx.fetch_mp4 is not None:
+            with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+                done = 0
                 for cid, segs in plan.items():
                     if not segs:
-                        continue
-                    info = ctx.cameras.get(cid, CameraInfo(cid, cid))
-                    files += await self._mp4(ctx, cid, info, start, end, staging, notes)
-                    await report(0.85, f"MP4 unido de {info.name}")
-            elif req.include_mp4:
-                notes.append("No se generó el MP4 unido: el servidor de reproducción no estaba disponible. Los "
-                             "segmentos originales están completos.")
-            manifest_sha, count = await asyncio.to_thread(self._finish, exp, ctx, staging, files, notes, start, end)
-            await report(0.97, "Comprimiendo el paquete")
-            final = await asyncio.to_thread(self._zip, exp.export_id, staging)
+                        notes.append(f"La cámara {ctx.cameras.get(cid, CameraInfo(cid, cid)).name} no tiene grabación "
+                                     "en ese intervalo.")
+                    for s in segs:
+                        rel = f"video/{cid}/segments/{s.name}"
+                        digest, size = await asyncio.to_thread(_copy_into_zip, zf, s.path, prefix + rel)
+                        files.append(EvidenceFile(path=rel, sha256=digest, bytes=size, camera_id=cid, kind="segment"))
+                        done += s.size
+                        await report(0.75 * done / total, f"Copiando segmentos originales ({len(files)})")
+                if with_mp4:
+                    for cid, segs in plan.items():
+                        if not segs:
+                            continue
+                        info = ctx.cameras.get(cid, CameraInfo(cid, cid))
+                        files += await self._mp4(ctx, cid, info, start, end, zf, prefix, scratch, notes)
+                        await report(0.85, f"MP4 unido de {info.name}")
+                elif req.include_mp4:
+                    notes.append("No se generó el MP4 unido: el servidor de reproducción no estaba disponible. Los "
+                                 "segmentos originales están completos.")
+                await report(0.95, "Firmando el manifiesto")
+                manifest_sha, count = await asyncio.to_thread(self._finish, exp, ctx, zf, prefix, files, notes,
+                                                              start, end)
+            final = self.zip_path(exp.export_id)
+            os.replace(part, final)
             await report(1.0, "Listo")
             return final, manifest_sha, count
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(scratch, ignore_errors=True)
 
     async def _mp4(self, ctx: ExportContext, cid: str, info: CameraInfo, start: datetime, end: datetime,
-                   staging: Path, notes: list[str]) -> list[EvidenceFile]:
+                   zf: zipfile.ZipFile, prefix: str, scratch: Path, notes: list[str]) -> list[EvidenceFile]:
+        """MP4 unido por trozos de 1 h: cada trozo se descarga a un temporal (si falla a medias, no queda nada
+        a medio escribir en el ZIP) y se mete en el ZIP; el temporal se borra en el acto."""
         assert ctx.fetch_mp4 is not None
         out: list[EvidenceFile] = []
         tz = _tz(ctx.site.get("timezone", "UTC"))
         t = start
+        scratch.mkdir(parents=True, exist_ok=True)
         while t < end:
             dur = min(MP4_CHUNK_S, (end - t).total_seconds())
             rel = f"video/{cid}/{ascii_name(info.name)}_{t.astimezone(tz).strftime('%Y%m%d-%H%M%S')}.mp4"
-            dst = staging / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            h = hashlib.sha256()
+            tmp = scratch / "chunk.mp4"
             n = 0
             try:
-                with open(dst, "wb") as f:
+                with open(tmp, "wb") as f:
                     async for chunk in ctx.fetch_mp4(cid, t, dur):
-                        h.update(chunk)
                         f.write(chunk)
                         n += len(chunk)
             except Exception as exc:  # noqa: BLE001 - el MP4 es una comodidad; los segmentos son la evidencia
-                dst.unlink(missing_ok=True)
                 log.warning("No se pudo unir el MP4 de %s desde %s: %s", cid, t.isoformat(), exc)
                 notes.append(f"No se pudo generar el MP4 unido de {info.name} desde "
                              f"{t.astimezone(tz).strftime('%H:%M:%S')}: usa los segmentos originales.")
             else:
                 if n:
-                    out.append(EvidenceFile(path=rel, sha256=h.hexdigest(), bytes=n, camera_id=cid, kind="mp4"))
-                else:
-                    dst.unlink(missing_ok=True)
+                    digest, size = await asyncio.to_thread(_copy_into_zip, zf, tmp, prefix + rel)
+                    out.append(EvidenceFile(path=rel, sha256=digest, bytes=size, camera_id=cid, kind="mp4"))
+            finally:
+                tmp.unlink(missing_ok=True)
             t += timedelta(seconds=dur)
         return out
 
-    def _finish(self, exp: EvidenceExport, ctx: ExportContext, staging: Path, files: list[EvidenceFile],
-                notes: list[str], start: datetime, end: datetime) -> tuple[str, int]:
+    def _finish(self, exp: EvidenceExport, ctx: ExportContext, zf: zipfile.ZipFile, prefix: str,
+                files: list[EvidenceFile], notes: list[str], start: datetime, end: datetime) -> tuple[str, int]:
         req = exp.request
         tz = _tz(ctx.site.get("timezone", "UTC"))
         cams = [ctx.cameras.get(cid, CameraInfo(cid, cid)) for cid in req.camera_ids]
+
+        def put(rel: str, data: bytes) -> None:
+            zf.writestr(_zinfo(prefix + rel, len(data)), data)
+
         # 1) archivos auxiliares (se listan en el manifiesto con su hash)
-        (staging / PUBKEY).write_text(ctx.key.public_pem(), encoding="utf-8")
-        (staging / "visor.html").write_text(_viewer_html(exp, ctx), encoding="utf-8")
-        (staging / "acta.html").write_text(_acta_html(exp, ctx, cams, files, start, end, tz), encoding="utf-8")
-        (staging / "LEEME.txt").write_text(_leeme(exp), encoding="utf-8")
-        for rel, kind in ((PUBKEY, "key"), ("visor.html", "viewer"), ("acta.html", "report"), ("LEEME.txt", "other")):
-            digest, size = sha256_file(staging / rel)
-            files.append(EvidenceFile(path=rel, sha256=digest, bytes=size, kind=kind))
+        aux: tuple[tuple[str, AuxKind, str], ...] = (
+            (PUBKEY, "key", ctx.key.public_pem()), ("visor.html", "viewer", _viewer_html(exp, ctx)),
+               ("acta.html", "report", _acta_html(exp, ctx, cams, files, start, end, tz)),
+               ("LEEME.txt", "other", _leeme(exp)))
+        for rel, kind, text in aux:
+            data = text.encode("utf-8")
+            put(rel, data)
+            files.append(EvidenceFile(path=rel, sha256=hashlib.sha256(data).hexdigest(), bytes=len(data),
+                                      kind=kind))
         # 2) manifiesto firmado
         manifest = EvidenceManifest(
             product_version=ctx.product_version, export_id=exp.export_id, created_at=exp.created_at,
@@ -237,20 +301,13 @@ class EvidenceBuilder:
             signing_key={"algorithm": "ed25519", "public_key": ctx.key.public_b64, "key_id": ctx.key.key_id},
             pc_clock=ctx.pc_clock, notes_es=notes)
         data = json.dumps(manifest.model_dump(mode="json", by_alias=True), ensure_ascii=False, indent=2).encode("utf-8")
-        (staging / MANIFEST).write_bytes(data)
-        (staging / SIGNATURE).write_text(base64.b64encode(ctx.key.sign(data)).decode("ascii") + "\n", encoding="ascii")
+        put(MANIFEST, data)
+        put(SIGNATURE, (base64.b64encode(ctx.key.sign(data)).decode("ascii") + "\n").encode("ascii"))
         return hashlib.sha256(data).hexdigest(), len(files) + 2
 
-    def _zip(self, export_id: str, staging: Path) -> Path:
-        self.exports_dir.mkdir(parents=True, exist_ok=True)
-        final = self.zip_path(export_id)
-        tmp = final.with_suffix(".zip.part")
-        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
-            for path in sorted(p for p in staging.rglob("*") if p.is_file()):
-                rel = path.relative_to(staging).as_posix()
-                zf.write(path, f"{export_id}/{rel}")
-        os.replace(tmp, final)
-        return final
+
+def _gb(n: int) -> str:
+    return f"{n / 1e9:.1f} GB".replace(".", ",")
 
 
 def _utc(dt: datetime) -> datetime:
@@ -324,8 +381,10 @@ réstalo a la hora sobreimpresa en la imagen si no coincide.</p>
 <p><span class="mono">manifiesto.json</span> lista el SHA-256 y el tamaño de cada archivo del paquete y está firmado
 con Ed25519 (<span class="mono">manifiesto.sig</span>, clave en <span class="mono">clave-publica.pem</span>). El
 archivo <span class="mono">visor.html</span> recalcula las huellas en el navegador sin conexión; la comprobación
-completa se hace con <span class="mono">python -m vms.ops.evidence verify &lt;paquete&gt;</span>. Si un solo byte
-cambia, la huella deja de coincidir.</p>
+completa se hace con <span class="mono">python -m vms.ops.evidence verify &lt;paquete&gt; --key-id &lt;key_id&gt;</span>.
+Si un solo byte cambia, la huella deja de coincidir.</p>
+<p><b>La firma solo prueba el origen si la clave es la de la tienda:</b> el key_id del apartado 1 de esta acta
+(impresa y firmada al entregar) tiene que coincidir con el que muestre la verificación.</p>
 <h2>5. Entrega y recepción</h2>
 <div class="sign">
 <div class="box"><b>Entrega</b><br>Nombre y apellidos:<br><br>DNI / cargo:<br><br>Fecha y hora:<br><br>Firma:</div>
@@ -355,11 +414,17 @@ Contenido
 
 Cómo comprobar la integridad
 ----------------------------
-1. Sin instalar nada: abre visor.html y elige la carpeta. Si todo coincide verás «Todo coincide».
+IMPORTANTE: la clave pública viaja dentro del paquete. Una firma válida solo demuestra que el paquete
+viene de la tienda si su clave (key_id) es la de la tienda: pide el key_id a la central (ficha de la
+tienda) o cópialo del acta original firmada en papel, y compáralo.
+
+1. Sin instalar nada: abre visor.html, pega el key_id de la tienda y elige la carpeta. Si todo
+   coincide verás «Todo coincide». Sin el key_id, el visor avisa de que la clave no está comprobada.
    Si un archivo se ha cambiado, el visor lo marca en rojo.
-2. Comprobación completa (huellas + firma), en un equipo con el programa:
-       python -m vms.ops.evidence verify {exp.export_id}.zip
-   Sale con el código 0 si todo cuadra y con 1 si algo no coincide.
+2. Comprobación completa (huellas + firma + clave), en un equipo con el programa:
+       python -m vms.ops.evidence verify {exp.export_id}.zip --key-id <key_id de la tienda>
+   Sale con 0 si todo cuadra, 1 si algo no coincide y 3 si falta --key-id (paquete coherente pero
+   clave sin comprobar).
 3. A mano: calcula el SHA-256 de cada archivo (en Windows: certutil -hashfile <archivo> SHA256) y
    compáralo con manifiesto.json.
 

@@ -5,12 +5,16 @@ Dueño: B6.
 | Método y ruta | Rol |
 |---|---|
 | `GET /api/bookmarks?camera_id=&from=&to=` | O (permiso `playback` sobre la cámara) |
-| `POST /api/bookmarks` | O con permiso `bookmark`; `protect` exige A o permiso `export` |
+| `POST /api/bookmarks` | O con permiso `bookmark`; `protect` exige A o permiso `export` (operador: ≤ 90 días y ≤ 48 h protegidas por cámara) |
 | `PATCH /api/bookmarks/{id}` · `DELETE /api/bookmarks/{id}` | A (se audita) |
 | `POST /api/evidence/exports` (motivo obligatorio) → 202 | O con permiso `export` en cada cámara |
-| `GET /api/evidence/exports` · `GET /api/evidence/exports/{id}` | O (los suyos) o A (todos) |
-| `GET /api/evidence/exports/{id}/download` (ZIP en streaming) | quien la creó o A |
+| `GET /api/evidence/exports?limit=&offset=` · `GET /api/evidence/exports/{id}` | O (los suyos) o A (todos) |
+| `GET /api/evidence/exports/{id}/download` (ZIP en streaming) | quien la creó (con permiso `export` vigente en sus cámaras) o A |
 | `DELETE /api/evidence/exports/{id}` | A |
+| `GET /api/evidence/settings` · `PUT /api/evidence/settings` (`export_retention_days` 1-365) | A |
+
+Los paquetes caducan solos a los `export_retention_days` días (30 por defecto): el mantenimiento horario
+borra el ZIP y su registro y lo anota en audit.log (`evidence_export_expired`).
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from starlette.responses import FileResponse, Response
 
 from vms.api.events import publish_bookmark
@@ -74,7 +79,7 @@ async def create_bookmark(body: BookmarkCreate, request: Request, p: Principal =
         raise NotFoundError("La cámara no existe")
     if body.protect and p.role != "admin" and not camera_allowed(state, p, body.camera_id, "export"):
         raise ForbiddenError("Proteger un tramo exige permiso de exportación en esa cámara")
-    bm = await asyncio.to_thread(ops.bookmarks.create, body, p.username)
+    bm = await asyncio.to_thread(lambda: ops.bookmarks.create(body, p.username, is_admin=p.role == "admin"))
     audit("bookmark_create", user=p.username, ip=client_ip(request), bookmark_id=bm.id, camera_id=bm.camera_id,
           start=bm.start.isoformat(), end=bm.end.isoformat() if bm.end else None, protected=bm.protected,
           reason=bm.protect_reason or None, case_ref=bm.case_ref or None,
@@ -138,28 +143,42 @@ async def create_export(body: EvidenceExportRequest, request: Request, p: Princi
 
 
 @router.get("/evidence/exports")
-async def list_exports(p: Principal = Depends(require_operator), ops: "OpsService" = Depends(get_ops)) -> Response:
-    items = await asyncio.to_thread(ops.store.exports)
-    return json_response([e for e in items if p.role == "admin" or e.created_by == p.username])
+async def list_exports(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0,
+                       p: Principal = Depends(require_operator), state: AppState = Depends(get_state),
+                       ops: "OpsService" = Depends(get_ops)) -> Response:
+    """Paginado (de la más reciente a la más antigua). Pide `limit + 1` para saber si hay más."""
+    who = None if p.role == "admin" else p.username
+    items = await asyncio.to_thread(ops.store.exports, limit, offset, who)
+    return json_response([e for e in items if _export_allowed(state, p, e)])
 
 
-def _visible_export(ops: "OpsService", export_id: str, p: Principal) -> EvidenceExport:
+def _export_allowed(state: AppState, p: Principal, exp: EvidenceExport) -> bool:
+    """Un operador solo ve y descarga SUS exportaciones y solo mientras conserve el permiso `export` en todas sus
+    cámaras: quitarle el permiso o una cámara del ámbito vale en el acto también para lo ya exportado."""
+    if p.role == "admin":
+        return True
+    if exp.created_by != p.username:
+        return False
+    return all(camera_allowed(state, p, cid, "export") for cid in exp.request.camera_ids)
+
+
+def _visible_export(state: AppState, ops: "OpsService", export_id: str, p: Principal) -> EvidenceExport:
     exp = ops.store.get_export(export_id)
-    if exp is None or (p.role != "admin" and exp.created_by != p.username):
+    if exp is None or not _export_allowed(state, p, exp):
         raise NotFoundError("La exportación no existe")
     return exp
 
 
 @router.get("/evidence/exports/{export_id}")
-async def get_export(export_id: str, p: Principal = Depends(require_operator),
+async def get_export(export_id: str, p: Principal = Depends(require_operator), state: AppState = Depends(get_state),
                      ops: "OpsService" = Depends(get_ops)) -> Response:
-    return json_response(_visible_export(ops, export_id, p))
+    return json_response(_visible_export(state, ops, export_id, p))
 
 
 @router.get("/evidence/exports/{export_id}/download")
 async def download_export(export_id: str, request: Request, p: Principal = Depends(require_operator),
-                          ops: "OpsService" = Depends(get_ops)) -> Response:
-    exp = _visible_export(ops, export_id, p)
+                          state: AppState = Depends(get_state), ops: "OpsService" = Depends(get_ops)) -> Response:
+    exp = _visible_export(state, ops, export_id, p)
     path = ops.builder.zip_path(exp.export_id)
     if exp.state != "done" or not path.is_file():
         raise NotFoundError("El paquete todavía no está listo o se borró")
@@ -171,8 +190,28 @@ async def download_export(export_id: str, request: Request, p: Principal = Depen
 
 @router.delete("/evidence/exports/{export_id}")
 async def delete_export(export_id: str, request: Request, p: Principal = Depends(require_admin),
-                        ops: "OpsService" = Depends(get_ops)) -> Response:
-    exp = _visible_export(ops, export_id, p)
+                        state: AppState = Depends(get_state), ops: "OpsService" = Depends(get_ops)) -> Response:
+    exp = _visible_export(state, ops, export_id, p)
     await asyncio.to_thread(ops.delete_export, exp.export_id)
     audit("evidence_export_delete", user=p.username, ip=client_ip(request), export_id=exp.export_id)
     return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------- ajustes de evidencias
+class EvidenceSettings(BaseModel):
+    export_retention_days: int = Field(ge=1, le=365, description="Días que se guardan los paquetes exportados")
+
+
+@router.get("/evidence/settings")
+async def get_evidence_settings(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
+    return json_response({"export_retention_days": ops.export_retention_days()})
+
+
+@router.put("/evidence/settings")
+async def put_evidence_settings(body: EvidenceSettings, request: Request, p: Principal = Depends(require_admin),
+                                ops: "OpsService" = Depends(get_ops)) -> Response:
+    before = ops.export_retention_days()
+    ops.set_export_retention_days(body.export_retention_days)
+    audit("evidence_settings", user=p.username, ip=client_ip(request),
+          export_retention_days=body.export_retention_days, before=before)
+    return json_response({"export_retention_days": body.export_retention_days})

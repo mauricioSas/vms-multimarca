@@ -8,8 +8,12 @@ así no se toca `vms/api/app.py`) y queda en `app.state.ops`. Tareas:
 - **hora**: cada hora, desfase de cada equipo (capacidad `time_read`) y del PC;
 - **vigilancia**: cada 30 s, cámaras sin vídeo (avisos agrupados) y, cada 10 min, el resumen del informe
   de salud para el latido (`ops/health-summary.json`) y la previsión de grabación;
-- **mantenimiento**: cada hora, caducidad de tramos protegidos, limpieza de la base (90/400 días) y borrado
-  de las referencias de cámaras que ya no existen (RGPD).
+- **mantenimiento**: cada hora, caducidad de tramos protegidos (y reintento de borrar copias que no se
+  pudieron borrar), caducidad de los paquetes exportados (`export_retention_days`, 30 por defecto), limpieza
+  de la base (90/400 días) y borrado de las referencias de cámaras que ya no existen (RGPD).
+
+Al arrancar: crea la clave de firma de evidencias (así el latido lleva `evidence_key` desde el primer día) y
+da por fallidas las exportaciones que quedaron a medias (el proceso se cortó) borrando sus restos.
 """
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ from .health import imaging
 from .health.forecast import forecast as compute_forecast
 from .health.forecast import mbps_to_bytes_per_hour
 from .health.references import ReferenceStore
-from .health.snapshot import grab
+from .health.snapshot import AuthBackoff, grab
 from .health.tracker import HealthTracker, Transition
 from .host import EVENT_BOOKMARK, EVENT_EVIDENCE, EVENT_HEALTH, EVENT_NOTICE, OpsHost
 from .models import (CameraHealth, ClockCheck, HealthCause, HealthMetrics, DiagnosisResult, Severity, EvidenceExport,
@@ -59,6 +63,12 @@ MONITOR_PERIOD_S = 30.0
 SUMMARY_PERIOD_S = 600.0
 CLOCK_PERIOD_S = 3600.0
 MAINTENANCE_PERIOD_S = 3600.0
+EXPORT_RETENTION_DEFAULT_DAYS = 30
+EXPORT_RETENTION_KEY = "export_retention_days"
+PC_SNTP_KEY = "pc_sntp_enabled"
+RECORDING_GAP_ALERT_MIN = 5.0         # una cámara con vídeo que lleva 5 min sin grabar = aviso
+DISK_LOW_FREE_BYTES = 2 * 10**9       # menos de 2 GB libres: la grabación está a punto de pararse
+RECOVERY_KINDS = {"camera_down": "camera_up", "tamper": "tamper_cleared", "recording_gap": "recording_gap_cleared"}
 
 
 def _utc(dt: datetime) -> datetime:
@@ -100,13 +110,21 @@ class OpsService:
         self._down: dict[str, int] = {}
         self._down_alerted: set[str] = set()
         self._last_forecast_alert: date | None = None
+        self._disk_alerted: dict[str, date] = {}
+        self._gap_alerted: set[str] = set()
         self._tasks: list[asyncio.Task[None]] = []
         self._background: set[asyncio.Task[Any]] = set()
         self._key: EvidenceKey | None = None
         self._check_locks: dict[str, asyncio.Lock] = {}
+        self.auth_backoff = AuthBackoff()
 
     # ================================================================== ciclo de vida
     async def start(self) -> None:
+        try:
+            await asyncio.to_thread(self.key)        # el latido lleva evidence_key desde el primer día
+        except Exception:  # noqa: BLE001 - sin clave no se exporta, pero el resto de B6 funciona
+            log.exception("No se pudo preparar la clave de firma de evidencias")
+        await asyncio.to_thread(self.recover_exports)
         loop = asyncio.get_running_loop()
         for name, coro in (("ops-health", self._health_loop()), ("ops-clock", self._clock_loop()),
                            ("ops-monitor", self._monitor_loop()), ("ops-maintenance", self._maintenance_loop())):
@@ -142,8 +160,10 @@ class OpsService:
         return token.get_secret_value(), cfg.telegram_chat_id
 
     def _notice(self, data: dict[str, Any]) -> None:
+        # `camera_ids` (aditivo a NoticeEvent, petición CONTRATO §12): para que el SSE filtre por ámbito
         self.state.bus.publish(EVENT_NOTICE, {"severity": data["severity"], "kind": data["kind"],
-                                        "title_es": data["title_es"], "count": int(data.get("count", 1))})
+                                              "title_es": data["title_es"], "count": int(data.get("count", 1)),
+                                              "camera_ids": [str(c) for c in data.get("camera_ids") or []]})
 
     # ================================================================== salud de imagen
     def _camera(self, camera_id: str) -> Camera:
@@ -183,7 +203,7 @@ class OpsService:
         lock = self._check_locks.setdefault(camera_id, asyncio.Lock())
         async with lock:
             if frame is None:
-                frame = await grab(self.state, cam)
+                frame = await grab(self.state, cam, self.auth_backoff)
             masks = [list(p) for p in cam.health.masks]
             if frame is None:
                 check = HealthCheck(camera_id=camera_id, status="unknown", causes=[HealthCause.NO_SNAPSHOT])
@@ -277,7 +297,7 @@ class OpsService:
         frames: list[imaging.Image] = []
         try:
             for i in range(self.reference_frames):
-                img = await grab(self.state, cam)
+                img = await grab(self.state, cam, self.auth_backoff)
                 if img is not None:
                     frames.append(imaging.to_work(img))
                 job["frames"] = len(frames)
@@ -314,7 +334,7 @@ class OpsService:
             log.debug("Primera comprobación tras fijar la referencia fallida", exc_info=True)
 
     async def current_jpeg(self, camera_id: str) -> bytes:
-        img = await grab(self.state, self._camera(camera_id))
+        img = await grab(self.state, self._camera(camera_id), self.auth_backoff)
         if img is None:
             raise VmsError("No se pudo obtener una imagen de la cámara", code="device_error", status=502)
         return imaging.encode_jpeg(imaging.to_work(img), 85)
@@ -323,7 +343,8 @@ class OpsService:
     async def clock_check_all(self) -> tuple[ClockCheck, list[ClockCheck]]:
         cfg = self.state.config()
         hs = cfg.settings.health
-        pc = await asyncio.to_thread(clockmod.pc_check, hs.clock_warn_s, hs.clock_critical_s)
+        pc = await asyncio.to_thread(lambda: clockmod.pc_check(hs.clock_warn_s, hs.clock_critical_s,
+                                                               sntp=self.pc_sntp_enabled()))
         await asyncio.to_thread(self.store.add_clock_check, pc)
         out: list[ClockCheck] = []
         for dev in cfg.devices:
@@ -384,6 +405,10 @@ class OpsService:
                                 extra_bytes_per_hour=add_cameras * mbps_to_bytes_per_hour(bitrate_mbps))
 
     async def report(self, day: date | None = None) -> HealthReport:
+        return (await self._report(day))[0]
+
+    async def _report(self, day: date | None = None) \
+            -> tuple[HealthReport, tuple[datetime, datetime, list[CameraInput]]]:
         cfg = self.state.config()
         site = cfg.settings.site
         tz = site_tz(site.timezone)
@@ -392,7 +417,7 @@ class OpsService:
         start, end = day_bounds(day, site.timezone)
         overview = await self.state.overview()
         online = {c["camera_id"]: c["online"] for c in overview["cameras"]}
-        scores = await asyncio.to_thread(self.store.health_min_scores, start, end)
+        scores = await asyncio.to_thread(self.store.health_day_scores, start, end, cfg.settings.health.hysteresis)
         clocks = self.store.latest_clock_checks()
         fc = await asyncio.to_thread(self.forecast)
         days_on_disk = {c.camera_id: c.days_on_disk for c in fc.cameras}
@@ -418,12 +443,62 @@ class OpsService:
         disk.update(read_smart(self.ops_dir))
         oldest = [o for _, o in protected.values() if o is not None]
         oldest_days = (now - min(oldest)).total_seconds() / 86400 if oldest else None
-        return build(site.id, day, site.timezone, inputs, now=now, forecast=fc, disk=disk,
-                     pc_clock=clocks.get(None), protected_oldest_days=oldest_days)
+        report = build(site.id, day, site.timezone, inputs, now=now, forecast=fc, disk=disk,
+                       pc_clock=clocks.get(None), protected_oldest_days=oldest_days)
+        return report, (start, min(end, now), inputs)
 
     async def refresh_summary(self) -> dict[str, Any]:
-        report = await self.report()
-        return await asyncio.to_thread(write_summary, self.ops_dir, report)
+        report, inputs = await self._report()
+        data = await asyncio.to_thread(write_summary, self.ops_dir, report)
+        await self._recording_gap_alerts(*inputs)
+        await self._disk_alerts(report.disk)
+        return data
+
+    async def _recording_gap_alerts(self, start: datetime, upto: datetime, cams: list[CameraInput]) -> None:
+        """Aviso `recording_gap` si una cámara CON vídeo lleva `RECORDING_GAP_ALERT_MIN` sin grabar (hueco abierto
+        al final del día en curso) y `recording_gap_cleared` cuando vuelve a grabar. Una cámara sin vídeo ya
+        avisa como `camera_down`."""
+        for c in cams:
+            if not c.record or c.spans is None:
+                continue
+            open_gap = None
+            gs = gaps(c.spans, start, upto)
+            if gs and gs[-1][1] >= upto and (upto - gs[-1][0]).total_seconds() >= RECORDING_GAP_ALERT_MIN * 60:
+                open_gap = gs[-1]
+            if open_gap is not None and c.online_now and c.camera_id not in self._gap_alerted:
+                self._gap_alerted.add(c.camera_id)
+                since = open_gap[0].astimezone(site_tz(self.state.config().settings.site.timezone))
+                await self.notifier.emit(Alert(kind="recording_gap", severity="warning",
+                                               title_es=f"No graba desde las {since.strftime('%H:%M')}: {c.name}",
+                                               camera_id=c.camera_id, camera_name=c.name,
+                                               details={"since": open_gap[0].isoformat()}))
+            elif open_gap is None and c.camera_id in self._gap_alerted:
+                self._gap_alerted.discard(c.camera_id)
+                await self.notifier.emit(Alert(kind="recording_gap_cleared", severity="info",
+                                               title_es=f"Vuelve a grabar: {c.name}", camera_id=c.camera_id,
+                                               camera_name=c.name))
+
+    async def _disk_alerts(self, disk: dict[str, float]) -> None:
+        """Avisos `disk` (como mucho uno al día por motivo): SMART con fallos, casi sin espacio o disco por encima
+        del límite de la retención (se borran grabaciones antes de cumplir los días)."""
+        today = datetime.now(timezone.utc).date()
+        guard = self.state.config().settings.retention.disk_guard_percent
+        checks: list[tuple[str, Severity, str]] = []
+        if disk.get("smart_ok") == 0:
+            checks.append(("smart", "critical", "El disco de grabación avisa de fallos (SMART): cámbialo pronto"))
+        free_gb = disk.get("free_gb")
+        if free_gb is not None and free_gb * 1e9 < DISK_LOW_FREE_BYTES:
+            checks.append(("free", "critical", f"Quedan {free_gb:.1f} GB libres en el disco de grabación: "
+                                               "la grabación puede pararse".replace(".", ",", 1)))
+        percent = disk.get("percent")
+        if percent is not None and guard and percent >= guard:
+            checks.append(("guard", "warning", f"Disco de grabación al {percent:.0f} %: se borran grabaciones "
+                                               "antiguas antes de cumplir los días de retención"))
+        for reason, sev, title in checks:
+            if self._disk_alerted.get(reason) == today:
+                continue
+            self._disk_alerted[reason] = today
+            await self.notifier.emit(Alert(kind="disk", severity=sev, title_es=title, details={"reason": reason}))
 
     async def _monitor_loop(self) -> None:
         last_summary = 0.0
@@ -488,6 +563,9 @@ class OpsService:
         for bm in released:
             audit("evidence_protect_expired", user="sistema", ip="", bookmark_id=bm.id, camera_id=bm.camera_id)
             self.state.bus.publish(EVENT_BOOKMARK, {"action": "updated", "bookmark_id": bm.id, "camera_id": bm.camera_id})
+        for folder in await asyncio.to_thread(self.bookmarks.sweep_orphans):
+            log.info("Borrada la copia protegida pendiente %s", folder)
+        await asyncio.to_thread(self.expire_exports)
         await asyncio.to_thread(self.store.prune)
         known = {c.id for c in self.state.config().cameras}
         for cid in self.refs.camera_ids() - known:   # RGPD: referencias de cámaras borradas
@@ -641,7 +719,57 @@ class OpsService:
 
     def delete_export(self, export_id: str) -> None:
         self.builder.zip_path(export_id).unlink(missing_ok=True)
+        self.builder.part_path(export_id).unlink(missing_ok=True)
         self.store.delete_export(export_id)
+
+    def pc_sntp_enabled(self) -> bool:
+        v = self.store.kv_get(PC_SNTP_KEY)
+        return v if isinstance(v, bool) else True
+
+    def set_pc_sntp_enabled(self, enabled: bool) -> None:
+        self.store.kv_set(PC_SNTP_KEY, bool(enabled))
+
+    def export_retention_days(self) -> int:
+        v = self.store.kv_get(EXPORT_RETENTION_KEY)
+        return int(v) if isinstance(v, int) and 1 <= v <= 365 else EXPORT_RETENTION_DEFAULT_DAYS
+
+    def set_export_retention_days(self, days: int) -> None:
+        if not 1 <= int(days) <= 365:
+            raise ValueError("export_retention_days fuera de rango")
+        self.store.kv_set(EXPORT_RETENTION_KEY, int(days))
+
+    def expire_exports(self, now: datetime | None = None) -> list[str]:
+        """Borra los paquetes (ZIP y registro) con más de `export_retention_days` días: son copias de vídeo con
+        personas y no pueden quedarse en el PC sin plazo (RGPD, EIPD §2.6). Queda anotado en audit.log."""
+        now = now or datetime.now(timezone.utc)
+        days = self.export_retention_days()
+        removed = []
+        for exp in self.store.exports_created_before(now - timedelta(days=days)):
+            if exp.state in ("queued", "running"):
+                continue
+            try:
+                self.delete_export(exp.export_id)
+            except OSError as exc:
+                log.warning("No se pudo borrar la exportación caducada %s: %s", exp.export_id, exc)
+                continue
+            audit("evidence_export_expired", user="sistema", ip="", export_id=exp.export_id,
+                  created_by=exp.created_by, sha256_manifest=exp.sha256_manifest, retention_days=days)
+            removed.append(exp.export_id)
+        return removed
+
+    def recover_exports(self) -> list[str]:
+        """Al arrancar: las exportaciones «en cola» o «en curso» se cortaron con el proceso; se dan por fallidas y
+        se borran sus restos (`*.zip.part`, `.<id>.tmp`) para que no quede vídeo copiado sin control."""
+        failed = []
+        for exp in self.store.exports_in_state("queued", "running"):
+            exp.state = "failed"
+            exp.error = "Se interrumpió porque el servicio se reinició: vuelve a pedirla"
+            self.store.save_export(exp)
+            failed.append(exp.export_id)
+        leftovers = self.builder.cleanup_leftovers()
+        if failed or leftovers:
+            log.warning("Exportaciones interrumpidas: %s; restos borrados: %s", failed or "-", leftovers or "-")
+        return failed
 
     # ================================================================== diagnóstico y auditoría
     def diagnoser(self) -> Diagnoser:

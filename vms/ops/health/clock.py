@@ -5,7 +5,10 @@
   Desfase = hora del equipo − hora del PC a mitad del viaje de ida y vuelta (lo calcula el driver en
   `DeviceTime.measured_at`).
 - La hora del PC: si hay un servidor NTP conocido (Windows: `W32Time\\Parameters\\NtpServer` del registro,
-  sin analizar texto de `w32tm`), se mide el desfase con una consulta SNTP de 48 bytes (RFC 4330).
+  sin analizar texto de `w32tm`), se mide el desfase con una consulta SNTP de 48 bytes (RFC 4330), una vez por
+  hora. Es el MISMO servidor que ya consulta Windows por su cuenta (en un PC sin dominio, `time.windows.com`):
+  no se abre ningún destino nuevo, pero sí es una consulta UDP 123 más hacia Internet. Se puede desactivar
+  (`PUT /api/clock/settings` `{"pc_sntp_enabled": false}`); entonces solo se informa del modo.
   Si no se puede medir, se informa del modo (`ntp`/`manual`) sin inventar un número.
 
 Umbrales: `settings.health.clock_warn_s` (2 s) y `clock_critical_s` (30 s). También se avisa si el
@@ -61,6 +64,28 @@ def evaluate(skew_s: float | None, time_mode: str, warn_s: float, critical_s: fl
         if status == "ok":
             status = "warning"
         msg += " El equipo tiene la hora puesta a mano (sin NTP): con los días se desajustará."
+    return status, msg
+
+
+def evaluate_pc(skew_s: float, time_mode: str, warn_s: float, critical_s: float, server: str) -> tuple[Status, str]:
+    """Estado y frase para la hora del PROPIO PC (las acciones son de Windows, no de una cámara)."""
+    a = abs(skew_s)
+    if a >= critical_s:
+        status: Status = "critical"
+        msg = (f"La hora del PC va {_fmt_skew(skew_s)} respecto al servidor de hora {server}: las cámaras y las "
+               "grabaciones pueden quedar con la hora equivocada. Activa la sincronización de hora de Windows "
+               "(Configuración > Hora e idioma > Sincronizar ahora).")
+    elif a >= warn_s:
+        status = "warning"
+        msg = (f"La hora del PC va {_fmt_skew(skew_s)} respecto al servidor de hora {server}. Revisa que la "
+               "sincronización de hora de Windows esté activada.")
+    else:
+        status = "ok"
+        msg = f"La hora del PC coincide con el servidor de hora {server}."
+    if time_mode == "manual":
+        if status == "ok":
+            status = "warning"
+        msg += " Windows no sincroniza la hora (W32Time sin NTP): con los días se desajustará."
     return status, msg
 
 
@@ -123,15 +148,15 @@ def sntp_offset(server: str, *, port: int = 123, timeout: float = 2.0) -> tuple[
     return -offset, (t4 - t1 - (t3 - t2)) * 1000
 
 
-def pc_check(warn_s: float, critical_s: float, *, server: str | None = None) -> ClockCheck:
-    """Estado de la hora del propio PC (para el informe y el manifiesto de evidencias)."""
+def pc_check(warn_s: float, critical_s: float, *, server: str | None = None, sntp: bool = True) -> ClockCheck:
+    """Estado de la hora del propio PC (para el informe y el manifiesto de evidencias). `sntp=False`: sin
+    consulta de red, solo el modo de sincronización de Windows."""
     mode, configured = windows_time_config()
-    target = server or configured
+    target = (server or configured) if sntp else ""
     if target:
         try:
             skew, rtt = sntp_offset(target)
-            status, msg = evaluate(skew, mode, warn_s, critical_s)
-            msg = msg.replace("del equipo", "del PC").replace("con la del PC", f"con el servidor de hora {target}")
+            status, msg = evaluate_pc(skew, mode, warn_s, critical_s, target)
             return ClockCheck(at=datetime.now(timezone.utc), skew_s=round(skew, 3), round_trip_ms=round(rtt, 1),
                               time_mode=mode, status=status, message_es=msg)
         except OSError as exc:
@@ -143,5 +168,8 @@ def pc_check(warn_s: float, critical_s: float, *, server: str | None = None) -> 
         return ClockCheck(time_mode=mode, status="warning",
                           message_es="El PC no sincroniza la hora (W32Time sin NTP). Las cámaras toman la hora de "
                                      "este PC: actívalo.")
+    if not sntp:
+        return ClockCheck(time_mode=mode, status="unknown",
+                          message_es="La comprobación de la hora del PC con el servidor de hora está desactivada.")
     return ClockCheck(time_mode=mode, status="unknown",
                       message_es="No hay un servidor de hora configurado para comprobar el reloj del PC.")

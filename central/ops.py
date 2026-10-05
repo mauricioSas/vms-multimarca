@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, Response
 from vms.core.errors import NotFoundError, ValidationFailed
 from vms.core.naming import is_valid_id
 from vms.ops.counts import Bucket, CountRow, fetch_rows, filename, parse_range, render_csv
+from vms.ops.csvsafe import text_cell
 
 from .extensions import CentralDeps
 
@@ -62,7 +63,12 @@ def site_problem(row: dict[str, Any], now: datetime, day: str | None) -> dict[st
     out: dict[str, Any] = {"site_id": row["site_id"], "name": row["name"], "code": row["code"],
                            "timezone": row["timezone"], "last_seen": last_seen, "age_s": age,
                            "status": "nodata", "report_date": None, "score_min": None, "cameras_critical": 0,
-                           "cameras_warning": 0, "clock_worst_s": None, "forecast_days": None, "problems": []}
+                           "cameras_warning": 0, "clock_worst_s": None, "forecast_days": None, "problems": [],
+                           "evidence_key_id": None}
+    ek = row.get("evidence_key")
+    if isinstance(ek, dict) and isinstance(ek.get("key_id"), str):
+        # key_id de la clave de firma de evidencias: con él se comprueba que un paquete viene de esta tienda
+        out["evidence_key_id"] = ek["key_id"][:64]
     if last_seen is None:
         out["problems"] = ["La tienda nunca ha enviado latido"]
         return out
@@ -95,11 +101,12 @@ def problems_csv(rows: list[dict[str, Any]]) -> bytes:
                 "peor_desfase_s", "dias_grabacion_previstos", "problemas"])
     label = {"critical": "grave", "warning": "aviso", "ok": "correcto", "nodata": "sin datos"}
     for r in rows:
-        w.writerow([r["name"], r["code"], label.get(r["status"], r["status"]), r["report_date"] or "",
+        w.writerow([text_cell(r["name"]), text_cell(r["code"]), label.get(r["status"], r["status"]),
+                    text_cell(r["report_date"] or ""),
                     "" if r["score_min"] is None else r["score_min"], r["cameras_critical"], r["cameras_warning"],
                     "" if r["clock_worst_s"] is None else str(r["clock_worst_s"]).replace(".", ","),
                     "" if r["forecast_days"] is None else str(r["forecast_days"]).replace(".", ","),
-                    " | ".join(r["problems"])])
+                    text_cell(" | ".join(r["problems"]))])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 

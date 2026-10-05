@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from vms.core.atomic import atomic_write_text
 from vms.core.interfaces import RecordingSpan
 
+from .csvsafe import text_cell
 from .models import HEALTH_CAUSE_ES, CameraDayReport, ClockCheck, HealthReport, RetentionForecast
 
 log = logging.getLogger("vms.ops.report")
@@ -193,8 +194,9 @@ def report_csv(report: HealthReport) -> bytes:
     w.writerow(["tienda", "fecha", "camara", "disponibilidad_pct", "minutos_sin_grabar", "puntuacion_min", "causas",
                 "desfase_s", "dias_grabados", "tramos_protegidos"])
     for c in report.cameras:
-        w.writerow([report.site_id, report.date, c.name, _num(c.online_ratio * 100), _num(c.recording_gaps_min),
-                    "" if c.health_score_min is None else c.health_score_min,
-                    ", ".join(HEALTH_CAUSE_ES.get(str(x), str(x)) for x in c.health_causes), _num(c.clock_skew_s),
+        w.writerow([text_cell(report.site_id), report.date, text_cell(c.name), _num(c.online_ratio * 100),
+                    _num(c.recording_gaps_min), "" if c.health_score_min is None else c.health_score_min,
+                    text_cell(", ".join(HEALTH_CAUSE_ES.get(str(x), str(x)) for x in c.health_causes)),
+                    _num(c.clock_skew_s),
                     _num(c.retention_days_real), c.protected_ranges])
     return ("﻿" + buf.getvalue()).encode("utf-8")

@@ -6,7 +6,10 @@ v2; las rutas de B6 (salud, marcadores, evidencias, línea de tiempo) también.
 
 Reglas (principio de acceso mínimo, art. 32 RGPD):
 - administradores: todo (no tienen ámbito);
-- kiosco: el vivo, igual que en la v1 (los muros los monta un operador o un administrador);
+- kiosco: el vivo, igual que en la v1 (los muros los monta un operador o un administrador). DESVIACIÓN
+  PENDIENTE de CONTRATO §18.8 («el kiosco ve el vivo de las cámaras de los muros»): restringirlo exige cambiar
+  dos pruebas de la v1 (`tests/api/test_live_recordings.py`, `tests/api/test_review_security.py`) que usan
+  el kiosco con una cámara fuera de los muros; está pedido al arquitecto con el diff exacto;
 - operador sin `camera_scope`: todas las cámaras y acciones, como en la v1 (compatibilidad);
 - operador con `camera_scope`: solo `scope.cameras` y solo las acciones marcadas (`live`, `playback`,
   `export`, `bookmark`). Una cámara fuera del ámbito responde 404: no se revela que existe.

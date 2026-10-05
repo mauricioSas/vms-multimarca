@@ -14,6 +14,7 @@ no hace falta tocar `vms/api/app.py`.
 | `PUT /api/camera-health/{id}/config` | A |
 | `POST /api/camera-health/{id}/check` | A |
 | `GET /api/clock` · `POST /api/clock/check` | O · A |
+| `GET /api/clock/settings` · `PUT /api/clock/settings` (`pc_sntp_enabled`) | A |
 | `GET /api/retention-forecast` · `POST /api/retention-forecast/simulate` | O · A |
 | `GET /api/health-report?date=` · `GET /api/health-report.csv?date=` | O |
 """
@@ -196,6 +197,23 @@ async def get_clock(p: Principal = Depends(require_operator), state: AppState = 
 async def clock_check(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
     pc, devices = await ops.clock_check_all()
     return json_response({"pc": pc, "devices": devices})
+
+
+class ClockSettings(BaseModel):
+    pc_sntp_enabled: bool = Field(description="Comprobar la hora del PC con su servidor de hora (UDP 123)")
+
+
+@router.get("/clock/settings")
+async def get_clock_settings(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
+    return json_response({"pc_sntp_enabled": ops.pc_sntp_enabled()})
+
+
+@router.put("/clock/settings")
+async def put_clock_settings(body: ClockSettings, request: Request, p: Principal = Depends(require_admin),
+                             ops: "OpsService" = Depends(get_ops)) -> Response:
+    ops.set_pc_sntp_enabled(body.pc_sntp_enabled)
+    audit("clock_settings", user=p.username, ip=client_ip(request), pc_sntp_enabled=body.pc_sntp_enabled)
+    return json_response({"pc_sntp_enabled": body.pc_sntp_enabled})
 
 
 # --------------------------------------------------------------------------- previsión

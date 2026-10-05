@@ -29,6 +29,11 @@ from .segments import segments_in_range
 log = logging.getLogger("vms.ops.bookmarks")
 
 MAX_PROTECT_SPAN = timedelta(hours=24)
+# Límites de un operador (un administrador no los tiene, pero más de 90 días le exige número de caso):
+# la protección se salta la retención (art. 22.3 LOPDGDD) y ocupa disco, así que se acota quién y cuánto.
+OPERATOR_MAX_PROTECT_DAYS = 90
+OPERATOR_MAX_PROTECTED_HOURS = 48.0       # horas protegidas a la vez por cámara (sumando todos los tramos)
+ADMIN_CASE_REQUIRED_AFTER_DAYS = 90
 
 
 def new_bookmark_id() -> str:
@@ -56,12 +61,15 @@ class BookmarkManager:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------ alta
-    def create(self, body: BookmarkCreate, user: str) -> Bookmark:
+    def create(self, body: BookmarkCreate, user: str, *, is_admin: bool = True) -> Bookmark:
         start = _utc(body.start)
         end = _utc(body.end) if body.end else None
         if end is not None and end <= start:
             raise ValidationFailed("El final del tramo debe ser posterior al inicio",
                                    details={"fields": [{"loc": ["end"], "msg": "Debe ser posterior al inicio"}]})
+        if body.protect:
+            self.check_limits(camera_id=body.camera_id, start=start, end=end, days=body.protect_days,
+                              case_ref=body.case_ref, is_admin=is_admin)
         bm = Bookmark(id=new_bookmark_id(), camera_id=body.camera_id, start=start, end=end, note=body.note.strip(),
                       created_by=user, created_at=self.clock(), case_ref=body.case_ref.strip())
         if body.protect:
@@ -73,7 +81,9 @@ class BookmarkManager:
         return bm
 
     # ------------------------------------------------------------------ proteger
-    def protect(self, bm: Bookmark, reason: str, days: int, user: str) -> Bookmark:
+    def protect(self, bm: Bookmark, reason: str, days: int, user: str, *, is_admin: bool = True) -> Bookmark:
+        self.check_limits(camera_id=bm.camera_id, start=bm.start, end=bm.end, days=days, case_ref=bm.case_ref,
+                          is_admin=is_admin, exclude=bm.id)
         bm = self._protect(bm, reason, days, user)
         self.store.save_bookmark(bm)
         return bm
@@ -116,13 +126,78 @@ class BookmarkManager:
         return bm
 
     def release(self, bm: Bookmark, reason: str) -> Bookmark:
-        folder = self.protected_dir / bm.camera_id / bm.id
-        if folder.is_dir():
-            shutil.rmtree(folder, ignore_errors=True)
+        """Deja de proteger. Si la copia no se puede borrar ahora (en Windows, un segmento abierto por una
+        exportación o por el motor), el marcador queda liberado igualmente y `sweep_orphans` (mantenimiento
+        horario) reintenta el borrado: nunca queda una copia huérfana para siempre."""
+        self._remove_folder(self.protected_dir / bm.camera_id / bm.id)
         bm = bm.model_copy(update={"protected": False, "released_at": self.clock(), "release_reason": reason,
                                    "protected_files": []})
         self.store.save_bookmark(bm)
         return bm
+
+    def _remove_folder(self, folder: Path) -> bool:
+        if not folder.exists():
+            return True
+        errors: list[str] = []
+
+        def onexc(_func: object, path: str, exc: BaseException) -> None:
+            errors.append(f"{Path(path).name}: {exc}")
+
+        shutil.rmtree(folder, onexc=onexc)
+        if errors or folder.exists():
+            log.warning("No se pudo borrar del todo la copia protegida %s (se reintentará en el mantenimiento): %s",
+                        folder, "; ".join(errors[:3]))
+            return False
+        return True
+
+    def sweep_orphans(self) -> list[str]:
+        """Borra las carpetas de `protected/<cámara>/<marcador>` cuyo marcador no existe o ya no está protegido.
+        Devuelve las carpetas que se han borrado del todo."""
+        if not self.protected_dir.is_dir():
+            return []
+        keep = {(bm.camera_id, bm.id) for bm in self.store.bookmarks() if bm.protected}
+        removed: list[str] = []
+        for cam_dir in self.protected_dir.iterdir():
+            if not cam_dir.is_dir():
+                continue
+            for folder in cam_dir.iterdir():
+                if folder.is_dir() and (cam_dir.name, folder.name) not in keep:
+                    if self._remove_folder(folder):
+                        removed.append(f"{cam_dir.name}/{folder.name}")
+            try:
+                cam_dir.rmdir()          # solo si quedó vacía
+            except OSError:
+                pass
+        return removed
+
+    def protected_hours(self, camera_id: str, exclude: str | None = None) -> float:
+        """Horas protegidas ahora mismo en una cámara (suma de los tramos protegidos)."""
+        total = 0.0
+        for bm in self.store.bookmarks(camera_id):
+            if bm.protected and bm.id != exclude:
+                end = bm.end or (bm.start + timedelta(minutes=1))
+                total += (_utc(end) - _utc(bm.start)).total_seconds() / 3600
+        return total
+
+    def check_limits(self, *, camera_id: str, start: datetime, end: datetime | None, days: int, case_ref: str,
+                     is_admin: bool, exclude: str | None = None) -> None:
+        """Límites de la protección según quién la pide (ver constantes del módulo)."""
+        if is_admin:
+            if days > ADMIN_CASE_REQUIRED_AFTER_DAYS and not case_ref.strip():
+                raise ValidationFailed(
+                    f"Para proteger más de {ADMIN_CASE_REQUIRED_AFTER_DAYS} días indica el número de caso o atestado",
+                    details={"fields": [{"loc": ["case_ref"], "msg": "Campo obligatorio"}]})
+            return
+        if days > OPERATOR_MAX_PROTECT_DAYS:
+            raise ValidationFailed(
+                f"Un operador puede proteger como máximo {OPERATOR_MAX_PROTECT_DAYS} días; para más, pídeselo a un "
+                "administrador con el número de caso",
+                details={"fields": [{"loc": ["protect_days"], "msg": f"Máximo {OPERATOR_MAX_PROTECT_DAYS}"}]})
+        span = ((_utc(end) if end else _utc(start) + timedelta(minutes=1)) - _utc(start)).total_seconds() / 3600
+        if self.protected_hours(camera_id, exclude=exclude) + span > OPERATOR_MAX_PROTECTED_HOURS:
+            raise ValidationFailed(
+                f"Esta cámara ya tiene casi {OPERATOR_MAX_PROTECTED_HOURS:.0f} horas protegidas: un administrador "
+                "tiene que revisar los tramos protegidos antes de proteger más")
 
     def delete(self, bm: Bookmark) -> None:
         if bm.protected:
