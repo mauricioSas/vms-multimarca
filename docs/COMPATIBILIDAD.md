@@ -20,7 +20,7 @@ madurez**: solo una captura real (`python -m tools.capture_device --host … --d
 
 ## Estado a 5 de octubre de 2026
 
-**Resumen para publicar:** 0 verificados con hardware, 0 probados con respuestas reales, 12 según
+**Resumen para publicar:** 0 verificados con hardware, 0 probados con respuestas reales, 13 según
 documentación pública y 2 experimentales.
 
 Todavía no hay laboratorio (decisión D6 pendiente): **nada de esta tabla se ha probado con un equipo
@@ -41,6 +41,7 @@ real**. Hikvision y Dahua tienen que llegar a `verified` (cámara, NVR y DVR/XVR
 | `tapo` | Tapo | perfil RTSP + ONVIF (2020) | `/stream1` y `/stream2`; cuenta de cámara; las de batería no tienen RTSP | `community` | sintética |
 | `hanwha` | Hanwha Vision (Wisenet) | perfil RTSP + ONVIF | `/profile2/media.smp` y `profile3`; `/<canal-1>/…` en codificadores | `community` | sintética |
 | `axis` | Axis | perfil RTSP + ONVIF | `/axis-media/media.amp?camera={N}&videocodec=h264` | `community` | sintética |
+| `milesight` | Milesight | perfil RTSP + ONVIF | `/main` y `/sub`; si dan 404, `//main` y `//sub` | `community` | sintética (responde con doble barra) |
 | `ajax` | Ajax | perfil RTSP 8554 + ONVIF | ruta copiada de la app o importada por ONVIF (sin ruta fija documentada) | `experimental` | sintética |
 | `reolink` | Reolink | perfil RTSP | `/Preview_{NN}_main` y `_sub`; RTSP desactivado de fábrica | `community` | sintética |
 | `bosch` | Bosch | perfil RTSP + ONVIF | `/?inst=1&line={N}` y `inst=2` | `community` | sintética |
