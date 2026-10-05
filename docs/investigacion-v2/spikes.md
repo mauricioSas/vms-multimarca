@@ -27,8 +27,8 @@ fase 0; B2 no arranca sin veredicto).
   perdidos, y los perdidos al pintar (`getVideoPlaybackQuality`). Todas las ventanas comparten la carpeta
   de datos de WebView2, como el visor de la v2. Compila en macOS (`cargo check`); el `.exe` de Windows lo
   compila el flujo `s1-kit.yml`.
-- `s1.ps1`: descarga MediaMTX (SHA-256 contra la publicación oficial) y un ffmpeg de pruebas (SHA-256 de
-  gyan.dev), genera clips H.264 y H.265 640x360 a 15 fps, los publica en bucle **sin recomprimir** (para no
+- `s1.ps1`: descarga MediaMTX (SHA-256 contra la publicación oficial) y un ffmpeg de pruebas (versión 9.0.2
+  fija, con el SHA-256 escrito en el script y comprobado en dos fuentes: gyan.dev y GitHub), genera clips H.264 y H.265 640x360 a 15 fps, los publica en bucle **sin recomprimir** (para no
   ensuciar la medida de CPU), y mide CPU total, CPU de WebView2 y uso del motor «VideoDecode» de la GPU con
   clases WMI (no con contadores, cuyos nombres cambian con el idioma de Windows). Fase A: 4 × 16 durante
   30 min. Fase B: 4 flujos H.265 por WebRTC. Fase C: fMP4 H.265 en `<video>` desde el `/get` de MediaMTX.

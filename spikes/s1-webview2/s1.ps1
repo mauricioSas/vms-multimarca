@@ -8,8 +8,9 @@
   todo va a una carpeta de trabajo que se puede borrar al terminar.
 
     1. Descarga MediaMTX v1.21.1 (comprobando su SHA-256 con la publicación oficial) y un ffmpeg de pruebas
-       (gyan.dev, comprobando su SHA-256). ffmpeg solo genera los vídeos de prueba en este PC; no forma
-       parte del producto.
+       (versión 9.0.2 fija de Gyan, publicada en GitHub, con su SHA-256 escrito en este script: coincide con
+       el de gyan.dev y con el que muestra GitHub, comprobado el 5/10/2026). ffmpeg solo genera los vídeos de
+       prueba en este PC; no forma parte del producto.
     2. Genera dos clips (H.264 y H.265, 640x360, 15 fps) y los publica en bucle sin recomprimir.
     3. Fase A ($Minutes min): el visor Tauri (s1-visor.exe) abre $Windows ventanas × $Cells flujos WebRTC.
        Mide CPU total, CPU de WebView2, uso del motor de decodificación de vídeo de la GPU y, en cada
@@ -38,7 +39,10 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Viewer = Join-Path $Here 's1-visor.exe'
 $Out = Join-Path $Here 'resultado'
 $MediaMtxVersion = 'v1.21.1'
-$FfmpegZipUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+# Versión fija: el SHA-256 va escrito aquí (no se descarga del mismo servidor que el zip). Para subir de
+# versión: cambiar las dos líneas y comprobar el hash en dos fuentes (gyan.dev y la API de GitHub).
+$FfmpegZipUrl = 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip'
+$FfmpegZipSha256 = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
 $WarmupSeconds = 60
 
 function Say([string] $text) { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $text" }
@@ -85,11 +89,10 @@ try {
     $ffDir = Join-Path $Work 'ffmpeg'
     $ffmpeg = Get-ChildItem -Path $ffDir -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
     if (-not $ffmpeg) {
-        Say 'Descargando ffmpeg de pruebas (gyan.dev)…'
+        Say 'Descargando ffmpeg de pruebas 9.0.2 (Gyan, en GitHub)…'
         $zip = Join-Path $Work 'ffmpeg.zip'
         Invoke-WebRequest $FfmpegZipUrl -OutFile $zip -UseBasicParsing
-        $expected = ((Invoke-WebRequest "$FfmpegZipUrl.sha256" -UseBasicParsing).Content.Trim() -split '\s+')[0]
-        if ((Sha256 $zip) -ne $expected.ToLowerInvariant()) { throw 'El SHA-256 de ffmpeg no coincide con el publicado' }
+        if ((Sha256 $zip) -ne $FfmpegZipSha256) { throw 'El SHA-256 de ffmpeg no coincide con el fijado en el script' }
         Expand-Archive -LiteralPath $zip -DestinationPath $ffDir -Force
         $ffmpeg = Get-ChildItem -Path $ffDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1 -ExpandProperty FullName
     }

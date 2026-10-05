@@ -5,7 +5,8 @@
 #   lint             ruff + mypy (estricto en vms/core)
 #   pytest-ubuntu    pytest sin los e2e pesados (-m "not e2e and not slow"), orden aleatorio y cobertura
 #   pytest-macos     lo mismo en macOS (arm64)
-#   b1 … b6          un job por bloque: cada bloque rellena SOLO el suyo (B1 ya compila y prueba native/)
+#   b1 … b6          un job por bloque: cada bloque rellena SOLO el suyo (B1 ya compila y prueba native/,
+#                    también con clippy para x86_64-pc-windows-msvc, y revisa licencias con cargo-deny)
 #   spike-s3         S3: firma TUF con SoftHSM2 (PKCS#11) + verificación con python-tuf 7
 #   spike-s4         S4: servicio de Windows con cuenta virtual, Job Object y vuelta atrás (windows-latest)
 #
@@ -66,7 +67,8 @@ jobs:
           has() { [ "$files" = "__all__" ] || echo "$files" | grep -Eq "$1"; }
           code=false; native=false; s3=false; s4=false
           # pytest (Ubuntu y macOS) solo si cambia código Python/web, pruebas, dependencias o este flujo
-          if has '^(vms|analytics|central|tools|tests|deploy)/|^pyproject\.toml$|^requirements-.*\.txt$|^\.github/workflows/ci\.yml$'; then code=true; fi
+          # (updater/ = B4, distribution/ = B1 y B3, infra/ = Worker de B4: todos llevan pruebas en tests/)
+          if has '^(vms|analytics|central|tools|tests|deploy|updater|distribution|infra)/|^pyproject\.toml$|^requirements-.*\.txt$|^\.github/workflows/ci\.yml$'; then code=true; fi
           has '^native/' && native=true || true
           has '^spikes/s3-tuf/' && s3=true || true
           has '^(spikes/s4-servicio-windows/|native/common/)' && s4=true || true
@@ -182,14 +184,28 @@ jobs:
             ~/.cargo/git
             native/target
           key: cargo-native-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
-      - name: Toolchain fijado (native/rust-toolchain.toml)
-        run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+      - name: Toolchain fijado (native/rust-toolchain.toml) + destino Windows para clippy
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
       - name: cargo fmt / clippy / test
         working-directory: native
         run: |
           cargo fmt --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
+      - name: "clippy del código cfg(windows) (vmshost, vmsctl, common) sin gastar un runner de Windows"
+        working-directory: native
+        run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Lógica portable de S4 (referencia de vmshost para B1)
+        working-directory: spikes/s4-servicio-windows
+        run: cargo test --locked --lib
+      - name: cargo-deny (binario precompilado y verificado)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Licencias, crates prohibidos y orígenes (native/deny.toml, PLAN-V2 §9.2)
+        run: cargo deny --manifest-path native/Cargo.toml check licenses bans sources
 
   b2-visor:
     name: "B2 · visor de escritorio"
