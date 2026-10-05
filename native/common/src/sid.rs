@@ -2,9 +2,9 @@
 //!
 //! Windows lo deriva del nombre del servicio: SHA-1 del nombre en mayúsculas codificado en UTF-16LE,
 //! y los 20 bytes se leen como cinco enteros de 32 bits little-endian (es lo que devuelve
-//! `sc showsid` y `LookupAccountName("NT SERVICE\…")`). Calcularlo permite preparar las ACL antes de
-//! que exista el servicio y probarlo en cualquier sistema. En Windows, `vmsctl` lo contrasta con
-//! `LookupAccountNameW` (prueba de CI).
+//! `sc showsid` y `LookupAccountName("NT SERVICE\…")`). Calcularlo permite planificar y probar las ACL en
+//! cualquier sistema; Windows solo acepta el SID en una ACL cuando el servicio existe. La prueba de CI en
+//! Windows lo contrasta con `sc showsid`.
 
 /// SHA-1 (FIPS 180-4). Solo para derivar SID de servicio: no se usa para nada de seguridad.
 pub fn sha1(data: &[u8]) -> [u8; 20] {

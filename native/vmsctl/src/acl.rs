@@ -1,8 +1,8 @@
 //! `vmsctl acl apply`: permisos de la carpeta de datos por **SID** (PLAN-V2 §2.2, CONTRATO §13.2).
 //!
 //! Se aplican con `icacls.exe` y SID literales (`*S-1-5-80-…`, `*S-1-5-18`, `*S-1-5-32-544`): nunca nombres
-//! localizados, y solo se mira el código de salida. Los SID de servicio se calculan (`vms_common::sid`), así
-//! que las ACL se pueden preparar antes de crear los servicios.
+//! localizados, y solo se mira el código de salida. Los SID de servicio se calculan (`vms_common::sid`), pero
+//! Windows solo los acepta cuando el servicio ya existe (icacls: error 1332): se aplican después de crearlos.
 //!
 //! Resultado: nadie más que SYSTEM, Administradores y el servicio que lo necesita entra en la carpeta de
 //! datos (los usuarios del equipo no ven grabaciones ni secretos; cierra el pendiente 1 de ESTADO.md).

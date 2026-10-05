@@ -81,7 +81,11 @@ class Ctl:
 
 
 def ps(script: str) -> str:
-    r = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 120)
+    # Windows PowerShell 5.1 lanzado desde un paso de pwsh 7 hereda su PSModulePath y no carga
+    # Microsoft.PowerShell.Security (Get-Acl): se le quita para que use sus módulos de siempre.
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                       text=True, timeout=120, encoding="utf-8", errors="replace", env=env)
     if r.returncode != 0:
         raise AssertionError(f"PowerShell falló: {r.stderr[-800:]}")
     return r.stdout.strip()
