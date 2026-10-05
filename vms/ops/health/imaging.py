@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import cv2
 import numpy as np
@@ -27,7 +27,7 @@ import numpy.typing as npt
 
 from ..models import HealthCause, HealthCheck, HealthMetrics
 
-Image = npt.NDArray[Any]       # BGR o gris, uint8 (OpenCV no tipa el dtype de forma útil)
+Image: TypeAlias = npt.NDArray[Any]   # BGR o gris, uint8 (OpenCV no tipa el dtype de forma útil)
 RefKind = Literal["day", "night"]
 
 WORK_WIDTH = 640
