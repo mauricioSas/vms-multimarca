@@ -1,0 +1,3 @@
+# Dependencias que solo necesita el runtime de Windows, además de los locks de sede (PLAN-V2 §1.2).
+# Hoy ninguna: DPAPI, Job Objects y MoveFileExW se usan con ctypes (vms.core.winsec, vms.core.atomic).
+# Formato: «paquete==versión --hash=sha256:…» (se instala con --require-hashes).

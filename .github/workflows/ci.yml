@@ -7,6 +7,7 @@
 #   pytest-macos     lo mismo en macOS (arm64)
 #   b1 … b6          un job por bloque: cada bloque rellena SOLO el suyo (B1 ya compila y prueba native/,
 #                    también con clippy para x86_64-pc-windows-msvc, y revisa licencias con cargo-deny)
+#   b1-windows       B1 en windows-latest: servicios reales con vmshost/vmsctl y el runtime embebible
 #   spike-s3         S3: firma TUF con SoftHSM2 (PKCS#11) + verificación con python-tuf 7
 #   spike-s4         S4: servicio de Windows con cuenta virtual, Job Object y vuelta atrás (windows-latest)
 #
@@ -207,6 +208,61 @@ jobs:
           tool: cargo-deny@0.20.2
       - name: Licencias, crates prohibidos y orígenes (native/deny.toml, PLAN-V2 §9.2)
         run: cargo deny --manifest-path native/Cargo.toml check licenses bans sources
+
+  b1-windows:
+    # Criterio (4) de B1 (PLAN-V2 §6.2) en Windows real: services install --role store con un payload mínimo,
+    # cuentas virtuales e ImagePath en vmshost, health wait = 0, vuelta atrás por petición, diag sin
+    # secretos, parada sin huérfanos, uninstall limpio y migrate-from-v1. Solo si cambia native/ (o a mano).
+    name: "B1 · Windows real (servicios, vmshost, vmsctl, runtime)"
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: cargo-b1-win-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
+      - name: Toolchain fijado (native/rust-toolchain.toml)
+        run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+      - name: cargo test en Windows (Job Object, DPAPI, procesos)
+        working-directory: native
+        run: cargo test --workspace --locked
+      - name: vmshost.exe y vmsctl.exe (release)
+        working-directory: native
+        run: cargo build --release --locked -p vmshost -p vmsctl
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependencias del backend (lock de sede con SHA-256) y pytest
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-vms.txt
+          python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0 pytest-timeout==2.4.0
+          python -m pip install --no-deps -e .
+      - name: pytest en Windows (DPAPI real, MoveFileExW, runtime)
+        run: python -m pytest -q -rs -p no:cacheprovider tests/core/test_winsec.py tests/core/test_atomic.py tests/distribution
+      - name: Runtime embebible mínimo (Python 3.12.10 + requirements-vms.txt) y MediaMTX para Windows
+        run: |
+          python -m distribution.runtime.build --out build/runtime --requirements requirements-vms.txt
+          python -m distribution.runtime.build --out build/runtime --verify
+          python -m tools.fetch_mediamtx --platform windows_amd64 --dest build/engine
+      - name: Instalar, comprobar, romper, migrar y desinstalar (como administrador)
+        run: >
+          python native/ci/b1_windows_e2e.py --build native/target/release --runtime build/runtime
+          --mediamtx build/engine/mediamtx.exe --out b1-windows.json --logs b1-windows-logs
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: b1-windows
+          path: |
+            b1-windows.json
+            b1-windows-logs/
+            b1-diag.zip
+          retention-days: 14
 
   b2-visor:
     name: "B2 · visor de escritorio"
