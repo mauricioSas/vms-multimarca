@@ -693,7 +693,8 @@ class Engine:
         if isinstance(prev, dict) and prev.get("rollback") == key:
             return None
         atomic_write_json(done_marker, {"rollback": key})
-        return self.manual_rollback(d.rollback_to, "pedido desde el panel central")
+        to = None if d.rollback_to == "previous" else d.rollback_to
+        return self.manual_rollback(to, "pedido desde el panel central")
 
     # ================================================================== actualizador A/B
     def _slots_file(self) -> Path:

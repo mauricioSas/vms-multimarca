@@ -1,0 +1,7 @@
+/* Página «Versiones» del panel central. Dueño: B4. */
+.upd-table td { vertical-align: top; }
+.upd-msg { max-width: 38ch; font-size: 13px; }
+.upd-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.upd-actions select { min-width: 7em; }
+.upd-pending { font-size: 12px; color: var(--warn); }
+.small { font-size: 12.5px; }

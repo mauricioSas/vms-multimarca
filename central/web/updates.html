@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Versiones · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/updates.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/updates.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head"><h1>Versiones por sede</h1></div>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="card">
+    <p class="muted">Cada tienda se actualiza sola desde su canal firmado (<code>pilot</code> o <code>stable</code>), en
+      su ventana de mantenimiento, y vuelve sola a la versión anterior si algo falla. Desde aquí puedes cambiar el
+      canal de una sede, retener sus actualizaciones, pedir que compruebe ahora o que vuelva a la versión
+      anterior. Los cambios llegan con el siguiente latido de la tienda. El panel no publica versiones: eso lo
+      hace Unmanned con su llave física.</p>
+    <form class="inline" id="filter-form" role="search">
+      <div><label for="filter">Buscar sede</label><input id="filter" placeholder="Nombre o código"></div>
+      <div><label for="only">Mostrar</label>
+        <select id="only">
+          <option value="all">Todas</option>
+          <option value="problems">Con problemas</option>
+          <option value="pilot">Canal pilot</option>
+          <option value="held">Retenidas</option>
+        </select></div>
+    </form>
+    <div class="table-wrap" id="sites"></div>
+    <p class="muted small" id="summary"></p>
+  </section>
+</main>
+</body>
+</html>
