@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import re
 import secrets
 from typing import Literal
 
@@ -56,7 +57,7 @@ class HttpAuthChecker:
                 ok = False
         elif self.mode.startswith("digest") and scheme.lower() == "digest":
             ok = verify_digest(header, request.method, self.username, self.password, self.realm, self._nonces)
-            if ok and self.mode == "digest-sha256" and "algorithm=SHA-256" not in header:
+            if ok and self.mode == "digest-sha256" and not re.search(r'algorithm="?SHA-256', header, re.IGNORECASE):
                 ok = False
         if not ok:
             self.failures += 1

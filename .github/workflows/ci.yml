@@ -237,12 +237,42 @@ jobs:
 
   b5-drivers:
     name: "B5 · drivers y compatibilidad"
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - run: |
-          echo "B5 añadirá aquí la batería de contrato (tests/vendors/contract) y la matriz tests/compat."
-          test -f vms/vendors/drivers/LEEME.md
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-vms.txt
+            requirements-analytics.txt
+            requirements-central.txt
+            requirements-test.txt
+      - name: ffmpeg de pruebas (publica los flujos de la matriz; no forma parte del producto)
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - name: Dependencias (locks de sede con SHA-256 + lock de pruebas, como pytest-ubuntu)
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-vms.txt -r requirements-analytics.txt -r requirements-central.txt
+          python -m pip install --no-deps -r requirements-test.txt
+          python -m pip install --no-deps -e .
+      - name: MediaMTX v1.21.1 (verificado por SHA-256)
+        uses: actions/cache@v6
+        with:
+          path: bin
+          key: mediamtx-v1.21.1-${{ runner.os }}-${{ hashFiles('tools/fetch_mediamtx.py') }}
+      - run: python -m tools.fetch_mediamtx
+      - name: "mypy --strict en vms/vendors (PLAN-V2 §4.1)"
+        run: mypy --strict vms/vendors
+      - name: "Batería de contrato, drivers y madurez (tests/vendors)"
+        run: python -m pytest tests/vendors -q -rs -p no:cacheprovider
+      - name: "Matriz de simuladores (tests/compat: MediaMTX + ffmpeg + mocks)"
+        run: python -m pytest tests/compat -q -rs -p no:cacheprovider
+      - name: "Sin presets duplicados en JS (criterio 3 de B5)"
+        run: "! grep -nE 'presetPaths|Streaming/Channels|realmonitor|/unicast/|Preview_|media\\.smp|axis-media' vms/web/static/js/*.js"
 
   b6-operacion:
     name: "B6 · operación, IA de verificación y onboarding"

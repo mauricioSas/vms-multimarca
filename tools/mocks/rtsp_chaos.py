@@ -29,6 +29,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -181,7 +182,8 @@ class RtspChaosServer:
             if ok:
                 self.stats.schemes.append("basic")
         elif scheme.lower() == "digest" and "basic-only" not in sc:
-            sha = "algorithm=SHA-256" in header
+            # «algorithm» puede venir con o sin comillas (MediaMTX/gortsplib lo manda entre comillas)
+            sha = re.search(r'algorithm="?SHA-256', header, re.IGNORECASE) is not None
             if "digest-sha256" in sc and not sha:
                 ok = False
             else:

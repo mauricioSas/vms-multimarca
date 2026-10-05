@@ -1,8 +1,12 @@
-# Alta de cámaras y NVR Hikvision, Dahua y ONVIF
+# Alta de equipos: Hikvision, Dahua, ONVIF y otras marcas
 
 Esta guía explica cómo preparar cada equipo **antes** de darlo de alta en VMS Multimarca y cómo
 comprobar con VLC que el vídeo llega. Si VLC no ve la cámara, el VMS tampoco la verá: empieza
 siempre por ahí.
+
+Qué marcas hay y **cuánto se han probado de verdad** está en [COMPATIBILIDAD.md](COMPATIBILIDAD.md): el
+formulario de alta enseña la misma madurez («Verificado con hardware», «Probado con respuestas reales», «Según
+documentación pública» o «Experimental») junto a los avisos y pasos previos de cada marca.
 
 ## Resumen: lo que tiene que cumplir cada equipo
 
@@ -118,12 +122,71 @@ todos los monitores y la analítica), así que no multiplica la carga del NVR.
 5. Errores típicos: «401 Unauthorized» (usuario o contraseña), «454 Session Not Found» o
    «404» (ruta o canal mal), imagen gris (ver [PROBLEMAS.md](PROBLEMAS.md)).
 
+## Otras marcas (perfiles RTSP y ONVIF)
+
+Estas marcas no tienen API propia en el VMS: el alta prueba el vídeo con la ruta RTSP de la marca y, si tienen
+ONVIF y responde, lee modelo y canales por ONVIF. Las rutas las pone el VMS solo.
+
+| Marca | Rutas (canal 1) | Antes de empezar |
+|---|---|---|
+| Ezviz | `/ch1/main`, `/ch1/sub` (si dan 404, `/h264/ch1/main/av_stream`) | activa RTSP en la app Ezviz; usuario `admin` y, como contraseña, el código de verificación de la etiqueta |
+| Imou (experimental) | ruta de Dahua | cámara dada de alta en la app Imou; contraseña = «safety code» de la etiqueta (sin contrastar) |
+| Uniview | `/unicast/c1/s0/live`, `/unicast/c1/s1/live` | usuario de solo lectura; si el 554 no responde, prueba el 9090 |
+| TP-Link VIGI | `/stream1`, `/stream2` | desactiva «Smart Coding» y usa H.264 |
+| Tapo | `/stream1`, `/stream2` | crea una «cuenta de la cámara» en la app (Ajustes avanzados); ONVIF en el 2020; las de batería no tienen RTSP |
+| Hanwha (Wisenet) | `/profile2/media.smp`, `/profile3/media.smp` | comprueba qué perfil es H.264 o importa los canales por ONVIF |
+| Axis | `/axis-media/media.amp?camera=1&videocodec=h264` | crea un usuario «Visor» para el VMS |
+| Ajax (experimental) | la que copies de la app (puerto **8554**) o la que dé ONVIF | activa ONVIF/RTSP en la app de Ajax |
+| Reolink | `/Preview_01_main`, `/Preview_01_sub` | activa RTSP (en firmwares nuevos viene apagado) |
+| Bosch | `/?inst=1&line=1`, `/?inst=2&line=1` | — |
+
+## La contraseña se prueba una sola vez
+
+Hikvision y Dahua bloquean el usuario 30 minutos tras 5 intentos fallidos (otras marcas, parecido). Por eso
+«Probar conexión» manda la contraseña **una sola vez**: si el equipo la rechaza, no prueba nada más (ni RTSP ni
+rutas alternativas). Si el equipo dice que el usuario está **bloqueado**, el mensaje lo distingue de una
+contraseña mala y dice cuántos minutos esperar: no vuelvas a probar antes, o el bloqueo se alarga.
+
+## Autenticación Basic
+
+El VMS usa Digest (SHA-256 si el equipo lo ofrece; si no, MD5). **Basic** envía la contraseña sin cifrar, así
+que por defecto no se usa: si un equipo antiguo solo admite Basic, el alta lo dice y puedes marcar «Permitir
+autenticación Basic» en ese equipo (solo en una red de cámaras separada).
+
+## IP fija (y qué pasa si cambia)
+
+Pon a cada equipo una **IP fija o una reserva DHCP** en el router. Si aun así cambia de IP, **Buscar en la red →
+Buscar cambios de IP** encuentra el equipo por su número de serie o su MAC (ONVIF, SADP de Hikvision o DHIP de
+Dahua) y propone «La cámara X ahora está en 192.168.1.80: ¿actualizar?». Si marcas «Seguir la IP
+automáticamente» en el equipo, el cambio se aplica solo.
+
+## «Corregir códec»
+
+Si el subflujo de un canal Hikvision o Dahua no está en H.264, **Equipos → Canales** ofrece «Corregir códec».
+Antes de cambiar nada en el equipo se guarda una copia de la configuración de ese flujo; el cambio queda en el
+registro de auditoría (quién, cuándo, equipo, canal, valor anterior y nuevo) y se puede **deshacer durante 30
+días** desde el mismo diálogo. En el resto de marcas, cámbialo en la web del equipo.
+
+## Capturar las respuestas de un equipo (para mejorar el soporte)
+
+Si un equipo no funciona como debería, se pueden grabar sus respuestas (solo lecturas, anonimizadas y sin
+imágenes) para reproducirlas en las pruebas:
+
+```
+python -m tools.capture_device --host 192.168.1.64 --driver hikvision --user visor --kind nvr \
+    --out capturas/ --source "tienda 37"
+```
+
+Pide la contraseña por teclado y no la guarda. En un equipo con el programa instalado, lo mismo es
+`python -m vms.vendors.capture …`. Revisa la carpeta antes de enviarla.
+
 ## Dar de alta en VMS Multimarca
 
 1. Entra como administrador en `http://IP-DEL-PC:8600/`.
-2. **Equipos → Buscar en la red** (descubrimiento ONVIF/WS-Discovery) o **Añadir equipo**.
-3. Fabricante, IP, puertos (HTTP 80 / RTSP 554), usuario de solo lectura y contraseña →
-   **Probar conexión**. Verás el modelo, el número de canales y si el RTSP responde.
+2. **Equipos → Buscar en la red** (ONVIF/WS-Discovery, SADP de Hikvision y DHIP de Dahua) o **Añadir equipo**.
+3. Fabricante (el formulario rellena los puertos habituales y enseña los avisos de la marca), IP, usuario de
+   solo lectura y contraseña → **Probar conexión**. Verás el modelo, el número de canales, si el RTSP responde,
+   el ancho de banda estimado y avisos como «el vídeo tarda en arrancar» (H.264+/H.265+).
 4. Elige los canales a importar. Cada canal pasa a ser una cámara con su flujo principal (se graba
    24/7) y su subflujo (vista en vivo y analítica).
 5. Si un canal muestra el aviso «El subflujo es H.265…», cámbialo a H.264 en el equipo.
