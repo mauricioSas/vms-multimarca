@@ -1,6 +1,15 @@
-"""MediaMtxEngine: implementación de vms.core.interfaces.Engine sobre MediaMTX (CONTRATO §4 y §5.2).
+"""MediaMtxEngine: implementación de vms.core.interfaces.Engine sobre MediaMTX (CONTRATO §4, §5.2 y §13.10).
 
-Responsabilidades:
+Dos modos (`VMS_ENGINE_MODE`):
+- `child` (desarrollo en macOS/Linux y v1): el backend lanza y supervisa MediaMTX y registra las rutas por
+  su API (las contraseñas solo viven en la memoria de MediaMTX).
+- `attach` (Windows, motor como servicio `VMSEngine`): MediaMTX lo lanza `vmsctl run`; el backend **no**
+  lo lanza: escribe `mediamtx.yml` completo (rutas incluidas) con `atomic_write` en cada cambio y MediaMTX
+  lo recarga solo (solo reinicia las rutas que cambian). Así se graba aunque el backend esté caído o
+  reiniciándose. La API se usa solo para leer estado y como proxy WHEP/reproducción; se vigila cada 2 s.
+  Los 401 se detectan siguiendo `logs/engine.log` (ya sin credenciales, `vms.engine.logtail`).
+
+Responsabilidades comunes:
 - Generar mediamtx.yml (sin credenciales) y supervisar el proceso (vms.engine.process).
 - Registrar por la API de control una ruta «<cámara>/main» (grabación 24/7) y «<cámara>/sub»
   (subflujo bajo demanda) por cámara; sincronizar altas, cambios y bajas sin reiniciar; volver a
@@ -21,7 +30,8 @@ import hashlib
 import logging
 import re
 import time
-from datetime import datetime
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlencode, urlsplit
@@ -35,9 +45,10 @@ from vms.core.paths import AppPaths, find_mediamtx
 from vms.core.settings import VmsSettings
 
 from . import disk_guard
-from .mtx_api import MediaMtxApi, MtxApiError, format_time
-from .mtx_config import (conf_hash, global_config, http_base, path_configs, path_defaults, split_address,
-                         write_config)
+from .logtail import LogTail
+from .mtx_api import MediaMtxApi, MtxApiError, format_time, parse_time
+from .mtx_config import (attach_config, conf_hash, global_config, http_base, path_configs, path_defaults,
+                         render_attach, split_address, write_config, write_if_changed)
 from .process import BACKOFF, MediaMtxProcess
 
 log = logging.getLogger("vms.engine")
@@ -140,13 +151,29 @@ class _AuthGuard:
             self.release(key)
 
 
+EngineMode = Literal["child", "attach"]
+EventSink = Callable[[dict[str, Any]], None]
+
+
 class MediaMtxEngine:
     def __init__(self, settings: VmsSettings, paths: AppPaths, *, mediamtx_bin: Path | None = None,
                  disk_guard_interval: float = 60.0, watchdog_interval: float = 15.0,
                  auth_fail_threshold: int = 2, auth_pause_seconds: float = 1800.0,
-                 backoff: tuple[float, ...] = BACKOFF, api_timeout: float = 5.0) -> None:
+                 backoff: tuple[float, ...] = BACKOFF, api_timeout: float = 5.0,
+                 mode: EngineMode | None = None, attach_poll: float = 2.0,
+                 logtail_interval: float = 1.0) -> None:
         self.settings = settings
         self.paths = paths
+        self.mode: EngineMode = mode or settings.engine_mode
+        self.attach_poll = attach_poll
+        self.logtail_interval = logtail_interval
+        # Quien quiera el evento SSE `engine` (CONTRATO §17.3) asigna aquí `lambda ev: publish_engine(bus, ev)`.
+        self.on_event: EventSink | None = None
+        self._api_ok = False
+        self._mtx_started = ""
+        self._attach_restarts = 0
+        self._attach_error = ""
+        self.logtail: LogTail | None = None
         self.exe = mediamtx_bin or settings.mediamtx_bin or find_mediamtx()
         api_hp = split_address(settings.mtx_api_address)
         if api_hp is None:
@@ -181,6 +208,9 @@ class MediaMtxEngine:
 
     # ================================================================== ciclo de vida
     async def start(self) -> None:
+        if self.mode == "attach":
+            await self._start_attach()
+            return
         if self.process is not None and self.process.running:
             return
         if self.exe is None or not Path(self.exe).is_file():
@@ -211,6 +241,93 @@ class MediaMtxEngine:
         self._tasks = [asyncio.create_task(self._disk_guard_loop(), name="engine-disk-guard"),
                        asyncio.create_task(self._watchdog_loop(), name="engine-watchdog")]
         log.info("Motor de vídeo en marcha (MediaMTX %s)", self._version or "?")
+        self._emit("started", self.process.pid)
+
+    async def _start_attach(self) -> None:
+        """Modo attach: no lanza nada. Prepara la API, sigue `engine.log` y vigila al servicio VMSEngine.
+
+        No escribe el YAML aquí: lo escribe `apply()` con las cámaras ya cargadas. Escribirlo vacío al
+        arrancar quitaría todas las rutas un instante y abriría un hueco en las grabaciones."""
+        if self._tasks:
+            return
+        self.paths.ensure()
+        Path(self._recordings_dir).mkdir(parents=True, exist_ok=True)
+        try:
+            await asyncio.to_thread(disk_guard.migrate_legacy_names, Path(self._recordings_dir))
+        except Exception:  # noqa: BLE001 - no impide arrancar; solo afecta a grabaciones antiguas
+            log.exception("Error renombrando grabaciones antiguas al formato con desfase horario")
+        self.api = MediaMtxApi(self._api_base, self._playback_base, timeout=self._api_timeout,
+                               auth=self.mtx_credentials.api_auth)
+        await self._probe_engine()
+        self.logtail = LogTail(self.paths.logs_dir / "engine.log", lambda line: self._on_line(line, relay=False))
+        self._tasks = [asyncio.create_task(self._disk_guard_loop(), name="engine-disk-guard"),
+                       asyncio.create_task(self._attach_watchdog(), name="engine-attach-watchdog"),
+                       asyncio.create_task(self.logtail.run(self.logtail_interval), name="engine-logtail")]
+        if self._api_ok:
+            log.info("Motor de vídeo (servicio VMSEngine, MediaMTX %s) conectado en modo attach", self._version or "?")
+        else:
+            log.warning("El motor de vídeo (servicio VMSEngine) todavía no responde: el backend sigue y se conectará "
+                        "en cuanto aparezca. Las cámaras se guardan igualmente en mediamtx.yml")
+
+    def _emit(self, state: Literal["started", "restarted", "down"], pid: int | None = None) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event({"state": state, "pid": pid,
+                           "at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")})
+        except Exception:  # noqa: BLE001 - un oyente roto no puede parar el motor
+            log.exception("Error avisando del estado del motor")
+
+    async def _probe_engine(self) -> None:
+        """Modo attach: ¿responde el servicio VMSEngine? Detecta caídas y reinicios (cambia `started`)."""
+        if self.api is None:
+            return
+        was_ok = self._api_ok
+        try:
+            info = await self.api.info()
+        except (EngineUnavailable, MtxApiError) as exc:
+            self._api_ok = False
+            self._attach_error = ("El motor de vídeo (servicio VMSEngine) no responde. Las grabaciones siguen si el "
+                                  "servicio está en marcha; revisa «vmsctl services status» y logs/engine.log")
+            if was_ok:
+                log.warning("El motor de vídeo (VMSEngine) dejó de responder: %s", exc)
+                self._emit("down")
+            return
+        self._api_ok = True
+        self._attach_error = ""
+        self._version = str(info.get("version", "")) or self._version
+        started = str(info.get("started", ""))
+        if not self._mtx_started:
+            event: Literal["started", "restarted"] | None = "started"
+        elif started and started != self._mtx_started:
+            self._attach_restarts += 1
+            self._path_errors.clear()
+            log.warning("El motor de vídeo (VMSEngine) se reinició; vuelve a grabar solo con mediamtx.yml")
+            event = "restarted"
+        elif not was_ok:
+            event = "started"
+        else:
+            event = None
+        self._mtx_started = started or self._mtx_started or "?"
+        if event is not None:
+            if not was_ok and event == "started" and self._tasks:
+                log.info("El motor de vídeo (VMSEngine) vuelve a responder")
+            self._emit(event)
+
+    async def _attach_watchdog(self) -> None:
+        since_retry = 0.0
+        while True:
+            await asyncio.sleep(self.attach_poll)
+            try:
+                await self._probe_engine()
+                since_retry += self.attach_poll
+                if since_retry >= self.watchdog_interval:
+                    since_retry = 0.0
+                    released = await self._retry_paused()
+                    if released:
+                        await self._sync_soon()
+            except Exception:  # noqa: BLE001 - la vigilancia no puede morir
+                log.exception("Error en la vigilancia del motor (modo attach)")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -232,6 +349,8 @@ class MediaMtxEngine:
 
     @property
     def running(self) -> bool:
+        if self.mode == "attach":
+            return self._api_ok
         return self.process is not None and self.process.running
 
     def _write_yaml(self) -> None:
@@ -254,6 +373,7 @@ class MediaMtxEngine:
         async with self._lock:
             self._applied.clear()
             await self._sync_locked()
+        self._emit("restarted", self.process.pid if self.process else None)
 
     # ================================================================== configuración
     async def apply(self, sources: list[CameraSource], recording: RecordingSettings,
@@ -268,10 +388,17 @@ class MediaMtxEngine:
             # Credenciales que ya no usa ninguna cámara (p. ej. contraseña corregida): fuera de la pausa
             self._auth.forget_unused({_cred_key(s.main_url) for s in sources})
             if defaults_changed:
-                # El YAML NO se reescribe aquí: MediaMTX recargaría el archivo y perdería las rutas
-                # registradas por la API. Se regenera antes de cada arranque (before_spawn) y en
-                # caliente se cambia por la API.
+                # Modo child: el YAML NO se reescribe aquí (MediaMTX recargaría el archivo y perdería las
+                # rutas registradas por la API); se regenera antes de cada arranque y en caliente se cambia
+                # por la API. Modo attach: el YAML lo es todo y se reescribe abajo.
                 Path(self._recordings_dir).mkdir(parents=True, exist_ok=True)
+            if self.mode == "attach":
+                if defaults_changed and self.config_file.exists():
+                    log.info("Grabación: segmentos de %ss, retención %s días, carpeta %s. Cambiar estos ajustes "
+                             "abre un segmento nuevo en todas las cámaras (hueco de hasta 1 GOP)",
+                             recording.segment_seconds, retention.days, self._recordings_dir)
+                await self._write_attach_yaml()
+                return
             if not self.running or self.api is None:
                 raise EngineUnavailable("El motor de vídeo no está en marcha; se aplicará al arrancar")
             if defaults_changed:
@@ -289,8 +416,33 @@ class MediaMtxEngine:
             out.update(path_configs(src))
         return out
 
+    async def _write_attach_yaml(self) -> bool:
+        """Modo attach: escribe mediamtx.yml completo si cambió (requiere self._lock). True si lo escribió.
+
+        Las rutas de un equipo en pausa por contraseña rechazada se quitan del YAML (CONTRATO §13.10)."""
+        desired = self._desired()
+        active: dict[str, dict[str, Any]] = {}
+        for name, conf in desired.items():
+            if self._auth.is_paused(conf["source"]):
+                self._path_errors[name] = AUTH_PAUSED_MSG
+            else:
+                active[name] = conf
+        for name in list(self._path_errors):
+            if name not in desired:
+                self._path_errors.pop(name, None)
+        cfg = attach_config(self.settings, self._recording, self._retention, self._recordings_dir, active,
+                            creds=self.mtx_credentials)
+        changed = await asyncio.to_thread(write_if_changed, self.config_file, render_attach(cfg))
+        self._applied = {name: conf_hash(conf) for name, conf in active.items()}
+        if changed:
+            log.info("mediamtx.yml actualizado (%d rutas): MediaMTX lo recarga solo", len(active))
+        return changed
+
     async def _sync_locked(self) -> None:
         """Alinea las rutas de MediaMTX con las cámaras deseadas (requiere self._lock)."""
+        if self.mode == "attach":
+            await self._write_attach_yaml()
+            return
         if self.api is None or not self.running:
             raise EngineUnavailable("El motor de vídeo no está en marcha")
         desired = self._desired()
@@ -335,10 +487,13 @@ class MediaMtxEngine:
             log.exception("Error sincronizando las rutas del motor")
 
     # ================================================================== salida de MediaMTX
-    def _on_line(self, line: str) -> None:
+    def _on_line(self, line: str, relay: bool = True) -> None:
+        """Interpreta una línea de MediaMTX. `relay=False` (modo attach, la línea ya está en engine.log): solo
+        se repiten en el registro del backend los avisos y errores, no todo."""
         m = _LINE_RE.match(line)
         if not m:
-            mtx_log.info("%s", line)
+            if relay:
+                mtx_log.info("%s", line)
             return
         level, msg = _LEVELS[m.group(1)], m.group(2)
         pm = _PATH_RE.match(msg)
@@ -367,7 +522,8 @@ class MediaMtxEngine:
                     self._auth.success(src.main_url)
         if any(q in msg for q in _QUIET):
             level = logging.DEBUG
-        mtx_log.log(level, "%s", msg)
+        if relay or level >= logging.WARNING:
+            mtx_log.log(level, "%s", msg)
 
     def _on_auth_failure(self, name: str) -> None:
         parsed = parse_mtx_path(name)
@@ -400,9 +556,11 @@ class MediaMtxEngine:
             except Exception:  # noqa: BLE001 - la vigilancia no puede morir
                 log.exception("Error en la vigilancia del motor")
 
-    async def _retry_paused(self) -> None:
+    async def _retry_paused(self) -> bool:
+        """Vuelve a probar (con UNA petición) los equipos en pausa. True si alguno se reanudó."""
         from vms.vendors.rtsp_probe import probe_rtsp
 
+        released = False
         for key in self._auth.due():
             src = next((s for s in self._sources.values() if _cred_key(s.main_url) == key), None)
             if src is None:
@@ -419,9 +577,11 @@ class MediaMtxEngine:
             else:
                 log.info("El equipo %s:%s vuelve a aceptar la contraseña; se reanudan sus cámaras", key[0], key[1])
                 self._auth.release(key)
+                released = True
                 for name, msg in list(self._path_errors.items()):
                     if msg == AUTH_PAUSED_MSG:
                         self._path_errors.pop(name, None)
+        return released
 
     async def run_disk_guard(self) -> disk_guard.GuardResult:
         percent = float(self._retention.disk_guard_percent)
@@ -444,6 +604,15 @@ class MediaMtxEngine:
 
     # ================================================================== consultas
     async def status(self) -> EngineStatus:
+        if self.mode == "attach":
+            await self._probe_engine()
+            try:
+                started_at = parse_time(self._mtx_started) if self._api_ok and self._mtx_started != "?" else None
+            except ValueError:
+                started_at = None
+            return EngineStatus(running=self._api_ok, pid=None, version=self._version,
+                                restarts=self._attach_restarts, started_at=started_at, api_ok=self._api_ok,
+                                last_error=self._attach_error or self._disk_warning)
         proc = self.process
         api_ok = False
         if self.api is not None and self.running:

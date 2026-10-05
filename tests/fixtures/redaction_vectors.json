@@ -100,6 +100,21 @@
       "name": "vacio",
       "input": "",
       "expected": ""
+    },
+    {
+      "name": "yaml_mediamtx_attach",
+      "input": "    source: rtsp://admin:Sim%23Pass%3A1%40%2Fx@192.168.1.64:554/Streaming/Channels/101",
+      "expected": "    source: rtsp://***:***@192.168.1.64:554/Streaming/Channels/101"
+    },
+    {
+      "name": "json_entre_comillas",
+      "input": "{\"source\":\"rtsp://visor:Cl4ve%21@10.0.0.9:554/s\",\"record\":true}",
+      "expected": "{\"source\":\"rtsp://***:***@10.0.0.9:554/s\",\"record\":true}"
+    },
+    {
+      "name": "evento_vmsctl_ruta_windows",
+      "input": "2026-10-05T10:00:00Z [vmsctl] no existe C:\\Program Files\\VMSMultimarca\\versions\\2.0.0\\engine\\mediamtx.exe",
+      "expected": "2026-10-05T10:00:00Z [vmsctl] no existe C:\\Program Files\\VMSMultimarca\\versions\\2.0.0\\engine\\mediamtx.exe"
     }
   ]
 }

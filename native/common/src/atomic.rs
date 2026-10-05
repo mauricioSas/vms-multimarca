@@ -37,7 +37,9 @@ pub fn replace(tmp: &Path, path: &Path) -> io::Result<()> {
     for _ in 0..REPLACE_RETRIES {
         match replace_once(tmp, path) {
             Ok(()) => return Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            // Acceso denegado (5), archivo compartido (32) o bloqueado (33): un antivirus o un lector que lo
+            // tiene abierto un instante. Se reintenta.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32 | 33)) => {
                 last = Some(e);
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }

@@ -1,8 +1,11 @@
-"""Genera mediamtx.yml y la configuración de cada ruta (docs/CONTRATO.md §4.3).
+"""Genera mediamtx.yml y la configuración de cada ruta (docs/CONTRATO.md §4.3 y §13.10).
 
-El YAML que se escribe en disco NUNCA lleva credenciales: las rutas de las cámaras (cuyas
-URLs de origen llevan usuario y contraseña) se registran por la API de control de MediaMTX y
-solo viven en la memoria del proceso.
+- Modo `child` (desarrollo y v1): el YAML NUNCA lleva credenciales; las rutas de las cámaras (cuyas URL
+  de origen llevan usuario y contraseña) se registran por la API de control de MediaMTX y solo viven en
+  la memoria del proceso.
+- Modo `attach` (Windows, motor como servicio `VMSEngine`): el YAML es la fuente única de las rutas y sí
+  lleva las URL con contraseña (`attach_config`). Lo protege la ACL de `mediamtx\\` (solo VMSEngine,
+  VMSBackend, SYSTEM y Administradores) y nunca entra en `vmsctl diag bundle`.
 """
 from __future__ import annotations
 
@@ -126,6 +129,42 @@ def write_config(file: Path, cfg: dict[str, Any]) -> None:
             "# Las rutas de las cámaras se registran por la API (sin credenciales en disco).\n"
             + yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, default_flow_style=False))
     atomic_write_text(file, text)
+
+
+# --------------------------------------------------------------------------- modo attach (CONTRATO §13.10)
+ATTACH_HEADER = (
+    "# Generado por VMS Multimarca (motor como servicio, modo attach). No lo edites: se sobrescribe.\n"
+    "# Es la FUENTE ÚNICA de las rutas: MediaMTX graba con él aunque el backend esté parado.\n"
+    "# Contiene las URL de las cámaras con su contraseña: solo lo leen VMSEngine, VMSBackend, SYSTEM y\n"
+    "# Administradores (vmsctl acl apply). No lo copies ni lo adjuntes a una incidencia.\n"
+)
+
+
+def attach_config(settings: VmsSettings, recording: RecordingSettings, retention: RetentionSettings,
+                  recordings_dir: str | Path, paths: dict[str, dict[str, Any]], *,
+                  creds: MtxCredentials | None = None) -> dict[str, Any]:
+    """Documento completo para el modo attach: lo de `global_config` más las rutas de las cámaras."""
+    cfg = global_config(settings, recording, retention, recordings_dir, creds=creds)
+    cfg["paths"] = {name: paths[name] for name in sorted(paths)}
+    return cfg
+
+
+def render_attach(cfg: dict[str, Any]) -> str:
+    return ATTACH_HEADER + yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
+def write_if_changed(file: Path, text: str) -> bool:
+    """Escribe con `atomic_write` solo si el contenido cambia (cada escritura hace que MediaMTX recargue).
+    Devuelve True si lo escribió."""
+    try:
+        if file.read_text(encoding="utf-8") == text:
+            return False
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        pass  # ilegible o dañado: se reescribe
+    atomic_write_text(file, text)
+    return True
 
 
 def path_configs(src: CameraSource) -> dict[str, dict[str, Any]]:
