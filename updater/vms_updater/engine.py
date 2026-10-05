@@ -210,11 +210,32 @@ class Engine:
             ptr = self.pointer.read()
             committed = ptr is not None and j.to is not None and ptr.active == j.to
             if not committed:
+                back = self._host_rollback_of(j)
+                if back is not None:
+                    # El vmshost de VMSUpdater ya volvió atrás la versión a prueba (3 caídas en 10 min o 30 min sin
+                    # confirmar, p. ej. tras un corte de luz largo en `verifying`): la nueva FALLÓ. Se termina la
+                    # vuelta atrás (respaldo de config, servicios, salud) y no se reintenta.
+                    return self._rollback(j, f"vmshost volvió a la {back.get('to') or j.from_}: "
+                                          f"{str(back.get('reason') or 'la versión a prueba falló')[:200]}",
+                                          blacklist=True)
                 return self._abort(j, "la actualización se interrumpió antes de cambiar de versión")
             j = self.journal.set(j, attempt=j.attempt + 1)
             if j.attempt > MAX_ATTEMPTS:
                 return self._rollback(j, f"la actualización se interrumpió {j.attempt - 1} veces", blacklist=True)
             return self._forward_from(j)
+
+    def _host_rollback_of(self, j: Journal) -> dict[str, Any] | None:
+        """`state/host-rollback.json` (lo escribe el vmshost de VMSUpdater al volver atrás, CONTRATO §13.3) si
+        es la vuelta atrás de ESTA actualización: de `j.to` y posterior a su paso `switched` (una nota vieja de
+        otro intento no convierte en fallida una actualización que no llegó a cambiar el puntero)."""
+        raw = read_json(self.layout.host_rollback_file)
+        if not isinstance(raw, dict) or not j.to or raw.get("from") != j.to:
+            return None
+        switched = [s.started_unix for s in j.steps if s.state == "switched"]
+        at = raw.get("at_unix")
+        if not switched or not isinstance(at, int) or at + 5 < switched[-1]:
+            return None
+        return raw
 
     def _last_done_index(self, j: Journal) -> int:
         idx = -1
@@ -545,7 +566,9 @@ class Engine:
                 raise _StepFailed(f"no se pudieron parar los servicios: {exc.message_es}") from exc
             return j
         if state == "switched":
-            self.pointer.switch(to, trial=True)
+            # `restart`: vmshost no relanza los servicios que esta versión no reinicia (el motor en una de
+            # `app`): siguen en su carpeta de versión, sin corte (PLAN-V2 §2.5).
+            self.pointer.switch(to, trial=True, restart=j.services)
             return j
         if state == "migrated":
             try:
@@ -599,6 +622,19 @@ class Engine:
             run.update({s: version for s in services})
             atomic_write_json(self._running_file(), run)
 
+    def _reported_running(self) -> set[str]:
+        """Versiones que `vmsctl run` dice ejecutar (`logs/status-<Servicio>.json`, CONTRATO §14): cubre lo que
+        `running.json` no sabe (un servicio relanzado por el SCM, un `running.json` perdido)."""
+        out: set[str] = set()
+        for s in KNOWN_SERVICES:
+            raw = read_json(self.layout.logs_dir / f"status-{s}.json")
+            if not isinstance(raw, dict) or raw.get("state") == "stopped":
+                continue
+            v = raw.get("version")
+            if isinstance(v, str) and v:
+                out.add(v)
+        return out
+
     @staticmethod
     def _expected(services: list[str], version: str | None) -> str | None:
         """La versión que tiene que decir el backend: solo si se ha reiniciado (si no, sigue la suya)."""
@@ -610,6 +646,7 @@ class Engine:
         if not keep:
             return
         keep |= set(self._running().values())        # nunca la carpeta de un servicio en marcha
+        keep |= self._reported_running()
         for p in self.layout.versions_dir.iterdir():
             if not p.is_dir() or p.name in keep:
                 continue
@@ -646,7 +683,7 @@ class Engine:
         except ServiceError as exc:
             log.error("No se pudieron parar los servicios: %s", exc.message_es)
         if target and (self.layout.version_dir(target) / "release.json").is_file():
-            self.pointer.switch(target, trial=False)
+            self.pointer.switch(target, trial=False, restart=j.services)
         if j.backup and (self.layout.data / j.backup).is_dir():
             try:
                 restore_config(data_dir=self.layout.data, backup_dir=self.layout.data / j.backup)
@@ -682,7 +719,7 @@ class Engine:
                             available=None)
 
     def manual_rollback(self, to: str | None = None, reason: str = "") -> Outcome:
-        """Rollback pedido (tubería elevada, panel central o rollback-request de vmshost).
+        """Rollback pedido (tubería elevada o panel central).
 
         La versión de la que se vuelve queda **omitida** (`Blacklist`, `kind="manual"`): si no, el ciclo
         siguiente la volvería a instalar sola. Se levanta con una versión mayor o con `unskip`."""
@@ -744,29 +781,6 @@ class Engine:
         cands = sorted((p for p in d.glob(f"pre-{version}-*") if p.is_dir() and (p / "backup.json").is_file()),
                        key=lambda p: p.name, reverse=True)
         return cands[0] if cands else None
-
-    def handle_rollback_request(self) -> Outcome | None:
-        """`state\\rollback-request.json` de un vmshost sin permiso de escribir el puntero (CONTRATO §13.3)."""
-        f = self.layout.rollback_request_file
-        raw = read_json(f)
-        if raw is None:
-            return None
-        with self._op, self._apply:
-            ptr = self.pointer.read()
-            try:
-                f.unlink()
-            except OSError:
-                pass
-            if ptr is None or not ptr.trial or not ptr.previous:
-                return None
-            reason = str(raw.get("reason") if isinstance(raw, dict) else "") or "la versión a prueba falla al arrancar"
-            j = self.journal.read()
-            if j is not None and j.kind == "release" and j.to == ptr.active and j.in_progress:
-                return self._rollback(j, f"vmshost: {reason}", blacklist=True)
-            bad = ptr.active
-            out = self.manual_rollback(ptr.previous, f"vmshost: {reason}")
-            self.blacklist.add(bad, reason)
-            return out
 
     def handle_directive_rollback(self) -> Outcome | None:
         d = read_directive(self.layout.directive_file)

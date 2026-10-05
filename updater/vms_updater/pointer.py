@@ -1,8 +1,9 @@
 """Puntero de versión `state\\active.json` (CONTRATO §13.4).
 
 Lo escriben solo el actualizador (LocalSystem) y el instalador, siempre con escritura atómica. `vmshost`
-lo lee al lanzar cada servicio y, si la versión a prueba falla, vuelve a `previous` (o deja
-`state\\rollback-request.json` si corre con una cuenta sin permiso de escritura, CONTRATO §13.3).
+lo lee al lanzar cada servicio; si la versión a prueba falla, el `vmshost` de un servicio sin permiso de
+escritura deja una petición en `state\\requests\\` y el de `VMSUpdater` vuelve atrás y lo anota en
+`state\\host-rollback.json` (CONTRATO §13.3), que el actualizador lee al recuperar el diario.
 Los campos que no se conocen se conservan.
 """
 from __future__ import annotations
@@ -43,18 +44,25 @@ class PointerStore:
         return ptr
 
     # ------------------------------------------------------------------ operaciones
-    def switch(self, to: str, *, trial: bool = True) -> ActivePointer:
-        """Activa `to`; la activa de ahora pasa a `previous`. Con `trial`, vmshost la vigila."""
+    def switch(self, to: str, *, trial: bool = True, restart: Sequence[str] | None = None) -> ActivePointer:
+        """Activa `to`; la activa de ahora pasa a `previous`. Con `trial`, vmshost la vigila.
+
+        `restart`: servicios que reinicia este cambio (los que el actualizador para y arranca). `vmshost` no
+        relanza por el cambio del puntero a los que no estén (siguen en su carpeta: PLAN-V2 §2.5, «0 s» de
+        corte del motor en una actualización de `app`); salvo una vuelta atrás, que devuelve a todo el que
+        ejecute la versión abandonada. `None` = todos siguen al puntero (como el instalador)."""
         cur = self.read()
         now = int(self.clock())
+        rs = list(restart) if restart is not None else None
         if cur is None:
-            new = ActivePointer(active=to, previous=None, trial=trial, trial_since_unix=now if trial else None)
+            new = ActivePointer(active=to, previous=None, trial=trial, trial_since_unix=now if trial else None,
+                                restart=rs)
         elif cur.active == to:
             new = cur.model_copy(update={"trial": trial, "trial_since_unix": (cur.trial_since_unix or now)
-                                         if trial else None})
+                                         if trial else None, "restart": rs})
         else:
             new = cur.model_copy(update={"active": to, "previous": cur.active, "trial": trial,
-                                         "trial_since_unix": now if trial else None})
+                                         "trial_since_unix": now if trial else None, "restart": rs})
         return self.write(new)
 
     def confirm(self) -> ActivePointer | None:

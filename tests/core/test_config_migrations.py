@@ -26,11 +26,6 @@ from vms.core.models import CONFIG_VERSION, AppConfig
 FIX = Path(__file__).parent / "fixtures"
 ROOT = Path(__file__).resolve().parents[2]
 V1_FIXTURES = sorted(p for p in FIX.glob("config_v1_*.json") if ".expected" not in p.name)
-# El modo solo lectura vive en vms/core/config_store.py, que no es de B4 (PLAN-V2 §6.2): está pedido al
-# arquitecto con su diff. Hasta que se integre, estas dos pruebas se saltan en lugar de fallar.
-needs_read_only_store = pytest.mark.skipif(
-    not hasattr(ConfigStore, "read_only"),
-    reason="pendiente de la petición a vms/core/config_store.py (solo lectura, CONTRATO §13.8)")
 
 
 def load(p: Path) -> dict[str, Any]:
@@ -99,7 +94,6 @@ def test_chain_errors() -> None:
         cm.migrate({"version": 1}, target=2, migrations={1: lambda d: {**d, "version": 1}})
 
 
-@needs_read_only_store
 def test_newer_config_is_read_only_and_never_saved(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     newer = load(FIX / "config_v1_tienda.expected_v2.json")
@@ -120,7 +114,6 @@ def test_newer_config_is_read_only_and_never_saved(tmp_path: Path) -> None:
     assert repo.load_warning and "solo lectura" in repo.load_warning
 
 
-@needs_read_only_store
 def test_saving_a_config_with_newer_version_is_refused(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
     with pytest.raises(cm.NewerConfigError):

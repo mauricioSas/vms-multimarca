@@ -893,13 +893,30 @@ vmshost.exe --version
    se crea **suspendido** (o con `PROC_THREAD_ATTRIBUTE_JOB_LIST`) para que no haya ventana sin job.
 3. Versión «a prueba» (`trial: true`): si el hijo cae **3 veces en 10 min** o pasan **30 min** sin
    confirmación, vuelve a `previous` (puntero escrito con `atomic_write`) y la arranca.
+3 bis. **Cambio del puntero con el hijo sano.** Solo se para el hijo y se lanza la versión activa si el
+   servicio la *sigue* (`Pointer::follows`): el puntero no trae `restart` (instalador, punteros antiguos o
+   reconstruidos), el servicio está en `restart`, o el hijo ejecuta una versión **más nueva** que la activa
+   (vuelta atrás: nadie se queda en la versión abandonada). Si no la sigue, el hijo **sigue en su carpeta de
+   versión** y, si cae, se relanza esa misma (sin «a prueba»: sus caídas no cuentan contra la versión nueva).
+   Así una actualización de `app` o una vuelta atrás de `app` no corta la grabación (PLAN-V2 §2.5). Al
+   arrancar de cero (SCM, reinicio del equipo) siempre se lanza la activa. La retención del actualizador no
+   borra la carpeta que un servicio ejecuta: la lee de `running.json` y de `logs\status-<Servicio>.json`
+   (`version`, lo publica `vmsctl run`).
 4. Informa al SCM (Running/Stopped) y, al recibir Stop, para el job.
 5. **Quién escribe el puntero** (hallazgo de S4): `vmshost` corre con la cuenta del servicio que hospeda, así
    que con el diseño de la prueba todas las cuentas virtuales necesitarían escribir `state\`. En el
-   producto **solo** `VMSUpdater` (LocalSystem) y el instalador escriben `active.json`; el `vmshost` de un
-   servicio sin privilegios que detecte una versión a prueba fallida escribe `state\rollback-request.json`
-   (permiso de crear archivos en esa carpeta, no de modificar el puntero) y para su hijo; el `vmshost` del
-   actualizador (o el propio actualizador) ejecuta la vuelta atrás. Decisión de B1, a cerrar en su revisión.
+   producto **solo** `VMSUpdater` (LocalSystem) y el instalador escriben `active.json`. El `vmshost` de un
+   servicio sin privilegios que detecte una versión a prueba fallida deja
+   `state\requests\rollback-<Servicio>.json` (`{"schema", "service", "kind", "from", "reason",
+   "created_unix"}`; `state\requests\` es la única carpeta de `state\` que modifican los servicios). El
+   `vmshost` de `VMSUpdater` la atiende (solo si `from` sigue siendo la versión activa a prueba), hace él
+   mismo la vuelta atrás por plazo (30 min sin confirmar) y, en los dos casos, anota
+   `state\host-rollback.json` (`{"schema", "from", "to", "reason", "at_unix", "by": "vmshost"}`).
+6. **El actualizador ve esa vuelta atrás:** al retomar un diario a medias cuyo puntero ya no apunta a `to`,
+   si `host-rollback.json` es de `to` y posterior a su paso `switched`, la actualización **falló** (no «se
+   interrumpió antes de cambiar»): termina la vuelta atrás (restaura el respaldo de `config\`, para y
+   arranca los servicios afectados, health check), pone la versión en la lista negra y cierra el diario en
+   `rolled_back`. Sin esa nota (corte antes de `switched`), revierte sin culpar a la versión y se reintenta.
 
 ### 13.4 `state\active.json` (puntero)
 
@@ -908,9 +925,14 @@ vmshost.exe --version
  "active": "2.1.0", "previous": "2.0.0",
  "trial": true, "trial_since_unix": 1763600000,
  "updater": {"slot": "b", "previous_slot": "a", "trial": false, "trial_since_unix": null},
+ "restart": ["VMSBackend", "VMSAnalytics", "VMSHeartbeat", "VMSCentral"],
  "updated_unix": 1763600000}
 ```
 Tiempos en segundos Unix (UTC): sin dependencias de fecha en Rust. Campos desconocidos se conservan.
+`restart` (opcional): servicios que reinicia el último cambio de versión (los que el actualizador para y
+arranca, de `components.<c>.restart` del descriptor). Lo escribe el actualizador en `switched` y en la vuelta
+atrás; se conserva al confirmar y en la vuelta atrás de `vmshost`; un cambio sin lista (instalador, `vmsctl
+version switch`) la quita (`null`/ausente = todos siguen al puntero). Regla de §13.3 punto 3 bis.
 
 ### 13.5 `state\journal.json` (diario) y `atomic_write`
 
@@ -955,8 +977,9 @@ versión salvo `/ALLOWDOWNGRADE`. Cerrojo compartido por la tubería (§15.2, or
   claro dentro de un equipo (se descarta y se avisa, como en la v1).
 - Cuerpos de petición que llegan como `dict` (ajustes, reglas, analítica por cámara): se filtran con
   `vms.core.models.known_fields_only(Modelo, cuerpo)` antes de mezclarse con lo guardado.
-- Versión **mayor** que la propia: se carga sin migrar y se registra un aviso. **Pendiente de B4:** arrancar
-  en solo lectura (`config_warning`, `status: degraded`) y no guardar nunca.
+- Versión **mayor** que la propia: se carga sin migrar, en **solo lectura** (`ConfigStore.read_only`; el aviso
+  de `load()` llega a `config_warning`) y no se guarda nunca: `save()` lanza `NewerConfigError` (409
+  `config_read_only`). Tampoco se guarda un `AppConfig` con `version` mayor que `CONFIG_VERSION`.
 - `Vendor`: texto `^[a-z0-9][a-z0-9-]{1,31}$`. El alta (`DeviceCreate`, `DeviceUpdate`,
   `DeviceTestRequest`) lo valida contra `known_vendor_ids()` (lo amplía el registro con
   `register_vendor_ids()`); un equipo guardado con una marca desconocida se conserva y la interfaz muestra

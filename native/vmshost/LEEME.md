@@ -12,7 +12,11 @@ Qué hace (CONTRATO §13.3):
 2. Lanza `versions\<activa>\bin\vmsctl.exe run --service <S> --stop-on-stdin-eof` (o
    `updater\slot-<x>\vmsctl.exe` para `VMSUpdater`) **creado suspendido**, lo mete en un Job Object
    «kill on close» y lo reanuda: no hay ni un instante fuera del job.
-3. Si el hijo cae: espera creciente 1, 2, 5, 10, 30 s. Si la versión está **a prueba** (`trial`), pasa
+3. Si cambia el puntero con el hijo sano, solo lo relanza si el servicio **sigue** el cambio: está en la lista
+   `restart` del puntero (la pone el actualizador), no hay lista (instalador) o el hijo ejecuta una versión
+   más nueva que la activa (vuelta atrás). Si no, el hijo sigue en su carpeta de versión y, si cae, se
+   relanza esa misma: una actualización de `app` no corta el motor (PLAN-V2 §2.5, CONTRATO §13.3 punto 3 bis).
+   Si el hijo cae: espera creciente 1, 2, 5, 10, 30 s. Si la versión está **a prueba** (`trial`), pasa
    `--exit-on-crash` para contar cada caída: **3 en 10 min** o **30 min sin confirmar** → vuelta atrás.
 4. **Quién escribe el puntero** (cierra el hallazgo de S4): solo el `vmshost` de `VMSUpdater` (LocalSystem)
    y el instalador. El de un servicio con cuenta virtual deja `state\requests\rollback-<Servicio>.json`
