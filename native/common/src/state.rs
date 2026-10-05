@@ -11,6 +11,7 @@
 use crate::atomic_write;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::cmp::Ordering;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -73,6 +74,44 @@ pub fn validate_version(v: &str) -> Result<(), StateError> {
     }
 }
 
+/// Precedencia SemVer 2.0 (`X.Y.Z[-pre][+build]`), la misma que `vms_updater.versioning.Version`.
+/// `None` si alguna no es SemVer (quien la usa decide qué hacer en la duda).
+pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    fn parse(v: &str) -> Option<([u64; 3], Vec<&str>)> {
+        let core_pre = v.split('+').next()?;
+        let (core, pre) = match core_pre.split_once('-') {
+            Some((c, p)) => (c, p.split('.').collect::<Vec<_>>()),
+            None => (core_pre, Vec::new()),
+        };
+        let nums: Vec<u64> = core.split('.').map(|n| n.parse().ok()).collect::<Option<_>>()?;
+        if nums.len() != 3 || pre.iter().any(|p| p.is_empty()) {
+            return None;
+        }
+        Some(([nums[0], nums[1], nums[2]], pre))
+    }
+    let (ca, pa) = parse(a)?;
+    let (cb, pb) = parse(b)?;
+    Some(ca.cmp(&cb).then_with(|| match (pa.is_empty(), pb.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater, // 2.0.0 > 2.0.0-rc.1
+        (false, true) => Ordering::Less,
+        (false, false) => {
+            for (x, y) in pa.iter().zip(pb.iter()) {
+                let o = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(m), Ok(n)) => m.cmp(&n),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            pa.len().cmp(&pb.len())
+        }
+    }))
+}
+
 pub fn validate_slot(s: &str) -> Result<(), StateError> {
     if SLOTS.contains(&s) {
         Ok(())
@@ -121,6 +160,12 @@ pub struct Pointer {
     pub updater: UpdaterSlot,
     #[serde(default)]
     pub updated_unix: u64,
+    /// Servicios que reinicia el último cambio de versión (CONTRATO §13.4). Lo escribe el actualizador en el
+    /// paso `switched`. Un servicio que no está en la lista **no se relanza** por el cambio del puntero: sigue
+    /// en su carpeta de versión (p. ej. el motor en una actualización solo de `app`, PLAN-V2 §2.5). Sin lista
+    /// (`null` o ausente: instalador, punteros antiguos, puntero reconstruido) todos siguen al puntero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<Vec<String>>,
     /// Campos de versiones futuras: se conservan.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -136,8 +181,21 @@ impl Pointer {
             trial_since_unix: None,
             updater: UpdaterSlot::default(),
             updated_unix: 0,
+            restart: None,
             extra: Map::new(),
         }
+    }
+
+    /// ¿Tiene que pasar a la versión activa el servicio `service`, que ahora ejecuta `running`?
+    ///
+    /// Sí si el puntero no trae lista de reinicio, si el servicio está en ella o si `running` es **más nueva**
+    /// que la activa (vuelta atrás: nunca se queda nadie en la versión que se abandonó). No en otro caso: un
+    /// servicio sano no se corta por una actualización que no le toca. Si alguna versión no es SemVer, sí
+    /// (como antes de existir la lista).
+    pub fn follows(&self, service: &str, running: &str) -> bool {
+        let Some(list) = &self.restart else { return true };
+        list.iter().any(|s| s.eq_ignore_ascii_case(service))
+            || compare_versions(running, &self.active).is_none_or(|o| o == Ordering::Greater)
     }
 
     fn check(&self) -> Result<(), String> {
@@ -165,6 +223,16 @@ impl Pointer {
         p.active = to.to_string();
         p.trial = true;
         p.trial_since_unix = Some(now);
+        // Un cambio que no hace el actualizador (instalador, `vmsctl version switch`) no sabe qué servicios
+        // reinicia: sin lista, todos siguen al puntero. El actualizador la pone con `with_restart`.
+        p.restart = None;
+        p
+    }
+
+    /// Fija la lista de servicios que reinicia este cambio de versión.
+    pub fn with_restart(&self, services: &[&str]) -> Pointer {
+        let mut p = self.clone();
+        p.restart = Some(services.iter().map(|s| s.to_string()).collect());
         p
     }
 
@@ -648,6 +716,58 @@ mod tests {
         assert_eq!(all[1].1.as_ref().unwrap(), &req);
         let v: Value = serde_json::from_slice(&std::fs::read(s.request_path("VMSBackend")).unwrap()).unwrap();
         assert_eq!(v["kind"], "version");
+    }
+
+    #[test]
+    fn semver_precedence_matches_the_updater() {
+        use Ordering::*;
+        for (a, b, o) in [
+            ("2.1.0", "2.0.0", Greater),
+            ("2.0.10", "2.0.9", Greater),
+            ("2.0.0", "2.0.0-rc.1", Greater),
+            ("2.0.0-rc.2", "2.0.0-rc.10", Less),
+            ("2.0.0-dev.5", "2.0.0-rc.1", Less),
+            ("2.0.0-1", "2.0.0-alpha", Less),
+            ("2.0.0-alpha", "2.0.0-alpha.1", Less),
+            ("2.0.0+ci", "2.0.0", Equal),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(o), "{a} vs {b}");
+        }
+        assert_eq!(compare_versions("2.0", "2.0.0"), None);
+        assert_eq!(compare_versions("x", "2.0.0"), None);
+    }
+
+    #[test]
+    fn restart_list_decides_who_follows_the_pointer() {
+        let base = Pointer::new("2.0.0").switched("2.1.0", 10);
+        assert!(base.restart.is_none() && base.follows("VMSEngine", "2.0.0"), "sin lista: todos");
+        let p = base.with_restart(&["VMSBackend", "VMSAnalytics"]);
+        assert!(p.follows("VMSBackend", "2.0.0") && p.follows("vmsanalytics", "2.0.0"));
+        assert!(!p.follows("VMSEngine", "2.0.0"), "el motor no se reinicia por una de app");
+        assert!(!p.confirmed().follows("VMSEngine", "2.0.0"), "ni al confirmarla");
+        // Vuelta atrás: la lista se conserva, y quien corre la versión abandonada vuelve
+        let back = p.rolled_back("2.0.0");
+        assert_eq!(back.restart, p.restart);
+        assert!(back.follows("VMSEngine", "2.1.0") && !back.follows("VMSEngine", "1.9.0"));
+        // El siguiente cambio sin lista (instalador) la borra
+        assert!(p.confirmed().switched("2.2.0", 20).restart.is_none());
+        // Versiones raras: se sigue (como antes)
+        assert!(p.follows("VMSEngine", "rara"));
+    }
+
+    #[test]
+    fn restart_list_roundtrips_and_is_omitted_when_absent() {
+        let (_d, s, _) = dir_with(&[]);
+        let p = s.write_pointer(&Pointer::new("2.0.0").switched("2.1.0", 1).with_restart(&["VMSBackend"])).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(s.pointer_path()).unwrap()).unwrap();
+        assert_eq!(v["restart"], serde_json::json!(["VMSBackend"]));
+        assert_eq!(s.read_pointer().unwrap().restart, p.restart);
+        s.write_pointer(&Pointer::new("2.0.0")).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(s.pointer_path()).unwrap()).unwrap();
+        assert!(v.get("restart").is_none());
+        // `null` (lo escribe el actualizador en Python sin lista) = sin lista
+        std::fs::write(s.pointer_path(), br#"{"schema":1,"active":"2.0.0","restart":null}"#).unwrap();
+        assert!(s.read_pointer().unwrap().restart.is_none());
     }
 
     #[test]

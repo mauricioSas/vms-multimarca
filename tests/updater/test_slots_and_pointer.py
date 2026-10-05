@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from vms_updater.engine import RELOAD_EXIT_CODE
 from vms_updater.journal import JournalStore
 from vms_updater.models import ActivePointer
@@ -107,18 +109,24 @@ def test_pointer_keeps_unknown_fields(tmp_path) -> None:  # type: ignore[no-unty
 
 
 def test_trial_version_failing_is_reverted_by_vmshost_and_updater_finishes(site: Site) -> None:
-    """vmshost de un servicio sin permiso deja rollback-request.json; el actualizador ejecuta la vuelta atrás."""
+    """vmshost de un servicio sin permiso deja `state/requests/rollback-<S>.json`; el vmshost de VMSUpdater vuelve
+    atrás y lo anota en `state/host-rollback.json`; el actualizador lo ve al retomar el diario y termina la
+    vuelta atrás (lista negra incluida). El caso completo, con el vmshost real, en test_lifecycle.py."""
+    from vms_updater.journal import SimulatedCrash
+
+    from .conftest import crash_at
     site.factory.release("2.1.0", comps=("app",))
-    eng = site.engine()
-    assert eng.check().result == "update_ok"
-    # simula una versión que quedó a prueba (p. ej. corte justo antes de confirmar)
+    with pytest.raises(SimulatedCrash):
+        site.engine(fault_hook=crash_at("verifying", "before")).check()
     ptr = site.pointer()
-    PointerStore(site.layout.pointer_file).write(ptr.model_copy(update={"trial": True, "trial_since_unix": 1}))
-    site.layout.rollback_request_file.write_text(json.dumps({"service": "VMSBackend", "reason": "3 caídas en 10 min"}))
-    out = eng.handle_rollback_request()
-    assert out is not None and out.result == "rollback_ok"
+    PointerStore(site.layout.pointer_file).write(ptr.model_copy(update={"active": "2.0.0", "previous": "2.1.0",
+                                                                        "trial": False, "trial_since_unix": None}))
+    site.layout.host_rollback_file.write_text(json.dumps({"schema": 1, "from": "2.1.0", "to": "2.0.0",
+                                                          "reason": "VMSBackend lo pidió: 3 caídas en 10 min",
+                                                          "at_unix": int(time.time()), "by": "vmshost"}))
+    out = site.engine().startup()
+    assert out is not None and out.result == "update_failed"
     assert site.pointer().active == "2.0.0" and not site.pointer().trial
-    assert not site.layout.rollback_request_file.exists()
     assert Blacklist(site.layout.blacklist_file).contains("2.1.0")
 
 

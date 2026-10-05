@@ -85,9 +85,19 @@ def _update_to(version: str) -> tuple[float, float]:
     return t0, t1
 
 
+def engine_run_status() -> dict[str, Any]:
+    """`logs\\status-VMSEngine.json` de `vmsctl run`: versión que ejecuta el motor y desde cuándo."""
+    return json.loads((DATA / "logs" / "status-VMSEngine.json").read_text(encoding="utf-8"))
+
+
 def test_step6_app_update_without_recording_gap(update_server: str) -> None:
+    before = engine_run_status()
     t0, t1 = _update_to("2.0.1")
     assert status()["last_result"] == "update_ok" and pointer()["active"] == "2.0.1"
+    assert "VMSEngine" not in (pointer().get("restart") or []), pointer()
+    after = engine_run_status()
+    # el motor ni se para ni cambia de carpeta (vmshost no lo relanza por el cambio del puntero, PLAN-V2 §2.5)
+    assert (after["version"], after.get("started_unix")) == (before["version"], before.get("started_unix")), after
     assert max_gap_s(timeline(os.environ["VMS_E2E_CAMERA"]), t0, t1) <= 1.0
 
 

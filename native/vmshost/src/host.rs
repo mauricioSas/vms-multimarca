@@ -7,7 +7,10 @@
 //!    `state\requests\`, vuelve atrás la versión a prueba sin confirmar a los 30 min y reconstruye el
 //!    puntero si falta o está dañado. **Es el único (con el instalador) que escribe `active.json`.**
 //! 2. Lee el puntero (si falta o está dañado, usa `last_good` del diario en memoria).
-//! 3. Si cambió la versión (o la ranura del actualizador), para el hijo y lanza el nuevo.
+//! 3. Si cambió la ranura del actualizador, o la versión y este servicio la sigue ([`Pointer::follows`]:
+//!    está en la lista `restart` del puntero, no hay lista o es una vuelta atrás), para el hijo y lanza el
+//!    nuevo. Un servicio que no la sigue **no se corta**: sigue en su carpeta de versión, y si cae se relanza
+//!    esa misma (PLAN-V2 §2.5: una actualización solo de `app` no toca el motor).
 //! 4. Si el hijo cae: espera creciente; si la versión está a prueba y cae 3 veces en 10 min, deja una
 //!    petición de vuelta atrás (servicios sin privilegios) o vuelve atrás la ranura (actualizador). Una
 //!    vez dejada la petición, vuelve a la espera creciente (si `VMSUpdater` no la atiende, no se relanza
@@ -96,6 +99,11 @@ pub struct Host<L: Launcher> {
     log: RotatingLog,
     state: StateDir,
     running: Option<Running>,
+    /// Lo último que se lanzó (sigue aunque el hijo haya caído): de aquí sale la versión «en la que se
+    /// queda» un servicio que no sigue el puntero.
+    current: Option<Target>,
+    /// Aviso ya anotado de que el servicio se queda en su versión (no repetirlo cada medio segundo).
+    kept_note: String,
     next_launch: Option<Instant>,
     /// Versión a prueba para la que ya se dejó una petición (no se repite en cada vuelta) y cuándo.
     requested: Option<(String, u64)>,
@@ -113,6 +121,8 @@ impl<L: Launcher> Host<L> {
             log,
             state,
             running: None,
+            current: None,
+            kept_note: String::new(),
             next_launch: None,
             requested: None,
             last_problem: String::new(),
@@ -165,6 +175,43 @@ impl<L: Launcher> Host<L> {
         }
     }
 
+    /// Lo que tiene que ejecutar este servicio: la versión activa o, si no sigue el cambio de puntero, la
+    /// que ya ejecutaba (sin «a prueba»: la versión a prueba es la activa, no esta).
+    fn effective_target(&mut self, pointer: &Pointer) -> Target {
+        let active = self.target_for(pointer);
+        let kept = match &self.current {
+            Some(cur)
+                if cur.kind == RollbackKind::Version
+                    && cur.label != active.label
+                    && !pointer.follows(&self.cfg.service, &cur.label)
+                    && cur.exe.is_file() =>
+            {
+                Some(Target { trial: false, trial_since: None, ..cur.clone() })
+            }
+            _ => None,
+        };
+        match kept {
+            Some(t) => {
+                let note = format!(
+                    "sigo en {} (la {} no reinicia {}: {:?})",
+                    t.label,
+                    active.label,
+                    self.cfg.service,
+                    pointer.restart.as_deref().unwrap_or_default()
+                );
+                if note != self.kept_note {
+                    self.log(&note);
+                    self.kept_note = note;
+                }
+                t
+            }
+            None => {
+                self.kept_note.clear();
+                active
+            }
+        }
+    }
+
     /// Una vuelta del bucle. `now`/`unix`: reloj monotónico y segundos Unix (inyectables en pruebas).
     pub fn tick(&mut self, now: Instant, unix: u64) {
         if self.is_updater() {
@@ -193,7 +240,7 @@ impl<L: Launcher> Host<L> {
                 return;
             }
         };
-        let target = self.target_for(&pointer);
+        let target = self.effective_target(&pointer);
         if target.trial && trial_expired(true, target.trial_since, unix, self.cfg.confirm_timeout_s) {
             self.trial_failed(&target, "sin confirmar a tiempo", unix);
         }
@@ -308,6 +355,7 @@ impl<L: Launcher> Host<L> {
                     if target.trial { ", a prueba" } else { "" }
                 );
                 self.running = Some(Running { child, target: target.clone(), started: now, stopping_since: None });
+                self.current = Some(target.clone());
                 self.next_launch = None;
                 self.log(&msg);
             }
@@ -764,6 +812,135 @@ mod tests {
         h.begin_shutdown(t0);
         assert!(h.poll_shutdown(t0), "el hijo falso para en cuanto se le pide");
         assert_eq!(*killed.borrow(), 0);
+    }
+
+    /// Puntero como lo deja el actualizador en el paso `switched` (CONTRATO §13.4): `restart` = servicios que
+    /// reinicia esta actualización. Se escribe en JSON a mano: es el formato del contrato, no el de Rust.
+    fn pointer_with_restart(st: &StateDir, base: &Pointer, restart: &[&str]) {
+        let mut v = serde_json::to_value(base).unwrap();
+        v["restart"] = serde_json::json!(restart);
+        std::fs::create_dir_all(&st.dir).unwrap();
+        std::fs::write(st.pointer_path(), serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+
+    const APP_RESTART: [&str; 4] = ["VMSBackend", "VMSAnalytics", "VMSHeartbeat", "VMSCentral"];
+
+    #[test]
+    fn app_only_update_does_not_restart_the_engine() {
+        // A1: una actualización solo de `app` (restart sin VMSEngine) no puede cortar la grabación.
+        let e = env(&["2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        st.write_pointer(&Pointer::new("2.0.0")).unwrap();
+        let fl = FakeLauncher::default();
+        let (launched, killed) = (fl.launched.clone(), fl.killed.clone());
+        let mut engine = host(&e, "VMSEngine", fl);
+        let t0 = Instant::now();
+        engine.tick(t0, 1000);
+        let pid = engine.child_pid().unwrap();
+        // paso `switched` del actualizador
+        pointer_with_restart(&st, &Pointer::new("2.0.0").switched("2.1.0", 1001), &APP_RESTART);
+        run_ticks(&mut engine, t0 + Duration::from_secs(1), 1001, 5);
+        assert_eq!(engine.child_pid(), Some(pid), "el motor sigue con el mismo proceso");
+        assert_eq!(launched.borrow().len(), 1, "{:?}", launched.borrow());
+        assert_eq!(*killed.borrow(), 0);
+        // confirmada (paso `good`): tampoco
+        let p = st.read_pointer().unwrap();
+        st.write_pointer(&p.confirmed()).unwrap();
+        run_ticks(&mut engine, t0 + Duration::from_secs(10), 1010, 5);
+        assert_eq!(engine.child_pid(), Some(pid));
+        assert_eq!(launched.borrow().len(), 1);
+    }
+
+    #[test]
+    fn engine_kept_on_its_version_relaunches_that_same_version_after_a_crash() {
+        // Un servicio que no se reinició sigue en SU carpeta (la retención la guarda): si cae, vuelve a la suya,
+        // sin contar como caída de la versión a prueba (no la culpa de nada).
+        let e = env(&["2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        st.write_pointer(&Pointer::new("2.0.0")).unwrap();
+        let fl = FakeLauncher {
+            scripts: vec![("2.0.0".into(), Script { exit_after_polls: Some(4), code: 1 })],
+            ..Default::default()
+        };
+        let launched = fl.launched.clone();
+        let mut engine = host(&e, "VMSEngine", fl);
+        let t0 = Instant::now();
+        engine.tick(t0, 1000);
+        pointer_with_restart(&st, &Pointer::new("2.0.0").switched("2.1.0", 1000), &APP_RESTART);
+        run_ticks(&mut engine, t0, 1000, 30);
+        let l = launched.borrow();
+        assert!(l.len() >= 2, "tiene que haber caído y relanzado: {l:?}");
+        assert!(l.iter().all(|(exe, _)| exe == &e.install.version_vmsctl("2.0.0")), "{l:?}");
+        assert!(l.iter().all(|(_, a)| !a.contains(&"--exit-on-crash".to_string())));
+        assert!(st.read_requests().is_empty(), "no pide volver atrás la 2.1.0 por caídas del motor viejo");
+    }
+
+    #[test]
+    fn services_in_the_restart_list_follow_the_pointer() {
+        let e = env(&["2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        st.write_pointer(&Pointer::new("2.0.0")).unwrap();
+        let fl = FakeLauncher::default();
+        let launched = fl.launched.clone();
+        let mut backend = host(&e, "VMSBackend", fl);
+        let t0 = Instant::now();
+        backend.tick(t0, 1000);
+        pointer_with_restart(&st, &Pointer::new("2.0.0").switched("2.1.0", 1001), &APP_RESTART);
+        run_ticks(&mut backend, t0 + Duration::from_secs(1), 1001, 3);
+        let last = launched.borrow().last().unwrap().clone();
+        assert_eq!(last.0, e.install.version_vmsctl("2.1.0"));
+        assert!(last.1.contains(&"--exit-on-crash".to_string()), "a prueba");
+    }
+
+    #[test]
+    fn rollback_brings_back_a_service_that_runs_the_failed_version() {
+        // El motor arrancó (reinicio del equipo) mientras la 2.1.0 estaba a prueba: la vuelta atrás sí lo
+        // devuelve a la 2.0.0 aunque no esté en `restart`. Y uno que ya estaba en la buena no se toca.
+        let e = env(&["1.9.0", "2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        let trial = Pointer::new("2.0.0").switched("2.1.0", 1000);
+        pointer_with_restart(&st, &trial, &APP_RESTART);
+        let fl = FakeLauncher::default();
+        let launched = fl.launched.clone();
+        let mut engine = host(&e, "VMSEngine", fl);
+        let t0 = Instant::now();
+        engine.tick(t0, 1001);
+        assert_eq!(launched.borrow()[0].0, e.install.version_vmsctl("2.1.0"));
+        pointer_with_restart(&st, &trial.rolled_back("2.0.0"), &APP_RESTART);
+        run_ticks(&mut engine, t0 + Duration::from_secs(1), 1002, 3);
+        assert_eq!(launched.borrow().last().unwrap().0, e.install.version_vmsctl("2.0.0"));
+
+        // Motor en 1.9.0 (nunca reiniciado desde entonces) y la 2.1.0 vuelve a la 2.0.0: se queda en la 1.9.0
+        let fl = FakeLauncher::default();
+        let launched = fl.launched.clone();
+        st.write_pointer(&Pointer::new("1.9.0")).unwrap();
+        let mut old_engine = host(&e, "VMSEngine", fl);
+        old_engine.tick(t0, 900);
+        pointer_with_restart(&st, &trial, &APP_RESTART);
+        run_ticks(&mut old_engine, t0 + Duration::from_secs(1), 1001, 2);
+        pointer_with_restart(&st, &trial.rolled_back("2.0.0"), &APP_RESTART);
+        run_ticks(&mut old_engine, t0 + Duration::from_secs(5), 1005, 2);
+        assert_eq!(launched.borrow().len(), 1, "{:?}", launched.borrow());
+    }
+
+    #[test]
+    fn pointer_without_restart_list_restarts_everything_like_the_installer_expects() {
+        let e = env(&["2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        st.write_pointer(&Pointer::new("2.0.0")).unwrap();
+        let fl = FakeLauncher::default();
+        let launched = fl.launched.clone();
+        let mut engine = host(&e, "VMSEngine", fl);
+        let t0 = Instant::now();
+        engine.tick(t0, 1000);
+        st.write_pointer(&Pointer::new("2.0.0").switched("2.1.0", 1001)).unwrap();
+        run_ticks(&mut engine, t0 + Duration::from_secs(1), 1001, 3);
+        assert_eq!(launched.borrow().last().unwrap().0, e.install.version_vmsctl("2.1.0"));
     }
 
     #[test]

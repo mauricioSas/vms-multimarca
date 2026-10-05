@@ -156,7 +156,7 @@ def run_service(engine: Engine, stop: threading.Event | None = None, *, hours: f
     seen_check: str | None = None
     try:
         while not stop.is_set():
-            res: Outcome | None = engine.handle_rollback_request() or engine.handle_directive_rollback()
+            res: Outcome | None = engine.handle_directive_rollback()
             if engine.handle_directive_unskip():
                 next_check = time.monotonic()          # la versión permitida de nuevo se instala ya
             d = read_directive(engine.layout.directive_file)

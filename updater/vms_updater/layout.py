@@ -82,8 +82,9 @@ class Layout:
         return self.state_dir / "journal.json"
 
     @property
-    def rollback_request_file(self) -> Path:
-        return self.state_dir / "rollback-request.json"
+    def host_rollback_file(self) -> Path:
+        """Última vuelta atrás hecha por el vmshost de VMSUpdater (`StateDir::roll_back_version`, Rust)."""
+        return self.state_dir / "host-rollback.json"
 
     @property
     def backups_dir(self) -> Path:

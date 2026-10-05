@@ -216,9 +216,15 @@ class ActivePointer(_Model):
     trial_since_unix: int | None = None
     updater: UpdaterSlot = Field(default_factory=UpdaterSlot)
     updated_unix: int = 0
+    # Servicios que reinicia el último cambio de versión. `vmshost` solo relanza por un cambio del puntero a
+    # los que estén aquí (o a todos si falta); los demás siguen en su carpeta (CONTRATO §13.3-§13.4).
+    restart: list[str] | None = None
 
     def dump(self) -> dict[str, Any]:
-        return self.model_dump(by_alias=True, mode="json")
+        d = self.model_dump(by_alias=True, mode="json")
+        if d.get("restart") is None:
+            d.pop("restart", None)
+        return d
 
 
 class JournalStep(_Model):
