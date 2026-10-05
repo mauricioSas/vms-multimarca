@@ -481,8 +481,16 @@ mod tests {
         let path = s.status_path.clone().unwrap();
         let (tx, rx) = mpsc::channel();
         let h = std::thread::spawn(move || run(&mut s, &rx));
-        std::thread::sleep(Duration::from_millis(600));
-        let st = crate::runstatus::read(&path).unwrap();
+        // Espera a ver dos caídas (en un runner cargado, 600 ms fijos no siempre bastaban): como mucho 5 s.
+        let t0 = Instant::now();
+        let st = loop {
+            std::thread::sleep(Duration::from_millis(100));
+            if let Some(st) = crate::runstatus::read(&path) {
+                if st.crashes_unix.len() >= 2 || t0.elapsed() > Duration::from_secs(5) {
+                    break st;
+                }
+            }
+        };
         assert!(st.crashes_unix.len() >= 2, "{st:?}");
         let (ok, why) = crate::runstatus::evaluate(Some(&st), vms_common::state::now_unix());
         assert!(!ok, "{why}");

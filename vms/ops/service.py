@@ -122,15 +122,18 @@ class OpsService:
 
     # ================================================================== ciclo de vida
     async def start(self) -> None:
+        log.info("Operación: preparando la clave de firma de evidencias")
         try:
             await asyncio.to_thread(self.key)        # el latido lleva evidence_key desde el primer día
         except Exception:  # noqa: BLE001 - sin clave no se exporta, pero el resto de B6 funciona
             log.exception("No se pudo preparar la clave de firma de evidencias")
+        log.info("Operación: revisando exportaciones cortadas")
         await asyncio.to_thread(self.recover_exports)
         loop = asyncio.get_running_loop()
         for name, coro in (("ops-health", self._health_loop()), ("ops-clock", self._clock_loop()),
                            ("ops-monitor", self._monitor_loop()), ("ops-maintenance", self._maintenance_loop())):
             self._tasks.append(loop.create_task(coro, name=name))
+        log.info("Operación en marcha (salud, hora, vigilancia y mantenimiento)")
 
     async def stop(self) -> None:
         for t in self._tasks + list(self._background):

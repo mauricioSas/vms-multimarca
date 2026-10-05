@@ -48,6 +48,26 @@ if TYPE_CHECKING:
     from vms.ops.service import OpsService
 
 
+OPS_START_BUDGET_S = 20.0
+
+
+def _stacks(task: "asyncio.Task[Any]") -> str:
+    """Pila de la tarea y de cada hilo (diagnóstico de un arranque que no termina; sin datos sensibles)."""
+    import io
+    import sys
+    import threading
+    import traceback
+
+    out = io.StringIO()
+    out.write("--- tarea ops-start\n")
+    task.print_stack(file=out)
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for ident, frame in sys._current_frames().items():
+        out.write(f"--- hilo {names.get(ident, ident)}\n")
+        out.write("".join(traceback.format_stack(frame)))
+    return out.getvalue()
+
+
 @asynccontextmanager
 async def ops_lifespan(app: FastAPI) -> AsyncIterator[None]:
     from vms.ops.service import OpsService
@@ -55,10 +75,25 @@ async def ops_lifespan(app: FastAPI) -> AsyncIterator[None]:
     state: AppState = app.state.vms
     svc = OpsService(state)
     app.state.ops = svc
-    await svc.start()
+    # La web no espera a B6 más de OPS_START_BUDGET_S: si su arranque se queda colgado (pasó en Windows con el
+    # servicio de cuenta virtual), uvicorn no abría nunca el puerto y el puesto entero quedaba «caído». Se
+    # registra dónde está parado y B6 termina en segundo plano.
+    start = asyncio.create_task(svc.start(), name="ops-start")
+    done, _ = await asyncio.wait({start}, timeout=OPS_START_BUDGET_S)
+    if done:
+        start.result()
+    else:
+        log.error("El arranque de operación (B6) lleva %.0f s sin terminar: la web arranca igualmente y B6 sigue en "
+                  "segundo plano. Dónde está parado:\n%s", OPS_START_BUDGET_S, _stacks(start))
     try:
         yield
     finally:
+        if not start.done():
+            start.cancel()
+            try:
+                await start
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - al parar solo se registra
+                pass
         await svc.stop()
         if getattr(app.state, "ops", None) is svc:
             del app.state.ops

@@ -161,3 +161,29 @@ def test_event_bus_payload_is_json() -> None:
     event, data = q.get_nowait()
     assert event == "evidence" and json.loads(data)["_owner"] == "ana"
     assert time.time() > 0
+
+
+# --------------------------------------------------------------------------- arranque de B6 colgado (CI de Windows)
+async def test_backend_serves_even_if_ops_startup_hangs(settings: Any, credential_store: Any,
+                                                         monkeypatch: Any, caplog: Any) -> None:
+    """En Windows el arranque de operación (B6) se quedaba colgado y uvicorn no abría nunca el puerto. La web no
+    puede depender de eso: pasado el plazo arranca igual y se registra dónde estaba parado."""
+    import httpx
+
+    from tests.fakes import FakeEngine
+    from vms.api import create_app
+    from vms.api.routes import health as health_routes
+    from vms.ops.service import OpsService
+
+    async def hang(self: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(OpsService, "start", hang)
+    monkeypatch.setattr(health_routes, "OPS_START_BUDGET_S", 0.3)
+    app = create_app(settings, engine=FakeEngine(), credential_store=credential_store, heartbeat=False)
+    t0 = time.monotonic()
+    async with app.router.lifespan_context(app):
+        assert time.monotonic() - t0 < 5
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            assert (await c.get("/api/health")).status_code == 200
+    assert any("ops-start" in r.getMessage() and "hang" in r.getMessage() for r in caplog.records)
