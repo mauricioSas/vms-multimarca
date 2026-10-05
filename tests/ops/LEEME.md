@@ -16,4 +16,6 @@
 | `test_health_api.py` | Salud por la API, informe, latido y RGPD de la carpeta `ops/` |
 | `test_central_and_counts.py` | «Tiendas con problemas hoy» en la central y CSV de conteos (PostgreSQL de pruebas) |
 | `test_ui_b6.py` | Asistente completo, ayuda «?» en cada sección, recorrido Driver.js, nada en los muros |
-| `web_stub.py`, `stub_plugin.py` | Rutas de B6 para el backend de pruebas de `tests/web` (petición pendiente al dueño; comprobación: `pytest -p tests.ops.stub_plugin tests/web`) |
+| `test_review_fixes.py` | Regresiones de la revisión: puntuación sostenida, recuperaciones y avisos de disco y huecos, exportaciones cortadas/caducadas/paginadas y espacio libre, límites de protección, copias huérfanas, descarga con permiso vigente, contraseña rechazada, hora del PC, clave desde el arranque, CSV sin fórmulas |
+| `test_packaging.py` | Los datos de `vms/ops` están en `package-data` (xfail hasta que el arquitecto aplique la petición de `pyproject.toml`) |
+| `web_stub.py`, `stub_plugin.py` | Rutas de B6 para el backend de pruebas de `tests/web` (petición pendiente al dueño de `stub_backend.py`). Mientras tanto `conftest.py` las instala al recoger `tests/ops`, así la suite completa pasa; para correr solo `tests/web`: `pytest -p tests.ops.stub_plugin tests/web` |

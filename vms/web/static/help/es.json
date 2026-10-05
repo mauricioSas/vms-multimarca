@@ -222,7 +222,8 @@
       "title": "Marcadores y tramos protegidos",
       "intro": [
         "Un marcador es una nota en un momento de la grabación («discusión en caja 2»).",
-        "«Proteger» hace que ese tramo NO se borre cuando pasen los días de retención. Es lo que permite la ley para conservar más tiempo solo lo que acredita un hecho: hay que poner el motivo y una caducidad (90 días por defecto)."
+        "«Proteger» hace que ese tramo NO se borre cuando pasen los días de retención. Es lo que permite la ley para conservar más tiempo solo lo que acredita un hecho: hay que poner el motivo y una caducidad (90 días por defecto).",
+        "Un operador puede proteger como máximo 90 días y unas 48 horas de grabación por cámara sumando todos sus tramos. Para más, un administrador con el número de caso."
       ],
       "buttons": [
         {"label": "Añadir marcador aquí", "text": "Crea un marcador en el momento que estás viendo."},
@@ -238,14 +239,17 @@
       "title": "Exportar evidencia",
       "intro": [
         "Prepara un paquete para entregar a la policía o a un juzgado: los vídeos originales, un visor que funciona sin instalar nada, un acta de cadena de custodia para firmar y una firma digital que demuestra que nadie ha tocado los archivos.",
-        "El motivo es obligatorio y la exportación queda registrada con tu usuario."
+        "El motivo es obligatorio y la exportación queda registrada con tu usuario.",
+        "La firma solo demuestra que el paquete viene de esta tienda si su clave (key_id) es la de la tienda: el key_id sale en el acta y en el panel central, y quien reciba el paquete tiene que compararlo (el visor tiene una casilla para pegarlo).",
+        "Los paquetes se borran solos del PC a los 30 días (un administrador puede cambiar el plazo): descárgalo y entrégalo antes."
       ],
       "buttons": [
         {"label": "Cámaras", "text": "Puedes exportar varias cámaras a la vez (hasta 16)."},
         {"label": "Desde / Hasta", "text": "El tramo que se exporta (máximo 12 horas por paquete)."},
         {"label": "Motivo, N.º de caso y Destinatario", "text": "Salen en el acta. El motivo es obligatorio."},
         {"label": "Crear paquete", "text": "Prepara el ZIP en el servidor. Verás el progreso; cuando termine, aparece «Descargar»."},
-        {"label": "Descargar", "text": "Baja el ZIP. Entrégalo tal cual: abrirlo y volver a guardar los archivos cambiaría su huella."}
+        {"label": "Descargar", "text": "Baja el ZIP. Entrégalo tal cual: abrirlo y volver a guardar los archivos cambiaría su huella."},
+        {"label": "Más antiguos / Más recientes", "text": "Pasa de página en la lista de paquetes."}
       ],
       "tasks": ["exportar-evidencia"]
     },
@@ -401,7 +405,8 @@
       "title": "Hora de los equipos",
       "intro": [
         "Compara la hora de cada cámara o grabador con la de este PC. Una hora mal puesta puede invalidar una grabación como prueba.",
-        "Más de 2 segundos de diferencia es un aviso; más de 30 segundos, grave. También se avisa si el equipo tiene la hora puesta a mano en vez de sincronizarla (NTP)."
+        "Más de 2 segundos de diferencia es un aviso; más de 30 segundos, grave. También se avisa si el equipo tiene la hora puesta a mano en vez de sincronizarla (NTP).",
+        "La hora del propio PC se compara una vez por hora con su servidor de hora (el mismo que ya usa Windows). Si la tienda no debe consultar servidores de Internet, un administrador puede desactivarlo con el ajuste «pc_sntp_enabled» de «/api/clock/settings»."
       ],
       "buttons": [
         {"label": "Comprobar ahora", "text": "Mide de nuevo la hora de todos los equipos (se hace sola cada hora)."}
@@ -452,13 +457,14 @@
       "title": "Auditoría de seguridad",
       "intro": [
         "Revisa los equipos dados de alta SIN atacarlos: contraseñas guardadas débiles o de fábrica, uso del usuario administrador, vídeo accesible sin contraseña, servicios peligrosos abiertos (Telnet, UPnP…) y firmware con fallos de seguridad conocidos.",
-        "El resultado nunca dice «seguro»: dice «Vulnerable», «Probablemente vulnerable», «Sin fallos conocidos en la tabla» o «Desconocido»."
+        "El resultado nunca dice «seguro»: dice «Vulnerable», «Probablemente vulnerable», «Sin fallos conocidos en la tabla» o «Desconocido».",
+        "Permisos por cámara: un administrador puede limitar a un operador a algunas cámaras y acciones (en vivo, grabaciones, exportar, marcadores). Mira la guía «Limitar las cámaras de un operador»."
       ],
       "buttons": [
         {"label": "Hacer auditoría", "text": "Revisa todos los equipos. Tarda unos segundos por equipo."},
         {"label": "Con usuario administrador", "text": "Opcional: escribe el usuario administrador de un equipo para revisar más ajustes (Telnet, UPnP, nube P2P). Se usa una vez y no se guarda."}
       ],
-      "tasks": ["auditoria"]
+      "tasks": ["auditoria", "permisos-por-camara"]
     },
     "status.notifications": {
       "page": "/status",
@@ -591,6 +597,17 @@
         "En «Estado del sistema» > «Auditoría de seguridad», pulsa «Hacer auditoría».",
         "Revisa primero lo marcado como ✖ Vulnerable: suele ser contraseña de fábrica, vídeo sin contraseña o firmware antiguo con fallos explotados (KEV).",
         "Cada fila dice qué hacer. Después de corregirlo, repite la auditoría."
+      ]
+    },
+    "permisos-por-camara": {
+      "title": "Limitar las cámaras de un operador",
+      "page": "/status",
+      "steps": [
+        "Esta versión todavía no tiene pantalla de usuarios: el límite lo fija un administrador desde la API.",
+        "Envía PATCH /api/users/<usuario> con «camera_scope»: la lista «cameras» (identificadores cam-…) y qué puede hacer en ellas: «live» (en vivo), «playback» (grabaciones), «export» (exportar) y «bookmark» (marcadores).",
+        "Ejemplo: {\"camera_scope\": {\"cameras\": [\"cam-1a2b3c4d\"], \"live\": true, \"playback\": true, \"export\": false, \"bookmark\": true}}.",
+        "Para quitar el límite (que vea todas, como antes), envía {\"camera_scope\": null}. Los administradores no tienen límite.",
+        "El cambio vale en el acto, sin cerrar sesión, y queda registrado. Las cámaras fuera de su ámbito no le aparecen en ninguna pantalla."
       ]
     }
   }
