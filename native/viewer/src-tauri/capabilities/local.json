@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local",
+  "description": "Solo las páginas locales del visor (tauri://localhost en macOS, http://tauri.localhost en Windows) pueden usar IPC, y solo los comandos propios del visor. Las páginas que sirve el backend (127.0.0.1:8600 o un servidor remoto) no tienen ninguna capacidad: no hay clave «remote». Lo comprueban tests/ipc_acl.rs y la prueba de humo de Windows.",
+  "local": true,
+  "windows": ["*"],
+  "permissions": [
+    "allow-reintentar",
+    "allow-diagnostico",
+    "allow-servidores",
+    "allow-probar-servidor",
+    "allow-guardar-servidor",
+    "allow-borrar-servidor",
+    "allow-asignar-servidor-muro",
+    "allow-certificado",
+    "allow-confiar-certificado",
+    "allow-monitores",
+    "allow-asignar-monitor",
+    "allow-acerca",
+    "allow-actualizaciones",
+    "allow-buscar-actualizaciones",
+    "allow-volver-version-anterior",
+    "allow-sin-permiso"
+  ]
+}

@@ -1,0 +1,71 @@
+# Visor de escritorio VMS.exe (PLAN-V2 §1.1 y §2.3, CONTRATO §17). Dueño: B2.
+#
+# Espacio de trabajo propio (la tabla [workspace] vacía de abajo): Tauri arrastra muchas dependencias y
+# así no entran en el `cargo test --workspace` de native/ (B1). Usa vms-common (escritura atómica) por ruta.
+[package]
+name = "vms-viewer"
+version = "2.0.0-dev.0"
+description = "Visor de escritorio de VMS Multimarca"
+edition = "2021"
+license = "LicenseRef-Propietario"
+publish = false
+rust-version = "1.90"
+
+[workspace]
+
+[lib]
+name = "vms_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "VMS"
+path = "src/main.rs"
+
+[features]
+default = []
+# Build de PRUEBA (CI y laboratorio): abre el puerto CDP de WebView2 con VMS_VIEWER_CDP_PORT y respeta las
+# variables WEBVIEW2_*. La versión publicada se compila SIN esta característica (PLAN-V2 §1.1 y §4.6).
+prueba = []
+
+[build-dependencies]
+tauri-build = { version = "=2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.1", features = ["tray-icon"] }
+tauri-plugin-single-instance = "=2.5.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# TLS solo para leer la huella del certificado del servidor remoto y para el latido de la bandeja contra él
+# (rustls con ring: Apache-2.0/ISC/MIT; sin OpenSSL ni aws-lc).
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "0.17.14"
+url = "2.5"
+vms-common = { path = "../../common" }
+
+[target.'cfg(windows)'.dependencies]
+# Las mismas versiones que usa wry 0.57 (Tauri 2.12.1): manejador de ServerCertificateErrorDetected (S5, opción A)
+webview2-com = "=0.39.1"
+windows-core = "0.62"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tauri = { version = "=2.12.1", features = ["tray-icon", "test"] }
+# Certificados autofirmados para las pruebas de la huella (solo pruebas; sin aws-lc)
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+tempfile = "3.27"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"

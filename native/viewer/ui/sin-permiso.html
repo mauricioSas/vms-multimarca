@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sin permiso para abrir los muros · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main class="centrado">
+    <div class="marca">VMS Multimarca</div>
+    <div class="estado">
+      <span class="punto mal" aria-hidden="true"></span>
+      <h1 id="titulo">Sin permiso para abrir los muros</h1>
+    </div>
+    <div class="tarjeta aviso">
+      <p id="mensaje">Tu usuario de Windows no está en el grupo «VMS Operadores».</p>
+      <dl class="datos small">
+        <dt>Grupo</dt><dd id="grupo">VMS Operadores</dd>
+        <dt>Archivo</dt><dd class="mono" id="archivo">—</dd>
+      </dl>
+    </div>
+    <p class="small muted">El resto del programa no cambia: el panel funciona con tu usuario y contraseña, y la
+      grabación sigue. Se vuelve a comprobar cada 30 segundos.</p>
+    <div class="acciones">
+      <button type="button" id="ahora">Volver a comprobar</button>
+      <a class="boton" href="diagnostico.html">Ver diagnóstico</a>
+    </div>
+  </main>
+  <script type="module" src="sin-permiso.js"></script>
+</body>
+</html>
