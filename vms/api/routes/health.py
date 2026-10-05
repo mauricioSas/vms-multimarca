@@ -21,6 +21,7 @@ no hace falta tocar `vms/api/app.py`.
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -33,7 +34,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import Response
 
 from vms.core.audit import audit
-from vms.core.errors import NotFoundError, ValidationFailed
+from vms.core.errors import NotConfigured, NotFoundError, ValidationFailed
 from vms.core.models import AppConfig, CameraHealthConfig, known_fields_only
 
 from ..deps import Principal, get_state, require_admin, require_operator
@@ -68,23 +69,40 @@ def _stacks(task: "asyncio.Task[Any]") -> str:
     return out.getvalue()
 
 
+async def _build_and_start(app: FastAPI, state: AppState) -> None:
+    """Importa y crea el servicio de B6 en un hilo (abre SQLite, carpetas, credenciales…) y lo arranca. Nada de
+    esto corre en el bucle: si algo se queda colgado, la web sigue arrancando y el plazo puede vencer."""
+    def build() -> "OpsService":
+        log.info("Operación: cargando el servicio (módulos, base de datos y carpetas)")
+        from vms.ops.service import OpsService
+        return OpsService(state)
+
+    svc = await asyncio.to_thread(build)
+    app.state.ops = svc
+    await svc.start()
+
+
 @asynccontextmanager
 async def ops_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    from vms.ops.service import OpsService
-
     state: AppState = app.state.vms
-    svc = OpsService(state)
-    app.state.ops = svc
+    app.state.ops_starting = True
     # La web no espera a B6 más de OPS_START_BUDGET_S: si su arranque se queda colgado (pasó en Windows con el
     # servicio de cuenta virtual), uvicorn no abría nunca el puerto y el puesto entero quedaba «caído». Se
-    # registra dónde está parado y B6 termina en segundo plano.
-    start = asyncio.create_task(svc.start(), name="ops-start")
-    done, _ = await asyncio.wait({start}, timeout=OPS_START_BUDGET_S)
+    # registra dónde está parado y B6 termina en segundo plano. Por si algo bloqueara el propio bucle (el plazo
+    # no podría vencer), faulthandler vuelca las pilas de todos los hilos a stderr (el registro del servicio).
+    faulthandler.dump_traceback_later(OPS_START_BUDGET_S * 2, exit=False)
+    start = asyncio.create_task(_build_and_start(app, state), name="ops-start")
+    try:
+        done, _ = await asyncio.wait({start}, timeout=OPS_START_BUDGET_S)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
     if done:
+        app.state.ops_starting = False
         start.result()
     else:
         log.error("El arranque de operación (B6) lleva %.0f s sin terminar: la web arranca igualmente y B6 sigue en "
                   "segundo plano. Dónde está parado:\n%s", OPS_START_BUDGET_S, _stacks(start))
+        start.add_done_callback(lambda _t: setattr(app.state, "ops_starting", False))
     try:
         yield
     finally:
@@ -94,8 +112,9 @@ async def ops_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await start
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - al parar solo se registra
                 pass
-        await svc.stop()
-        if getattr(app.state, "ops", None) is svc:
+        svc = getattr(app.state, "ops", None)
+        if svc is not None:
+            await svc.stop()
             del app.state.ops
 
 
@@ -106,6 +125,9 @@ def get_ops(conn: HTTPConnection) -> "OpsService":
     """El servicio de B6. Sin `lifespan` (algunas pruebas) se crea sin tareas en segundo plano."""
     svc = getattr(conn.app.state, "ops", None)
     if svc is None:
+        if getattr(conn.app.state, "ops_starting", False):
+            raise NotConfigured("La operación (salud, evidencias, avisos) todavía está arrancando; prueba en un "
+                                "momento", code="ops_starting")
         from vms.ops.service import OpsService
         svc = OpsService(conn.app.state.vms)
         conn.app.state.ops = svc

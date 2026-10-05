@@ -187,3 +187,47 @@ async def test_backend_serves_even_if_ops_startup_hangs(settings: Any, credentia
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
             assert (await c.get("/api/health")).status_code == 200
     assert any("ops-start" in r.getMessage() and "hang" in r.getMessage() for r in caplog.records)
+
+
+async def test_backend_serves_even_if_building_ops_blocks(settings: Any, credential_store: Any,
+                                                          monkeypatch: Any, caplog: Any) -> None:
+    """CI de Windows (run 41): el backend escribía «listo» y no abría nunca el puerto, sin rastro de «Operación:»
+    en el registro. Crear el servicio de B6 (importar, abrir SQLite, carpetas) corría en el bucle y lo bloqueaba,
+    así que ni el plazo podía vencer. Ahora va en un hilo: la web arranca y responde «arrancando» a lo de B6."""
+    import threading
+
+    import httpx
+
+    from tests.fakes import FakeEngine
+    from vms.api import create_app
+    from vms.api.routes import health as health_routes
+    from vms.ops.service import OpsService
+
+    release = threading.Event()
+    real_init = OpsService.__init__
+
+    def blocking_init(self: Any, *a: Any, **kw: Any) -> None:
+        release.wait(30)                       # bloqueo síncrono, como una llamada al sistema que no vuelve
+        real_init(self, *a, **kw)
+
+    monkeypatch.setattr(OpsService, "__init__", blocking_init)
+    monkeypatch.setattr(health_routes, "OPS_START_BUDGET_S", 0.3)
+    app = create_app(settings, engine=FakeEngine(), credential_store=credential_store, heartbeat=False)
+    try:
+        t0 = time.monotonic()
+        async with app.router.lifespan_context(app):
+            assert time.monotonic() - t0 < 5
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+                assert (await c.get("/api/health")).status_code == 200
+            from types import SimpleNamespace
+
+            from vms.core.errors import NotConfigured
+            try:   # lo de B6 contesta «arrancando» (503) en vez de volver a crear el servicio en el bucle
+                health_routes.get_ops(SimpleNamespace(app=app))  # type: ignore[arg-type]
+                raise AssertionError("get_ops no avisó de que B6 está arrancando")
+            except NotConfigured as exc:
+                assert exc.code == "ops_starting"
+            release.set()
+    finally:
+        release.set()
+    assert any("ops-start" in r.getMessage() and "blocking_init" in r.getMessage() for r in caplog.records)

@@ -382,19 +382,34 @@ def window_title(hwnd: int) -> str:
 
 # =============================================================================================== limpieza
 def force_clean(env: Env) -> list[str]:
-    """Deja el equipo sin VMS Multimarca (para empezar un escenario desde cero). Devuelve lo que hizo."""
+    """Deja el equipo sin VMS Multimarca (para empezar un escenario desde cero). Devuelve lo que hizo.
+
+    Con los binarios reales los servicios tienen abiertos archivos de Program Files: primero se paran y se
+    borran (y se matan los procesos que queden de esa carpeta) y después se borran las carpetas."""
     done = []
     if uninstaller() is not None:
         run_uninstall(env, ["/PURGE"], "limpieza-purge")
         done.append("desinstalación con /PURGE")
-    for path in (program_dir(), data_dir()):
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-            done.append(f"borrada {path}")
-    reg_delete_value(RUN_KEY, "VMSMultimarcaMuros")
     for svc in SERVICES:
         if service_exists(svc):
             subprocess.run(["sc.exe", "stop", svc], capture_output=True, check=False)
+    for svc in SERVICES:
+        if service_exists(svc):
             subprocess.run(["sc.exe", "delete", svc], capture_output=True, check=False)
             done.append(f"servicio {svc} eliminado")
+    if program_dir().exists():
+        prog = str(program_dir()).replace("'", "''")
+        try:
+            powershell(f"Get-Process | Where-Object {{ $_.Path -like '{prog}\\*' }} | Stop-Process -Force")
+        except RuntimeError:
+            pass
+    reg_delete_value(RUN_KEY, "VMSMultimarcaMuros")
+    for path in (program_dir(), data_dir()):
+        if path.exists():
+            for _ in range(10):
+                shutil.rmtree(path, ignore_errors=True)
+                if not path.exists():
+                    break
+                time.sleep(1)
+            done.append(f"borrada {path}" if not path.exists() else f"NO se pudo borrar {path}")
     return done
