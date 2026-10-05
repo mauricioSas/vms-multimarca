@@ -133,7 +133,7 @@ filterwarnings = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-extend-exclude = ["legacy", "native", "spikes/s1-webview2"]
+extend-exclude = ["legacy", "native", "spikes/s1-webview2", "docs/revision-v2/repros"]   # repros: afirman el fallo a propósito
 
 [tool.ruff.lint]
 # Conjunto clásico (pyflakes + errores de pycodestyle) + bugbear. Se amplía por bloques, nunca a la baja.
