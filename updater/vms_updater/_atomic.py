@@ -54,6 +54,66 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+def fsync_dirs(root: Path) -> None:
+    """fsync de `root` y de todas sus subcarpetas (POSIX). En NTFS las entradas de carpeta van en el
+    registro de transacciones del sistema de archivos; lo que hay que forzar son los datos de cada archivo."""
+    if os.name == "nt":
+        return
+    root = Path(root)
+    for d in [root, *(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink())]:
+        _fsync_dir(d)
+
+
+def write_durable(path: Path, data: bytes) -> None:
+    """Escribe un archivo nuevo y no vuelve hasta que sus datos están en disco (flush + fsync)."""
+    with open(path, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def copy_durable(src: Path, dst: Path) -> None:
+    """Copia con datos en disco al volver (y fechas y permisos como `shutil.copy2`)."""
+    import shutil
+
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        shutil.copyfileobj(fi, fo, 1024 * 1024)
+        fo.flush()
+        os.fsync(fo.fileno())
+    shutil.copystat(src, dst)
+
+
+def rename_durable(src: Path, dst: Path, *, retries: int = 20) -> None:
+    """Renombra un archivo o carpeta (el destino no debe existir) y no vuelve hasta que el cambio está en
+    disco: `MoveFileExW(MOVEFILE_WRITE_THROUGH)` en Windows; `os.rename` + fsync de la carpeta en POSIX."""
+    src, dst = Path(src), Path(dst)
+    last: OSError | None = None
+    for _ in range(retries):
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+
+                k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+                move = k32.MoveFileExW
+                move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+                move.restype = wintypes.BOOL
+                if not move(str(src), str(dst), _MOVEFILE_WRITE_THROUGH):
+                    err = ctypes.get_last_error()  # type: ignore[attr-defined]
+                    if err in (5, 32, 33):
+                        raise PermissionError(err, f"MoveFileExW falló con el código {err}", str(dst))
+                    raise OSError(err, f"MoveFileExW falló con el código {err}", str(dst))
+            else:
+                os.rename(src, dst)
+                _fsync_dir(dst.parent)
+            return
+        except PermissionError as exc:
+            last = exc
+            time.sleep(0.1)
+    assert last is not None
+    raise last
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, retries: int = 20) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

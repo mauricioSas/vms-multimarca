@@ -32,15 +32,18 @@ def test_new_updater_goes_to_inactive_slot_and_confirms_on_start(site: Site) -> 
     assert (site.layout.slot_dir("b") / "vmsctl.exe").read_bytes() == b"MZ vmsctl-slot"
     j = site.journal()
     assert j is not None and j.kind == "updater" and j.state == "started"
-    # vmshost relanza el servicio desde la ranura B y el actualizador nuevo confirma
-    out2 = site.engine(slot="b").startup()
-    assert out2 is not None and out2.result == "update_ok"
+    # vmshost relanza el servicio desde la ranura B: al arrancar NO confirma todavía (sigue a prueba)…
+    eng_b = site.engine(slot="b")
+    assert eng_b.startup() is None
+    assert site.pointer().updater.trial is True and eng_b.updater_trial_pending()
+    # …confirma tras su primera comprobación TUF correcta
+    assert eng_b.check().result == "no_update"          # y no reinstala el mismo actualizador
     ptr = site.pointer()
     assert ptr.updater.slot == "b" and ptr.updater.trial is False
     j = site.journal()
     assert j is not None and j.kind == "updater" and j.state == "good" and not j.in_progress
-    # una segunda comprobación no reinstala el mismo actualizador
-    assert site.engine(slot="b").check().result == "no_update"
+    status = json.loads(site.layout.public_status_file.read_text())
+    assert "ranura B" in status["message_es"] or status["last_result"] == "no_update"
 
 
 def test_broken_new_updater_is_reverted_by_vmshost_and_blacklisted(site: Site) -> None:

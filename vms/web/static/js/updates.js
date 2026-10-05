@@ -54,6 +54,10 @@ function render(s) {
     row("Información de versiones válida hasta", esc(fmtDateTime(s.metadata_expires))),
     row("Diferencia de reloj con el servidor", esc(skew)),
   ];
+  if (s.window) rows.push(row("Ventana de mantenimiento", esc(s.window)));
+  if (Array.isArray(s.skipped) && s.skipped.length) {
+    rows.push(row("Omitida tras volver atrás", esc(s.skipped.join(", "))));
+  }
   if (s.reboot_pending) rows.push(row("Windows", '<span class="pill warn">Reinicio pendiente</span>'));
   const msg = s.message_es ? `<p class="upd-msg ${["update_failed", "metadata_expired", "clock_skew", "error", "disk_full"].includes(s.last_result) ? "bad" : ""}">${esc(s.message_es)}</p>` : "";
   root.innerHTML = `

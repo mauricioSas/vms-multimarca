@@ -33,8 +33,9 @@ from ..state import AppState
 
 log = logging.getLogger("vms.api.updates")
 
-STATUS_FIELDS = ("installed", "channel", "state", "hold", "last_check", "last_result", "message_es", "available",
-                 "metadata_expires", "clock_skew_s", "reboot_pending", "updated", "updater_version")
+STATUS_FIELDS = ("installed", "channel", "state", "hold", "window", "skipped", "last_check", "last_result",
+                 "message_es", "available", "metadata_expires", "clock_skew_s", "reboot_pending", "updated",
+                 "updater_version")
 WATCH_INTERVAL_S = 5.0
 
 
@@ -100,15 +101,19 @@ async def _watch(state: AppState, interval: float = WATCH_INTERVAL_S) -> None:
 router = APIRouter(prefix="/api", tags=["updates"], lifespan=_lifespan)
 
 
-@router.get("/updates/status")
-async def updates_status(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
-    st = await asyncio.to_thread(read_public_status, state.paths.base)
+def status_body(base: Path) -> dict[str, Any]:
+    """Cuerpo de `GET /api/updates/status` (también lo usan las pruebas de la interfaz)."""
+    st = read_public_status(base)
     running = release_version()
     if st is None:
-        return json_response({"available_status": False, "running": running, "installed": running,
-                              "state": "unknown", "last_result": "none",
-                              "message_es": "El actualizador todavía no ha informado en este equipo"})
-    return json_response({"available_status": True, "running": running, **st})
+        return {"available_status": False, "running": running, "installed": running, "state": "unknown",
+                "last_result": "none", "message_es": "El actualizador todavía no ha informado en este equipo"}
+    return {"available_status": True, "running": running, **st}
+
+
+@router.get("/updates/status")
+async def updates_status(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+    return json_response(await asyncio.to_thread(status_body, state.paths.base))
 
 
 @router.get("/internal/health/deep", dependencies=[Depends(require_internal)])

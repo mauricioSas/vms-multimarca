@@ -46,6 +46,14 @@ class StatusFile:
 
 
 class Blacklist:
+    """Versiones que no se instalan solas (`blacklist.json`).
+
+    - `kind="failed"`: fallaron en este equipo (health check, Authenticode, demasiados cortes).
+    - `kind="manual"`: alguien volvió atrás a mano desde ella (tubería, `vmsctl` o «Volver a la anterior» del
+      panel). Sin esto, el ciclo siguiente la volvería a instalar. Se levanta con `unskip` (tubería, CLI o
+      «Permitir de nuevo» del panel).
+    En los dos casos, una versión MAYOR sí se instala (la lista solo bloquea la versión exacta)."""
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 
@@ -53,20 +61,92 @@ class Blacklist:
         raw = read_json(self.path)
         return raw if isinstance(raw, dict) and isinstance(raw.get("versions"), dict) else {"schema": 1, "versions": {}}
 
-    def add(self, version: str, reason: str) -> None:
+    def add(self, version: str, reason: str, *, kind: str = "failed") -> None:
         data = self._load()
-        data["versions"][version] = {"reason": reason[:300], "at": iso(utcnow())}
+        prev = data["versions"].get(version)
+        if kind == "manual" and isinstance(prev, dict) and prev.get("kind", "failed") == "failed":
+            return                      # una versión que falló no pasa a «omitida a mano»
+        data["versions"][version] = {"reason": reason[:300], "at": iso(utcnow()), "kind": kind}
         atomic_write_json(self.path, data)
 
     def contains(self, version: str) -> bool:
         return version in self._load()["versions"]
 
+    def kind_of(self, version: str) -> str | None:
+        e = self._load()["versions"].get(version)
+        if e is None:
+            return None
+        return str(e.get("kind", "failed")) if isinstance(e, dict) else "failed"
+
     def versions(self) -> list[str]:
         return sorted(self._load()["versions"])
 
+    def skipped(self) -> list[str]:
+        """Versiones omitidas tras una vuelta atrás manual (las que el panel puede «permitir de nuevo»)."""
+        data = self._load()["versions"]
+        return sort_versions([v for v, e in data.items()
+                              if isinstance(e, dict) and e.get("kind") == "manual" and _valid_version(v)])
+
+    def unskip(self, version: str | None = None) -> list[str]:
+        """Quita de la lista las omitidas a mano (todas o una). Las que fallaron se quedan."""
+        data = self._load()
+        gone = [v for v, e in data["versions"].items()
+                if isinstance(e, dict) and e.get("kind") == "manual" and (version is None or v == version)]
+        for v in gone:
+            data["versions"].pop(v)
+        if gone:
+            atomic_write_json(self.path, data)
+        return sort_versions([v for v in gone if _valid_version(v)])
+
     def blocks(self, candidate: str) -> bool:
-        """Una versión en la lista negra no se reintenta; una MAYOR que todas las de la lista sí."""
+        """Una versión de la lista no se reintenta sola; una MAYOR que todas las de la lista sí."""
         return self.contains(candidate)
+
+
+def _valid_version(v: str) -> bool:
+    try:
+        Version.parse(v)
+    except ValueError:
+        return False
+    return True
+
+
+class VersionMarks:
+    """`versions-state.json`: versiones que llegaron a «good» y versiones montadas sin comprobar. Sirve para
+    reconstruir el puntero sin activar nunca una versión que solo se descargó (CONTRATO §13.3)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    def _load(self) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return {"schema": 1, "good": [], "pending": []}
+        raw = read_json(self.path)
+        if isinstance(raw, dict) and isinstance(raw.get("good"), list) and isinstance(raw.get("pending"), list):
+            return raw
+        return None
+
+    def good(self) -> list[str]:
+        data = self._load()
+        return [str(v) for v in reversed(data["good"])] if data else []      # la más reciente primero
+
+    def pending(self) -> set[str] | None:
+        """Montadas y sin comprobar; None si el archivo está dañado (no se sabe)."""
+        data = self._load()
+        return {str(v) for v in data["pending"]} if data is not None else None
+
+    def mark_pending(self, version: str) -> None:
+        data = self._load() or {"schema": 1, "good": [], "pending": []}
+        if version not in data["pending"] and version not in data["good"]:
+            data["pending"].append(version)
+            atomic_write_json(self.path, data)
+
+    def mark_good(self, version: str) -> None:
+        data = self._load() or {"schema": 1, "good": [], "pending": []}
+        data["pending"] = [v for v in data["pending"] if v != version]
+        data["good"] = [v for v in data["good"] if v != version] + [version]
+        data["good"] = data["good"][-10:]
+        atomic_write_json(self.path, data)
 
 
 def read_local_config(path: Path) -> LocalUpdaterConfig:

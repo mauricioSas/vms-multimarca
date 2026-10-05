@@ -53,6 +53,12 @@ def handle_request(engine: Engine, req: Any) -> dict[str, Any]:
                 return {"ok": False, "error": "rollback_failed", "message_es": out.message_es}
             j = engine.journal.read()
             return {"ok": True, "update_id": j.update_id if j else ""}
+        if cmd == "unskip":
+            version = req.get("version")
+            if version is not None and not isinstance(version, str):
+                return {"ok": False, "error": "bad_request", "message_es": "«version» tiene que ser texto"}
+            gone = engine.unskip(version)
+            return {"ok": True, "unskipped": gone, "skipped": engine.blacklist.skipped()}
         if cmd == "hold":
             on = req.get("on")
             if not isinstance(on, bool):
@@ -66,13 +72,15 @@ def handle_request(engine: Engine, req: Any) -> dict[str, Any]:
             ttl = int(req.get("ttl_s") or 3600)
             if not owner:
                 return {"ok": False, "error": "bad_request", "message_es": "Falta «owner»"}
-            # No se concede mientras haya una actualización en curso (y no se espera a que acabe: «busy»)
-            if not engine._op.acquire(blocking=False):
-                return {"ok": False, "error": "busy", "message_es": "Hay una actualización en curso"}
+            # No se concede mientras se esté APLICANDO algo (pasos del diario, vuelta atrás, ranura del
+            # actualizador); sí durante una comprobación o descarga: antes de aplicar, la comprobación mira el
+            # cerrojo con `_apply` cogido y espera. No se espera a que acabe: «busy» al momento.
+            if not engine._apply.acquire(blocking=False):
+                return {"ok": False, "error": "busy", "message_es": "Hay una actualización aplicándose"}
             try:
                 ok = engine.lock.acquire(owner, ttl)
             finally:
-                engine._op.release()
+                engine._apply.release()
             return {"ok": True} if ok else {"ok": False, "error": "busy"}
         if cmd == "unlock":
             owner = str(req.get("owner") or "")[:64]

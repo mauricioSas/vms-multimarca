@@ -93,10 +93,15 @@ contra quien guarda las dos).
    python -m tools.release publish --version 2.1.0 --artifacts dist/ --channel pilot \
        --notes-es "Corrige la autenticación Digest SHA-256 con cámaras Hikvision recientes." \
        [--security --severity critical] [--min-from 2.0.0] \
+       [--windows-build-min 22631] [--webview2-min 120.0.0.0] \
        [--authenticode-o "<razón social>" --authenticode-issuer "<CA de Certum>"]
    ```
-   - Los componentes que no vienen en `dist/` se heredan de la versión anterior (mismo hash: las tiendas no los
-     descargan). Solo se reinician los servicios de los componentes que cambian (`engine` = hueco ≤ 15 s, solo en
+   - **Windows mínimo:** por defecto el descriptor pide el build **19045** (Windows 10 22H2, admitido con ESU por
+     la decisión D11), así que Windows 10 y todos los Windows 11 reciben la versión, también los arreglos de
+     seguridad. Sube el mínimo con `--windows-build-min` **solo** si la versión de verdad no funciona en builds
+     anteriores (esas tiendas verán `error` con el build que hace falta); `--windows-build-min 0` = sin mínimo.
+   - Los componentes que no vienen en `dist/` se heredan de la versión publicada inmediatamente anterior por
+     número (mismo hash: las tiendas no los descargan). Solo se reinician los servicios de los componentes que cambian (`engine` = hueco ≤ 15 s, solo en
      la ventana; `app`/`runtime` = 0 s de grabación).
    - Si hay una migración de la central marcada `-- reversible: no`, hace falta `--accept-irreversible` (el rollback
      de la central restaura el `pg_dump`).
@@ -123,10 +128,22 @@ En orden de preferencia:
 2. **Volver atrás en las sedes afectadas:** panel central → «Volver a la anterior» (llega con el siguiente latido),
    o en la tienda con permisos de administrador: `vmsctl update rollback` (elevado; la bandeja del visor lo ofrece).
    Se restaura la configuración del respaldo previo y se avisa de que los cambios hechos después se pierden.
+   - **La versión de la que se vuelve queda «omitida» en esa tienda:** el ciclo siguiente NO la reinstala aunque
+     el canal siga apuntando a ella (sin esto, la vuelta atrás se desharía sola a las pocas horas). Se ve en
+     `/status` («Omitida tras volver atrás») y en **Versiones** («Omitida tras volver atrás: 2.1.0»).
+   - La omisión se levanta sola en cuanto el canal ofrece una versión **mayor** (p. ej. la 2.1.1 con el arreglo).
+   - Para volver a instalar esa misma versión (p. ej. el problema era de la tienda, no de la versión): botón
+     **«Permitir de nuevo la 2.1.0»** en **Versiones**, o en la tienda, elevado,
+     `python -m vms_updater unskip [--version 2.1.0]` (con B1, `vmsctl update unskip`). Se instala en la
+     siguiente comprobación dentro de la ventana.
+   - Si la vuelta atrás la hizo la propia tienda porque la versión falló (health check, firma, cortes repetidos),
+     la versión queda como **fallida**, no omitida: «Permitir de nuevo» no la levanta; solo una versión mayor.
 3. **Mover el canal a la versión anterior:** `channel stable --version 2.0.0`. Las tiendas **no bajan solas** (solo
    por rollback), pero las que no se hayan actualizado dejan de recibir la mala.
 4. **Lo normal: publicar 2.1.1 con el arreglo.** Una versión que falló en una tienda queda en su lista negra local y
-   no se reintenta, pero una mayor sí.
+   no se reintenta, pero una mayor sí. Se puede publicar el arreglo para `stable` aunque haya una versión mayor en
+   `pilot` (p. ej. la 2.1.1 con la 2.2.0 en `pilot`): hereda los componentes de la 2.1.0. Lo que no se permite es
+   que un canal retroceda al publicar (la 2.1.1 no puede ir a `pilot` si `pilot` está en la 2.2.0).
 
 Si el health check (120 s) falla en una tienda, el actualizador vuelve solo a la anterior, la pone en la lista negra
 y lo informa (`update_failed`) en el latido, en `/status` y en la página **Versiones**.
@@ -143,10 +160,15 @@ El backend usa la más reciente entre esta y la que trae la versión (CONTRATO �
 ## 7. Preparar un USB (tiendas sin Internet)
 
 ```bash
-python -m tools.release mirror --version 2.1.0 --out E:\
+python -m tools.release mirror --channel stable --out E:\        # la versión que tenga ese canal (por defecto stable)
+python -m tools.release mirror --version 2.1.0 --out E:\         # comprueba que algún canal esté en la 2.1.0
 ```
-- Copia del repositorio `offline` la cadena de `root`, `targets`, el descriptor, sus componentes, los canales y la
-  última tabla de avisos, y firma un `snapshot`/`timestamp` nuevos que **caducan a los 60 días**. Lo valida con el
+- La tienda instala **lo que diga su canal**, no una versión elegida a mano. Por eso el USB lleva solo los canales
+  que apuntan a su versión; si pides `--version` y ningún canal (o el canal pedido) está en ella, se rechaza en el
+  momento con un mensaje claro en vez de dejar un USB inútil. Una tienda de otro canal que use ese USB verá
+  «El espejo USB no trae … prepara un USB nuevo con `--channel <canal>`».
+- Copia del repositorio `offline` la cadena de `root`, `targets`, el descriptor, sus componentes, los canales que
+  apuntan a esa versión y la última tabla de avisos, y firma un `snapshot`/`timestamp` nuevos que **caducan a los 60 días**. Lo valida con el
   cliente real leyendo el USB como `file://`.
 - En la tienda, el instalador en modo «sin Internet» fija `VMS_UPDATE_SOURCE=file:///E:/` (o la carpeta compartida)
   y confía en el `root` de `offline`. La verificación es idéntica a la de Internet.
@@ -229,10 +251,11 @@ Pendiente: repetirlo con las YubiKey reales y una vez al año (PLAN-V2 §1.6).
 | `reboot_pending` | Windows tiene un reinicio pendiente: espera a la siguiente ventana | Reiniciar el equipo fuera de horario |
 | `held` | Retenida desde el panel | Quitar «Retenida» cuando toque |
 | `update_failed` | Falló y volvió sola a la anterior (o se interrumpió y se reintentará) | Ver el mensaje; publicar una corrección |
+| `rollback_ok` | Vuelta atrás pedida hecha; la versión de la que se volvió queda omitida (§5) | «Permitir de nuevo» si procede |
 | `metadata_expired` | Metadatos caducados: servidor sin refrescar (`timestamp.yml`) o USB de más de 60 días | Revisar CI o preparar un USB nuevo |
-| `clock_skew` | El reloj del equipo difiere más de 5 min del servidor: no se aplica nada | Corregir la hora (NTP) |
+| `clock_skew` | El reloj del equipo difiere más de 5 min del servidor (también con días de desfase, aunque los metadatos parezcan caducados): no se aplica nada | Corregir la hora (NTP) |
 | `min_from` | La versión exige una instalada más nueva | Instalador completo |
-| `disk_full` | Sin espacio (hace falta 2× la versión + 1 GB) | Liberar disco |
+| `disk_full` | Sin espacio: 2× la versión + 1 GB en la instalación, la versión en la caché de `<datos>` y el componente mayor en la carpeta temporal | Liberar disco |
 | `error` | Sin conexión, token rechazado (401/403) o metadatos que no son de confianza | Ver el mensaje |
 
 ## 12. Referencia rápida
@@ -242,13 +265,14 @@ python -m tools.release keys init-dev | keys show
 python -m tools.release init
 python -m tools.release package --component <c> --src <carpeta> --out <zip>
 python -m tools.release publish --version X.Y.Z --artifacts <dist> [--channel c] [--dry-run] [--meta local|ci]
+                                [--windows-build-min N|0] [--webview2-min V]
 python -m tools.release channel <c> (--version X.Y.Z | --pause | --resume)
 python -m tools.release data advisories <tabla.json>
-python -m tools.release mirror --version X.Y.Z --out <USB> [--days 60]
+python -m tools.release mirror [--channel stable | --version X.Y.Z] --out <USB> [--days 60]
 python -m tools.release verify [--mode online|offline] [--dir <carpeta> --file]
 python -m tools.release sign-meta [--mode online] [--timestamp-only]       (CI)
 python -m tools.release root-rotate --role <rol> --revoke <clave> [--add-soft <nombre>]
 python -m tools.release upload --to <carpeta>
 python -m tools.release site-token add|revoke|revoke-client|list --client <c> [--site S] [--kv-file F] [--out secrets.json]
 ```
-En la tienda (consola elevada): `python -m vms_updater status|check|rollback` o, con B1, `vmsctl update …`.
+En la tienda (consola elevada): `python -m vms_updater status|check|rollback|unskip` o, con B1, `vmsctl update …`.

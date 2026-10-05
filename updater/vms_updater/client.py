@@ -11,6 +11,7 @@ caducidad de los metadatos (`ExpiredMetadataError` → `metadata_expired`).
 from __future__ import annotations
 
 import email.utils
+import errno
 import logging
 import shutil
 from collections.abc import Iterator
@@ -56,6 +57,17 @@ class SecurityError(UpdateSourceError):
 
 class NotAuthorized(UpdateSourceError):
     code = "not_authorized"
+
+
+class DiskFull(UpdateSourceError):
+    """Disco lleno (o cuota) durante la descarga: se informa `disk_full` y se reintenta en otro ciclo."""
+
+    code = "disk_full"
+
+
+def is_disk_full(exc: OSError) -> bool:
+    return (exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", -1))
+            or getattr(exc, "winerror", 0) in (39, 112))     # ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
 
 
 @dataclass(frozen=True)
@@ -279,9 +291,18 @@ class TufClient:
             if exc.status_code in (401, 403):
                 raise NotAuthorized(f"Descarga de «{path}» rechazada (HTTP {exc.status_code}): "
                                     "revisa el token de la sede") from exc
+            if exc.status_code == 404 and self.source.kind == "file":
+                raise UpdateSourceError(
+                    f"El espejo USB no trae «{path}» (se preparó para otra versión del canal): prepara un USB "
+                    "nuevo con «python -m tools.release mirror --channel <canal>»") from exc
             raise UpdateSourceError(f"Descarga de «{path}» fallida (HTTP {exc.status_code})") from exc
         except tuf_exc.DownloadError as exc:
             raise UpdateSourceError(f"Descarga de «{path}» fallida: {exc}") from exc
+        except OSError as exc:
+            # ngclient descarga a un temporal (TEMP) y lo copia a la caché: aquí llega un disco lleno
+            if is_disk_full(exc):
+                raise DiskFull(f"Disco lleno al descargar «{path}»: se reintentará en el siguiente ciclo") from exc
+            raise UpdateSourceError(f"Error de disco al descargar «{path}»: {exc.strerror or exc}") from exc
 
     def read(self, path: str, *, max_length: int = MAX_JSON_TARGET) -> bytes:
         info = self._info(path)

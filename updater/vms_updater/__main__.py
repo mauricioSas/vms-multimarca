@@ -5,6 +5,7 @@
     python -m vms_updater recover                  retomar o revertir lo que dejó el diario y salir
     python -m vms_updater status                   estado (por la tubería si el servicio corre)
     python -m vms_updater rollback [--to X.Y.Z] [--reason TEXTO]   por la tubería (exige elevación)
+    python -m vms_updater unskip [--version X.Y.Z]   volver a permitir la versión omitida tras un rollback
     python -m vms_updater pipe '{"cmd": "status"}' petición en bruto por la tubería
 
 Códigos de salida: 0 bien, 1 fallo, 2 uso incorrecto, 3 relanzar con la ranura nueva del actualizador.
@@ -38,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--to")
     r.add_argument("--reason", default="")
     r.add_argument("--local", action="store_true", help="sin tubería (el servicio tiene que estar parado)")
+    u = sub.add_parser("unskip")
+    u.add_argument("--version")
+    u.add_argument("--local", action="store_true", help="sin tubería (el servicio tiene que estar parado)")
     p = sub.add_parser("pipe")
     p.add_argument("json")
     a = ap.parse_args(argv)
@@ -45,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     from .service import build_engine, install_signal_handlers, run_service, setup_logging
 
     layout = Layout.from_env()
-    if a.cmd in ("pipe", "status", "rollback") and not getattr(a, "local", False):
+    if a.cmd in ("pipe", "status", "rollback", "unskip") and not getattr(a, "local", False):
         from .control_pipe import request
 
         if a.cmd == "pipe":
@@ -56,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         elif a.cmd == "status":
             req = {"cmd": "status"}
+        elif a.cmd == "unskip":
+            req = {"cmd": "unskip", "version": a.version}
         else:
             req = {"cmd": "rollback", "to": a.to, "reason": a.reason}
         try:
@@ -92,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         if out.result == "restart_updater":
             return RELOAD_EXIT_CODE
         return 1 if out.result in ("error", "update_failed") else 0
+    if a.cmd == "unskip":
+        _print({"unskipped": engine.unskip(a.version), "skipped": engine.blacklist.skipped()})
+        return 0
     if a.cmd == "rollback":
         engine.startup()
         out = engine.manual_rollback(a.to, a.reason)

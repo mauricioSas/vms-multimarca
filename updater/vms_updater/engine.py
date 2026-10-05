@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -26,7 +27,7 @@ from ._atomic import atomic_write_json, cleanup_temporaries, read_json
 from .advisories import install_advisories, installed_generated_at, latest_advisories_target
 from .authenticode import AuthenticodeError, Verifier, verify_tree
 from .backup import backup_name, create_backup, prune_backups, restore_config
-from .client import MetadataExpired, NotAuthorized, SecurityError, TufClient, UpdateSourceError
+from .client import DiskFull, MetadataExpired, NotAuthorized, SecurityError, TufClient, UpdateSourceError
 from .health import HealthResult
 from .journal import FaultHook, JournalStore
 from .layout import Layout
@@ -35,9 +36,9 @@ from .models import (FORWARD_STATES, KNOWN_SERVICES, ChannelDoc, Journal, LocalU
                      bundle_target, channel_target, iso, utcnow)
 from .pointer import PointerStore, rebuild_pointer
 from .services import ServiceControl, ServiceError
-from .stage import StageError, install_updater_slot, remove_tree, stage_version
-from .state_files import (Blacklist, InstallLock, StatusFile, in_window, read_directive, read_local_config,
-                          write_local_config)
+from .stage import StageError, install_updater_slot, remove_tree, stage_version, verify_staged
+from .state_files import (Blacklist, InstallLock, StatusFile, VersionMarks, in_window, read_directive,
+                          read_local_config, write_local_config)
 from .system import SystemInfo
 from .versioning import Version
 
@@ -92,7 +93,12 @@ class Engine:
         self.status = StatusFile(L.public_status_file, now=deps.now_utc)
         self.blacklist = Blacklist(L.blacklist_file)
         self.lock = InstallLock(L.lock_file, clock=deps.clock)
+        self.marks = VersionMarks(L.versions_state_file)
+        # Dos cerrojos (siempre en este orden): `_op` serializa comprobaciones y órdenes; `_apply` solo se
+        # toma mientras se TOCA la instalación (pasos del diario, vuelta atrás, ranura del actualizador). El
+        # instalador recibe «busy» únicamente con `_apply` cogido, no durante una descarga larga.
         self._op = threading.RLock()
+        self._apply = threading.RLock()
 
     # ================================================================== utilidades
     def config(self) -> LocalUpdaterConfig:
@@ -161,7 +167,7 @@ class Engine:
         L = self.layout.ensure()
         for d in (L.state_dir, L.updater_data):
             cleanup_temporaries(d)
-        with self._op:
+        with self._op, self._apply:
             self._ensure_pointer()
             out = self._recover_updater_slot()
             rec = self.recover()
@@ -171,16 +177,24 @@ class Engine:
         if self.pointer.read() is not None:
             return
         j = self.journal.read()
-        ptr = rebuild_pointer(j, self.layout.versions_dir, clock=self.d.clock)
+        known: list[str | None] = []
+        try:
+            known.append(self.d.system.installed_version())
+        except OSError:
+            pass
+        known += self.marks.good()
+        ptr = rebuild_pointer(j, self.layout.versions_dir, clock=self.d.clock, known_good=known,
+                              unverified=self.marks.pending())
         if ptr is None:
             log.error("No hay puntero ni versiones instaladas: no se puede reconstruir active.json")
             return
         self.pointer.write(ptr)
-        log.warning("active.json faltaba o estaba dañado: reconstruido con %s", ptr.active)
+        log.warning("active.json faltaba o estaba dañado: reconstruido con %s%s", ptr.active,
+                    " (a prueba)" if ptr.trial else "")
 
     # ================================================================== recuperación del diario
     def recover(self) -> Outcome | None:
-        with self._op:
+        with self._op, self._apply:
             j = self.journal.read()
             if j is None or not j.in_progress:
                 return None
@@ -224,26 +238,44 @@ class Engine:
             pass
         now = self.d.now_utc()
         cfg = self._apply_directive(self.config())
-        self._set_status(last_check=iso(now), channel=cfg.channel, hold=cfg.hold, state=self._journal_state(),
-                         paused_at=None)
+        self._set_status(last_check=iso(now), channel=cfg.channel, hold=cfg.hold, window=cfg.window,
+                         skipped=self.blacklist.skipped(), state=self._journal_state(), paused_at=None)
         client = self.d.client_factory()
         try:
             info = client.refresh()
         except MetadataExpired as exc:
+            # Con el reloj adelantado más que la validez del timestamp, TUF ve los metadatos caducados: si la
+            # cabecera Date del servidor dice otra cosa, el problema es el reloj, no el servidor.
+            skew = self._skew(now, getattr(client.fetcher, "last_server_date", None))
+            if skew is not None and abs(skew) > self.d.max_clock_skew_s:
+                self._set_status(clock_skew_s=round(skew, 1))
+                return self._finish("clock_skew", self._skew_message(skew))
             return self._finish("metadata_expired", exc.message_es)
         except (SecurityError, NotAuthorized, UpdateSourceError) as exc:
             return self._finish("error", exc.message_es)
         expires = iso(info.timestamp_expires)
-        skew = None
-        if info.server_date is not None:
-            skew = (now - info.server_date).total_seconds()
+        skew = self._skew(now, info.server_date)
         self._set_status(metadata_expires=expires, clock_skew_s=round(skew, 1) if skew is not None else None,
                          reboot_pending=self.d.system.reboot_pending())
         if skew is not None and abs(skew) > self.d.max_clock_skew_s:
-            return self._finish("clock_skew", f"El reloj del equipo está desfasado {skew:+.0f} s respecto al "
-                                "servidor de actualizaciones: no se aplica nada hasta corregirlo (revisa NTP).")
+            return self._finish("clock_skew", self._skew_message(skew))
+        # Primera comprobación TUF correcta del actualizador nuevo (A/B): ahora sí se confirma su ranura.
+        self._confirm_updater_if_pending()
         self._update_advisories(client)
         return self._select_and_apply(client, cfg, force_window=force_window, apply=apply)
+
+    @staticmethod
+    def _skew(now: datetime, server_date: datetime | None) -> float | None:
+        return (now - server_date).total_seconds() if server_date is not None else None
+
+    @staticmethod
+    def _skew_message(skew: float) -> str:
+        if abs(skew) >= 86400:
+            amount = f"{skew / 86400:+.1f} días"
+        else:
+            amount = f"{skew:+.0f} s"
+        return (f"El reloj del equipo está desfasado {amount} respecto al servidor de actualizaciones: no se "
+                "aplica nada hasta corregirlo (revisa NTP).")
 
     def _journal_state(self) -> str:
         j = self.journal.read()
@@ -307,6 +339,10 @@ class Engine:
         if installed and not Version.parse(cand) > Version.parse(installed):
             return self._finish("no_update", f"Al día ({installed})", available=None)
         if self.blacklist.blocks(cand):
+            if self.blacklist.kind_of(cand) == "manual":
+                return self._finish("no_update", f"La {cand} se dejó de lado al volver atrás a mano: no se "
+                                    "reinstala sola hasta que haya una versión mayor o se pida «Permitir de "
+                                    "nuevo»", available=cand)
             return self._finish("no_update", f"La {cand} falló antes en este equipo y no se reintenta "
                                 "hasta que haya una versión mayor", available=None)
         try:
@@ -359,37 +395,50 @@ class Engine:
         if self.d.system.reboot_pending():
             return self._finish("reboot_pending", "Windows tiene un reinicio pendiente: la actualización espera a "
                                 "la siguiente ventana", available=cand, reboot_pending=True)
-        holder = self.lock.holder()
-        if holder is not None:
-            return self._finish("waiting_window", f"Hay otra instalación en curso ({holder}): se espera",
-                                available=cand)
-        if changed:
-            out = self.apply_release(desc, changed)
-        else:
-            out = Outcome("update_ok", "", cand, cand)
-        if out.result == "update_ok":
-            up = self._maybe_update_updater(client, desc)
-            if up is not None:
-                return up
-        return out
+        with self._apply:
+            # Comprobado con `_apply` cogido: el instalador no puede coger el cerrojo entre esto y aplicar.
+            holder = self.lock.holder()
+            if holder is not None:
+                return self._finish("waiting_window", f"Hay otra instalación en curso ({holder}): se espera",
+                                    available=cand)
+            if changed:
+                out = self.apply_release(desc, changed)
+            else:
+                out = Outcome("update_ok", "", cand, cand)
+            if out.result == "update_ok":
+                up = self._maybe_update_updater(client, desc)
+                if up is not None:
+                    return up
+            return out
 
     # ================================================================== descarga y montaje
     def _download_and_stage(self, client: TufClient, desc: ReleaseDescriptor, raw: bytes, changed: list[str],
                             installed: str | None, cur_desc: ReleaseDescriptor | None) -> None:
         total = sum(desc.components[c].length for c in changed)
-        free = self.d.system.free_bytes(self.layout.install)
-        if free < 2 * total + DISK_MARGIN:
-            raise _DiskFull(f"No hay espacio suficiente: hacen falta {(2 * total + DISK_MARGIN) / 1e9:.1f} GB "
-                            f"y quedan {free / 1e9:.1f} GB")
+        biggest = max((desc.components[c].length for c in changed), default=0)
+        # versions\ (2× + margen), la caché de descargas en <datos> (1×) y TEMP, donde ngclient descarga cada
+        # componente antes de copiarlo a la caché (el mayor). Pueden ser volúmenes distintos.
+        needs = [(self.layout.install, 2 * total + DISK_MARGIN, "la carpeta de instalación"),
+                 (self.layout.tuf_targets_dir, total, "la caché de descargas"),
+                 (Path(tempfile.gettempdir()), biggest, "la carpeta temporal")]
+        for where, need, label in needs:
+            free = self._free(where)
+            if free is not None and free < need:
+                raise _DiskFull(f"No hay espacio suficiente en {label}: hacen falta {need / 1e9:.1f} GB y quedan "
+                                f"{free / 1e9:.1f} GB")
         zips: dict[str, Path] = {}
         for c in changed:
             ref = desc.components[c]
-            path = client.download(ref.target)
+            try:
+                path = client.download(ref.target)
+            except DiskFull as exc:
+                raise _DiskFull(exc.message_es) from exc
             tf = client.targets().get(ref.target)
             if tf is None or tf.hashes.get("sha256") != ref.sha256 or tf.length != ref.length:
                 raise SecurityError(f"El descriptor y targets.json no coinciden para «{c}»")
             zips[c] = path
         try:
+            self.marks.mark_pending(desc.version)       # antes de que exista: nunca se activa sin comprobar
             vdir = stage_version(versions_dir=self.layout.versions_dir, descriptor=desc, descriptor_bytes=raw,
                                  zips=zips, current_version=installed, current_descriptor=cur_desc)
         except OSError as exc:
@@ -398,6 +447,15 @@ class Engine:
                 raise _DiskFull("Disco lleno al preparar la versión: se reintentará en el siguiente ciclo") from exc
             raise StageError(f"Error de disco al preparar la versión: {exc}") from exc
         self._check_authenticode(vdir, desc, changed)
+
+    def _free(self, path: Path) -> int | None:
+        p = Path(path)
+        while not p.exists() and p.parent != p:
+            p = p.parent
+        try:
+            return self.d.system.free_bytes(p)
+        except OSError:
+            return None
 
     def _check_authenticode(self, vdir: Path, desc: ReleaseDescriptor, changed: list[str]) -> None:
         pol = desc.authenticode
@@ -422,7 +480,7 @@ class Engine:
 
     # ================================================================== aplicar
     def apply_release(self, desc: ReleaseDescriptor, changed: list[str]) -> Outcome:
-        with self._op:
+        with self._op, self._apply:
             installed = self.installed()
             prev_journal = self.journal.read()
             attempt = 1
@@ -467,6 +525,12 @@ class Engine:
             vdir = self.layout.version_dir(to)
             if not (vdir / "release.json").is_file():
                 raise _StepFailed(f"versions/{to} no está montada")
+            try:
+                verify_staged(vdir)       # p. ej. archivos con ceros tras un corte de luz al montarla
+            except StageError as exc:
+                if to != self.installed():
+                    remove_tree(vdir)     # se vuelve a montar en el siguiente ciclo
+                raise _StepFailed(f"versions/{to} está dañada ({exc.message_es}): se volverá a montar") from exc
             return j
         if state == "backed_up":
             rec = j.recording_before if j.recording_before is not None else self.d.health.recording_now()
@@ -502,6 +566,7 @@ class Engine:
             return j
         if state == "good":
             self.pointer.confirm()
+            self.marks.mark_good(to)
             self._registry(to)
             self._cleanup_versions()
             prune_backups(self.layout.backups_dir)
@@ -608,6 +673,7 @@ class Engine:
         if j.state != "rolled_back":
             j = self.journal.begin(j, "rolled_back")
         if prev:
+            self.marks.mark_good(prev)
             self._registry(prev)
         self._emit("update", {"version": prev or "", "viewer_restart": "viewer" in j.components,
                               "state": "rolled_back", "message_es": f"Se volvió a la {prev}: {j.error or reason}"})
@@ -616,8 +682,11 @@ class Engine:
                             available=None)
 
     def manual_rollback(self, to: str | None = None, reason: str = "") -> Outcome:
-        """Rollback pedido (tubería elevada, panel central o rollback-request de vmshost)."""
-        with self._op:
+        """Rollback pedido (tubería elevada, panel central o rollback-request de vmshost).
+
+        La versión de la que se vuelve queda **omitida** (`Blacklist`, `kind="manual"`): si no, el ciclo
+        siguiente la volvería a instalar sola. Se levanta con una versión mayor o con `unskip`."""
+        with self._op, self._apply:
             self.recover()
             ptr = self.pointer.read()
             if ptr is None:
@@ -638,17 +707,35 @@ class Engine:
             return self._manual_rollback_steps(j)
 
     def _manual_rollback_steps(self, j: Journal) -> Outcome:
-        """Volver a `to` (ya instalada y buena). No pone nada en la lista negra."""
+        """Volver a `to` (ya instalada y buena). La versión de la que se vuelve queda omitida (no «fallida»):
+        se anota ANTES de tocar nada, así un corte a mitad no la olvida (paso idempotente)."""
         target = j.to
         assert target is not None
+        left = j.from_
+        if left and left != target:
+            self.blacklist.add(left, j.reason or "vuelta atrás manual", kind="manual")
         j = self._revert_steps(j, target, j.reason or "vuelta atrás pedida", min_recording=None)
         if j.state != "rolled_back":
             j = self.journal.begin(j, "rolled_back")
+        self.marks.mark_good(target)
         self._registry(target)
         self._emit("update", {"version": target, "viewer_restart": True, "state": "rolled_back",
                               "message_es": f"Se volvió a la {target}"})
         j = self.journal.done(j.model_copy(update={"last_good": target}))
-        return self._finish("rollback_ok", f"Se volvió a la {target}" + (f" ({j.reason})" if j.reason else ""))
+        skipped = self.blacklist.skipped()
+        note = (f"; la {left} no se reinstalará sola hasta que haya una versión mayor o se pida «Permitir de "
+                "nuevo»") if left and left in skipped else ""
+        return self._finish("rollback_ok", f"Se volvió a la {target}" + (f" ({j.reason})" if j.reason else "")
+                            + note, skipped=skipped)
+
+    def unskip(self, version: str | None = None) -> list[str]:
+        """Vuelve a permitir las versiones omitidas tras una vuelta atrás manual (todas o una)."""
+        with self._op:
+            gone = self.blacklist.unskip(version)
+            self._set_status(skipped=self.blacklist.skipped())
+            if gone:
+                log.info("Versiones permitidas de nuevo: %s", ", ".join(gone))
+            return gone
 
     def _latest_backup_for(self, version: str) -> Path | None:
         d = self.layout.backups_dir
@@ -664,7 +751,7 @@ class Engine:
         raw = read_json(f)
         if raw is None:
             return None
-        with self._op:
+        with self._op, self._apply:
             ptr = self.pointer.read()
             try:
                 f.unlink()
@@ -690,9 +777,21 @@ class Engine:
         key = f"{d.rollback_to}|{d.received}"
         if isinstance(prev, dict) and prev.get("rollback") == key:
             return None
-        atomic_write_json(done_marker, {"rollback": key})
+        atomic_write_json(done_marker, {**(prev if isinstance(prev, dict) else {}), "rollback": key})
         to = None if d.rollback_to == "previous" else d.rollback_to
         return self.manual_rollback(to, "pedido desde el panel central")
+
+    def handle_directive_unskip(self) -> list[str] | None:
+        """«Permitir de nuevo» del panel central (directiva `unskip_at`), una sola vez por petición."""
+        d = read_directive(self.layout.directive_file)
+        if d is None or not d.unskip_at:
+            return None
+        done_marker = self.layout.updater_data / "directive-done.json"
+        prev = read_json(done_marker)
+        if isinstance(prev, dict) and prev.get("unskip") == d.unskip_at:
+            return None
+        atomic_write_json(done_marker, {**(prev if isinstance(prev, dict) else {}), "unskip": d.unskip_at})
+        return self.unskip(None)
 
     # ================================================================== actualizador A/B
     def _slots_file(self) -> Path:
@@ -724,10 +823,27 @@ class Engine:
                     state="idle", attempt=1, last_good=ptr.active, reason=key)
         self.journal.write(j)
         j = self.journal.begin(j, "downloaded")
+
+        def verify(slot_tmp: Path, files: list[str]) -> None:
+            # La ranura lleva vmsctl.exe y el runtime, que corren como LocalSystem: misma segunda capa
+            # (Authenticode) que el resto de binarios de la versión, además de TUF.
+            pol = desc.authenticode
+            if pol is None or self.d.verifier is None:
+                return
+            n = verify_tree(slot_tmp, files, self.d.verifier, subject_o=pol.subject_o, subject_c=pol.subject_c,
+                            issuers=pol.issuers, third_party=pol.third_party)
+            log.info("Authenticode: %d binarios del actualizador %s comprobados", n, ref.version)
+
         try:
             path = client.download(ref.target)
-            install_updater_slot(slot_dir=self.layout.slot_dir(new_slot), zip_path=path)
-        except (UpdateSourceError, StageError, OSError) as exc:
+            install_updater_slot(slot_dir=self.layout.slot_dir(new_slot), zip_path=path, verify=verify)
+        except (StageError, AuthenticodeError) as exc:
+            msg = exc.message_es
+            self.blacklist.add(key, msg)
+            j = self.journal.begin(j.model_copy(update={"error": msg}), "rolled_back")
+            self.journal.done(j)
+            return self._finish("update_failed", f"El actualizador {ref.version} no supera la verificación: {msg}")
+        except (UpdateSourceError, OSError) as exc:
             msg = getattr(exc, "message_es", str(exc))
             j = self.journal.begin(j.model_copy(update={"error": msg}), "rolled_back")
             self.journal.done(j)
@@ -745,26 +861,47 @@ class Engine:
                        "se reinicia el servicio", applied=ref.version)
 
     def _recover_updater_slot(self) -> Outcome | None:
-        """Al arrancar: confirmar la ranura nueva (si es la nuestra) o detectar que vmshost volvió atrás."""
+        """Al arrancar en una ranura a prueba: NO se confirma todavía. La confirmación llega con la primera
+        comprobación TUF correcta (`_confirm_updater_if_pending`); si este actualizador arranca pero no sabe
+        comprobar, `vmshost` vuelve a la ranura anterior a los 30 min (CONTRATO §13.3)."""
         ptr = self.pointer.read()
-        if ptr is None:
+        if ptr is None or not ptr.updater.trial:
             return None
-        j = self.journal.read()
         upd = ptr.updater
         mine = self.d.slot
-        if upd.trial and (mine is None or mine == upd.slot):
+        if mine is None:
+            log.warning("Ranura %s del actualizador a prueba, pero no se sabe en qué ranura corre este proceso: "
+                        "no se confirma", upd.slot.upper())
+            return None
+        if mine == upd.slot:
+            log.info("Actualizador %s a prueba en la ranura %s: se confirmará tras la primera comprobación "
+                     "correcta", __version__, upd.slot.upper())
+            self._set_status(state="verifying", message_es=f"Actualizador {__version__} a prueba (ranura "
+                             f"{upd.slot.upper()}): se confirma tras la primera comprobación correcta")
+        return None
+
+    def updater_trial_pending(self) -> bool:
+        """¿Este proceso es el actualizador nuevo, todavía a prueba?"""
+        ptr = self.pointer.read()
+        return bool(ptr is not None and ptr.updater.trial and self.d.slot is not None
+                    and self.d.slot == ptr.updater.slot)
+
+    def _confirm_updater_if_pending(self) -> None:
+        ptr = self.pointer.read()
+        if ptr is None or not ptr.updater.trial or self.d.slot is None or self.d.slot != ptr.updater.slot:
+            return
+        with self._apply:
             self.pointer.confirm_updater()
+            j = self.journal.read()
             if j is not None and j.kind == "updater" and j.in_progress:
                 j = self.journal.done(j) if j.current_step and j.current_step.done_unix is None else j
                 j = self.journal.begin(j, "good")
                 self.journal.done(j)
-            log.info("Ranura %s del actualizador confirmada", upd.slot.upper())
-            self._set_status(last_result="update_ok", message_es=f"Actualizador {__version__} en marcha "
-                             f"(ranura {upd.slot.upper()})", state="good")
-            return Outcome("update_ok", "actualizador confirmado")
-        return None
+        log.info("Ranura %s del actualizador confirmada", ptr.updater.slot.upper())
+        self._set_status(last_result="update_ok", message_es=f"Actualizador {__version__} en marcha "
+                         f"(ranura {ptr.updater.slot.upper()})", state="good")
 
-    def _recover_updater_journal(self, j: Journal) -> Outcome:
+    def _recover_updater_journal(self, j: Journal) -> Outcome | None:
         ptr = self.pointer.read()
         target_slot = j.to
         running_target = ptr is not None and ptr.updater.slot == target_slot
@@ -780,6 +917,9 @@ class Engine:
             self.journal.done(j)
             return self._finish("update_failed", "La actualización del actualizador se interrumpió; se reintentará")
         if j.state in ("started", "switched") and running_target and ptr is not None and ptr.updater.trial:
+            if self.d.slot is None or self.d.slot == target_slot:
+                # somos el actualizador nuevo (o no se sabe): se confirma tras la primera comprobación correcta
+                return None
             # sigue a prueba y somos la ranura anterior (p. ej. reinicio antes de que arrancara la nueva):
             return Outcome("restart_updater", "el actualizador nuevo está pendiente de arrancar")
         # vmshost volvió a la ranura anterior: el nuevo no arrancó o no confirmó a tiempo

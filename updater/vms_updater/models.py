@@ -282,6 +282,8 @@ class PublicStatus(_Model):
     channel: str = "stable"
     state: str = "idle"
     hold: bool = False
+    window: str | None = None
+    skipped: list[str] = Field(default_factory=list)   # omitidas tras una vuelta atrás manual
     last_check: str | None = None
     last_result: str = "none"
     message_es: str = ""
@@ -305,6 +307,7 @@ class CentralDirective(_Model):
     hold: bool | None = None
     rollback_to: str | None = None
     window: str | None = None
+    unskip_at: str | None = None        # «Permitir de nuevo» la versión omitida tras volver atrás
     received: str | None = None
 
 

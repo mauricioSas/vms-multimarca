@@ -8,6 +8,10 @@
 - Lo que no cambia respecto a la versión activa se copia con **enlaces duros** (ocupa disco una vez).
 - Se monta en `versions\\<X>.tmp\\` y se renombra al final: una carpeta `versions\\<X>\\` siempre está
   completa. Si algo falla (p. ej. disco lleno), se borra el `.tmp` y se reintenta en el siguiente ciclo.
+- Durabilidad ante cortes de luz: cada archivo se escribe con fsync y las carpetas se sincronizan ANTES del
+  renombrado final (con escritura directa en Windows). Aun así, una carpeta ya montada se vuelve a comprobar
+  contra sus manifiestos antes de usarla (`verify_staged`): un archivo con su tamaño pero lleno de ceros
+  tras un corte no llega nunca a ejecutarse.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ import zipfile
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 
+from ._atomic import copy_durable, fsync_dirs, rename_durable, write_durable
 from .models import COMPONENT_ROOTS, ReleaseDescriptor
 
 log = logging.getLogger("vms_updater.stage")
@@ -121,6 +126,8 @@ def extract_component(zip_path: Path, dest: Path, *, roots: tuple[str, ...] | No
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target, "wb") as out:
                 (copy or _copy_stream)(src, out, 1024 * 1024)
+                out.flush()
+                os.fsync(out.fileno())
         if manifest_text is None:
             raise StageError(f"{zip_path.name} no trae {MANIFEST_NAME}")
     manifest = parse_manifest(manifest_text)
@@ -156,7 +163,25 @@ def link_or_copy(src: Path, dst: Path) -> None:
     try:
         os.link(src, dst)
     except OSError:
-        shutil.copy2(src, dst)
+        copy_durable(src, dst)
+
+
+def verify_staged(vdir: Path) -> None:
+    """Comprueba una carpeta `versions\\<X>\\` ya montada: `release.json` y cada archivo de cada manifiesto
+    con su hash. Lanza `StageError` si algo falta o no coincide."""
+    if not (vdir / "release.json").is_file():
+        raise StageError(f"versions/{vdir.name} no tiene release.json")
+    try:
+        ReleaseDescriptor.model_validate_json((vdir / "release.json").read_bytes())
+    except ValueError as exc:
+        raise StageError(f"versions/{vdir.name}/release.json no es válido") from exc
+    mdir = vdir / "manifests"
+    manifests = sorted(mdir.glob("*.sha256")) if mdir.is_dir() else []
+    if not manifests:
+        raise StageError(f"versions/{vdir.name} no tiene manifiestos")
+    for mf in manifests:
+        manifest = parse_manifest(mf.read_text(encoding="utf-8"))
+        verify_tree(vdir, manifest, label=f"versions/{vdir.name} ({mf.stem})", subset=manifest.keys())
 
 
 def make_readonly(root: Path) -> None:
@@ -192,10 +217,17 @@ def stage_version(*, versions_dir: Path, descriptor: ReleaseDescriptor, descript
     """Deja `versions\\<X>\\` completa. `zips` = componentes que cambian (ya verificados por TUF)."""
     final = versions_dir / descriptor.version
     if final.is_dir() and (final / "release.json").is_file():
-        if (final / "release.json").read_bytes() == descriptor_bytes:
+        if (final / "release.json").read_bytes() != descriptor_bytes:
+            raise StageError(f"versions/{descriptor.version} existe con otro descriptor: no se toca")
+        try:
+            verify_staged(final)
             log.info("versions/%s ya está montada", descriptor.version)
             return final
-        raise StageError(f"versions/{descriptor.version} existe con otro descriptor: no se toca")
+        except StageError as exc:
+            # p. ej. un corte de luz dejó archivos con ceros: se borra y se vuelve a montar
+            log.warning("versions/%s está dañada (%s): se vuelve a montar", descriptor.version, exc.message_es)
+            if not remove_tree(final):
+                raise StageError(f"versions/{descriptor.version} está dañada y no se puede borrar") from exc
     tmp = versions_dir / f"{descriptor.version}.tmp"
     remove_tree(tmp)
     tmp.mkdir(parents=True)
@@ -224,28 +256,34 @@ def stage_version(*, versions_dir: Path, descriptor: ReleaseDescriptor, descript
                 for rel in manifest:
                     link_or_copy(current_dir.joinpath(*PurePosixPath(rel).parts), tmp.joinpath(*PurePosixPath(rel).parts))
                 verify_tree(tmp, manifest, label=f"{comp} (enlazado)", subset=manifest.keys())
-            (manifests_dir / f"{comp}.sha256").write_text(render_manifest(manifest), encoding="utf-8")
+            write_durable(manifests_dir / f"{comp}.sha256", render_manifest(manifest).encode("utf-8"))
         remove_tree(tmp / ".stage")
-        (tmp / "release.json").write_bytes(descriptor_bytes)
+        write_durable(tmp / "release.json", descriptor_bytes)
         make_readonly(tmp)
-        os.replace(tmp, final)
+        fsync_dirs(tmp)
+        rename_durable(tmp, final)
     except BaseException:
         remove_tree(tmp)
         raise
     return final
 
 
-def install_updater_slot(*, slot_dir: Path, zip_path: Path, copy: Callable[..., object] | None = None) -> None:
-    """Escribe una ranura del actualizador (`updater\\slot-x\\`) completa o nada."""
+def install_updater_slot(*, slot_dir: Path, zip_path: Path, copy: Callable[..., object] | None = None,
+                         verify: Callable[[Path, list[str]], object] | None = None) -> None:
+    """Escribe una ranura del actualizador (`updater\\slot-x\\`) completa o nada. `verify(carpeta, archivos)`
+    se llama sobre la ranura temporal antes de activarla (Authenticode, igual que el resto de versiones)."""
     tmp = slot_dir.with_name(slot_dir.name + ".tmp")
     remove_tree(tmp)
     try:
-        extract_component(zip_path, tmp, roots=None, copy=copy)
+        manifest = extract_component(zip_path, tmp, roots=None, copy=copy)
+        if verify is not None:
+            verify(tmp, sorted(manifest))
+        fsync_dirs(tmp)
         old = slot_dir.with_name(slot_dir.name + ".old")
         remove_tree(old)
         if slot_dir.exists():
-            os.replace(slot_dir, old)
-        os.replace(tmp, slot_dir)
+            rename_durable(slot_dir, old)
+        rename_durable(tmp, slot_dir)
         remove_tree(old)
     except BaseException:
         remove_tree(tmp)

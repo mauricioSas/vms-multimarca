@@ -110,6 +110,11 @@ class Layout:
         return self.updater_data / "blacklist.json"
 
     @property
+    def versions_state_file(self) -> Path:
+        """Qué versiones de `versions\\` llegaron a «good» y cuáles están montadas sin comprobar."""
+        return self.updater_data / "versions-state.json"
+
+    @property
     def lock_file(self) -> Path:
         return self.updater_data / "install-lock.json"
 

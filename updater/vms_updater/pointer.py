@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -85,23 +86,39 @@ class PointerStore:
         return self.write(cur.model_copy(update={"updater": upd}))
 
 
-def rebuild_pointer(journal: Journal | None, versions_dir: Path, *, clock: Any = time.time) -> ActivePointer | None:
-    """Reconstruye el puntero si falta o está corrupto: la última versión buena del diario, o la versión
-    instalada más alta que tenga `release.json` (lo mismo que hace `vmshost`, CONTRATO §13.3)."""
-    candidates: list[str] = []
-    if journal is not None and journal.last_good:
-        candidates.append(journal.last_good)
+def rebuild_pointer(journal: Journal | None, versions_dir: Path, *, clock: Any = time.time,
+                    known_good: Sequence[str | None] = (),
+                    unverified: Collection[str] | None = frozenset()) -> ActivePointer | None:
+    """Reconstruye el puntero si falta o está corrupto (lo mismo que hace `vmshost`, CONTRATO §13.3).
+
+    Orden: (1) la última versión buena del diario y las demás conocidas como buenas (`known_good`: registro
+    `InstalledVersion` y la lista de versiones que llegaron a `good`); (2) la instalada más alta que NO esté
+    en `unverified` (montadas por el actualizador y todavía sin aplicar ni comprobar: p. ej. en espera de la
+    ventana); (3) si no queda otra, la más alta, pero **a prueba** (`trial`) y con la siguiente como
+    `previous`, para que `vmshost` la vigile y pueda volver atrás. `unverified=None` = no se sabe cuáles
+    están sin comprobar (registro perdido): todo lo que no sea conocido como bueno va a prueba."""
+    vdir = Path(versions_dir)
     try:
-        installed = sorted((p.name for p in Path(versions_dir).iterdir()
+        installed = sorted((p.name for p in vdir.iterdir()
                             if p.is_dir() and not p.name.endswith(".tmp") and (p / "release.json").is_file()),
                            key=_version_key, reverse=True)
     except OSError:
         installed = []
-    candidates += installed
-    for v in candidates:
-        if (Path(versions_dir) / v / "release.json").is_file():
-            return ActivePointer(active=v, previous=None, trial=False, updated_unix=int(clock()))
-    return None
+    if not installed:
+        return None
+    now = int(clock())
+    good = [v for v in ([journal.last_good] if journal is not None else []) + list(known_good) if v]
+    for v in good:
+        if v in installed:
+            return ActivePointer(active=v, previous=None, trial=False, updated_unix=now)
+    if unverified is not None:
+        for v in installed:
+            if v not in unverified:
+                return ActivePointer(active=v, previous=None, trial=False, updated_unix=now)
+    active = installed[0]
+    previous = installed[1] if len(installed) > 1 else None
+    log.warning("Puntero reconstruido hacia la %s sin saber si es buena: queda a prueba", active)
+    return ActivePointer(active=active, previous=previous, trial=True, trial_since_unix=now, updated_unix=now)
 
 
 def _version_key(name: str) -> Any:

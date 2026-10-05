@@ -109,7 +109,9 @@ def test_crash_during_manual_rollback(site: Site, state: str, phase: str) -> Non
         site.engine(fault_hook=crash_at(state, phase)).manual_rollback(None, "prueba")
     site.engine().startup()
     assert assert_consistent(site) == "2.0.0"
-    assert not Blacklist(site.layout.blacklist_file).contains("2.1.0")   # pedido, no fallido
+    bl = Blacklist(site.layout.blacklist_file)
+    assert bl.kind_of("2.1.0") == "manual"                              # pedido, no fallido: omitida
+    assert bl.skipped() == ["2.1.0"]                                   # y el corte no la olvida
 
 
 def test_repeated_crashes_after_commit_end_in_rollback(site: Site) -> None:

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-FIELDS = ("installed", "channel", "state", "hold", "last_check", "last_result", "message_es", "available",
+FIELDS = ("installed", "channel", "state", "hold", "window", "skipped", "last_check", "last_result", "message_es", "available",
           "metadata_expires", "clock_skew_s", "reboot_pending", "updated", "updater_version")
 
 

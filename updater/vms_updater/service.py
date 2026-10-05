@@ -157,6 +157,8 @@ def run_service(engine: Engine, stop: threading.Event | None = None, *, hours: f
     try:
         while not stop.is_set():
             res: Outcome | None = engine.handle_rollback_request() or engine.handle_directive_rollback()
+            if engine.handle_directive_unskip():
+                next_check = time.monotonic()          # la versión permitida de nuevo se instala ya
             d = read_directive(engine.layout.directive_file)
             if d is not None and d.check and d.received != seen_check:
                 seen_check = d.received
@@ -166,6 +168,10 @@ def run_service(engine: Engine, stop: threading.Event | None = None, *, hours: f
                 if res.result == "restart_updater":
                     return RELOAD_EXIT_CODE
                 delay = next_check_delay(hours, rng)
+                if engine.updater_trial_pending():
+                    # actualizador nuevo sin confirmar (falló la comprobación, p. ej. sin red): se reintenta
+                    # cada 5 min dentro de los 30 que espera vmshost antes de volver a la ranura anterior
+                    delay = min(delay, 300.0)
                 if res.result == "waiting_window":
                     cfg = engine.config()
                     now = engine.d.now_local()

@@ -5,6 +5,10 @@
 se restaura `config\\` archivo a archivo con escritura atómica (el resultado es idéntico byte a byte).
 Los secretos **no** se restauran solos (un token rotado después no debe volver atrás); quedan en el
 respaldo para soporte técnico. `pg_dump`: solo en la central (§2.8), no en las tiendas.
+
+Durabilidad: cada archivo del respaldo se copia con fsync y la carpeta se sincroniza antes del renombrado
+final, que va antes de marcar `backed_up` en el diario. Al restaurar, un `.json` del respaldo que no sea JSON
+válido NO se repone (se deja el actual y se registra): nunca se cambia una configuración buena por una rota.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ import shutil
 import time
 from pathlib import Path
 
-from ._atomic import atomic_write_bytes
+from ._atomic import atomic_write_bytes, copy_durable, fsync_dirs, rename_durable, write_durable
 
 log = logging.getLogger("vms_updater.backup")
 
@@ -45,13 +49,26 @@ def create_backup(*, data_dir: Path, backups_dir: Path, name: str, extra: dict[s
             rel = p.relative_to(data_dir)
             out = tmp / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, out)
+            copy_durable(p, out)
             files.append(rel.as_posix())
     meta = {"schema": 1, "files": files, "created_unix": int(time.time()), **(extra or {})}
-    (tmp / MANIFEST).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_durable(tmp / MANIFEST, json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+    fsync_dirs(tmp)
     shutil.rmtree(dest, ignore_errors=True)
-    tmp.rename(dest)
+    rename_durable(tmp, dest)
     return dest
+
+
+def _is_json_name(name: str) -> bool:
+    return name.endswith(".json") or name.endswith(".json.bak")
+
+
+def _valid_json(data: bytes) -> bool:
+    try:
+        json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return True
 
 
 def restore_config(*, data_dir: Path, backup_dir: Path) -> list[str]:
@@ -62,16 +79,24 @@ def restore_config(*, data_dir: Path, backup_dir: Path) -> list[str]:
         raise FileNotFoundError(f"El respaldo {backup_dir.name} está incompleto")
     restored: list[str] = []
     in_backup: set[str] = set()
+    damaged: set[str] = set()
     if src.is_dir():
         for p in sorted(src.rglob("*")):
             if p.is_file():
                 rel = p.relative_to(backup_dir)
+                data = p.read_bytes()
+                if _is_json_name(p.name) and not _valid_json(data):
+                    log.error("El respaldo %s trae %s dañado: no se repone y se deja el actual",
+                              backup_dir.name, rel.as_posix())
+                    damaged.add(rel.as_posix())
+                    continue
                 in_backup.add(rel.as_posix())
-                atomic_write_bytes(data_dir / rel, p.read_bytes())
+                atomic_write_bytes(data_dir / rel, data)
                 restored.append(rel.as_posix())
     cfg = data_dir / "config"
     for name in ("config.json", "users.json"):
-        if f"config/{name}" not in in_backup and (cfg / name).is_file():
+        rel_name = f"config/{name}"
+        if rel_name not in in_backup and rel_name not in damaged and (cfg / name).is_file():
             (cfg / name).replace(cfg / f"{name}.after-rollback")
     return restored
 

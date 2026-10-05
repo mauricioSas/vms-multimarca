@@ -29,7 +29,18 @@ def test_status_check_hold_rollback_lock(site: Site) -> None:
     r = handle_request(eng, {"cmd": "rollback", "to": None, "reason": "pedido por soporte"})
     assert r["ok"] and r["update_id"].startswith("r-")
     assert site.pointer().active == "2.0.0"
-    assert not Blacklist(site.layout.blacklist_file).contains("2.1.0")
+    bl = Blacklist(site.layout.blacklist_file)
+    assert bl.kind_of("2.1.0") == "manual" and bl.skipped() == ["2.1.0"]      # omitida, no «fallida»
+    r = handle_request(eng, {"cmd": "check"})
+    assert r["ok"] and r["result"] == "no_update" and "Permitir de nuevo" in r["message_es"]
+    assert site.pointer().active == "2.0.0"                                   # no se reinstala sola
+    r = handle_request(eng, {"cmd": "unskip", "version": None})
+    assert r == {"ok": True, "unskipped": ["2.1.0"], "skipped": []}
+    assert handle_request(eng, {"cmd": "unskip", "version": 3})["error"] == "bad_request"
+    r = handle_request(eng, {"cmd": "check"})
+    assert r["ok"] and r["result"] == "update_ok" and site.pointer().active == "2.1.0"
+    r = handle_request(eng, {"cmd": "rollback", "to": None, "reason": "otra vez"})
+    assert r["ok"] and site.pointer().active == "2.0.0"
     r = handle_request(eng, {"cmd": "rollback", "to": "9.9.9"})
     assert not r["ok"] and "no está instalada" in r["message_es"]
     # cerrojo compartido con el instalador
@@ -50,8 +61,8 @@ def test_lock_is_busy_during_an_update_and_status_stays_responsive(site: Site) -
     eng = site.engine()
     started, release = threading.Event(), threading.Event()
 
-    def long_update() -> None:            # simula una actualización en curso (tiene el cerrojo interno)
-        with eng._op:
+    def long_update() -> None:            # simula una actualización APLICÁNDOSE (cerrojo `_apply`)
+        with eng._op, eng._apply:
             started.set()
             release.wait(10)
 
@@ -110,7 +121,9 @@ def test_heartbeat_provider_reads_public_status(site: Site) -> None:
     site.engine().check()
     p = payload_update(site.layout.data)
     assert p is not None and p["installed"] == "2.0.0" and p["last_result"] == "no_update"
-    assert set(p) <= {"installed", "channel", "state", "hold", "last_check", "last_result", "message_es",
+    assert p["window"] == "01:00-03:00" and p["skipped"] == []
+    assert set(p) <= {"installed", "channel", "state", "hold", "window", "skipped", "last_check", "last_result",
+                      "message_es",
                       "available", "metadata_expires", "clock_skew_s", "reboot_pending", "updated",
                       "updater_version"}
     assert len(json.dumps(p)) < 8 * 1024
