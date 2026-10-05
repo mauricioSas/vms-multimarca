@@ -198,8 +198,11 @@ class OnvifClient:
         envelope = (f'<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
                     f'xmlns:tt="{NS_SCHEMA}" xmlns:m="{ns}">{header}<s:Body><m:{op}>{body}</m:{op}></s:Body></s:Envelope>')
         try:
-            # auth=None desactiva VendorAuth en esta petición: solo firma con Digest/Basic HTTP el modo «http»
-            return await self.client.post(url, content=envelope.encode("utf-8"), auth=self._auth if http_auth else None,
+            # httpx.Auth() (no hace nada) desactiva VendorAuth en esta petición: solo firma con Digest/Basic HTTP el
+            # modo «http»
+            no_auth: httpx.Auth = httpx.Auth()
+            return await self.client.post(url, content=envelope.encode("utf-8"),
+                                          auth=(self._auth or no_auth) if http_auth else no_auth,
                                           headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{ns}/{op}"'})
         except DeviceAuthFailed:
             raise
