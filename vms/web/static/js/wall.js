@@ -153,7 +153,9 @@ class Cell {
       this.label.hidden = true;
       this.badge.hidden = true;
       this.el.dataset.state = "stopped";
-      this.noticeTitle.textContent = this.cameraId ? "Cámara eliminada" : "Sin cámara";
+      // la celda tiene una cámara que este muro no recibe: borrada o fuera del ámbito del usuario (no se distingue:
+      // no se revela si existe)
+      this.noticeTitle.textContent = this.cameraId ? "Cámara no disponible" : "Sin cámara";
       this.noticeDetail.textContent = this.cameraId ? "Asigna otra desde el panel." : "";
       this.el.setAttribute("aria-label", `Celda ${this.index + 1}: sin cámara`);
       warn?.remove();

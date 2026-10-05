@@ -30,6 +30,7 @@ from vms.core.settings import VmsSettings, load_settings
 
 from . import errors
 from .errors import error_response
+from .events import publish_engine
 from .routes import ROUTERS
 from .security import CSRF_HEADER, CSRF_VALUE, KioskSigner, SessionStore, hash_password
 from .state import AppState, ClientFactory, DeviceTester, Discoverer
@@ -113,7 +114,7 @@ def build_state(settings: VmsSettings, *, engine: Engine | None = None,
     creds = credential_store or CredentialStore.create(
         settings.credential_backend, paths.secrets_dir,
         settings.secret_key.get_secret_value() if settings.secret_key else None)
-    return AppState(
+    state = AppState(
         settings=settings, paths=paths, repo=repo, users=users, creds=creds,
         engine=engine or _default_engine(settings),
         client_factory=client_factory or _default_client_factory(),
@@ -125,6 +126,8 @@ def build_state(settings: VmsSettings, *, engine: Engine | None = None,
             if settings.kiosk_token and settings.kiosk_token.get_secret_value() else None)),
         apply_delay=apply_delay,
     )
+    state.kiosk_token()   # firma de las cookies de kiosco con el token vigente (secrets/kiosk.token o el .env)
+    return state
 
 
 async def _prepare(state: AppState) -> None:
@@ -195,6 +198,15 @@ def create_app(settings: VmsSettings | None = None, *, engine: Engine | None = N
                                         auth=proxy_auth)
         keeper: asyncio.Task[None] | None = None
         sender: Any = None
+        # Evento SSE `engine` (CONTRATO §17.3): el motor avisa al arrancar, reiniciarse o caer y los muros ponen a
+        # cero su espera en vez de descubrirlo por su cuenta. Puede llegar desde otro hilo: se publica en el bucle.
+        if hasattr(state.engine, "on_event"):
+            loop = asyncio.get_running_loop()
+
+            def on_engine_event(ev: Any) -> None:
+                loop.call_soon_threadsafe(publish_engine, state.bus, ev)
+
+            state.engine.on_event = on_engine_event
         if start_engine:
             if not await state.start_engine():
                 keeper = asyncio.create_task(_engine_keeper(state), name="engine-keeper")

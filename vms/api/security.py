@@ -182,6 +182,14 @@ class SessionStore:
         log.info("Sesión de kiosco recuperada tras un reinicio del backend")
         return s
 
+    def reset_kiosk(self, signer: KioskSigner | None) -> None:
+        """Token de kiosco nuevo (`vmsctl kiosk rotate`): firma nueva y fuera todas las sesiones de kiosco. Las
+        cookies firmadas con el token anterior ya no validan: los muros vuelven a entrar con el token nuevo."""
+        self.kiosk_signer = signer
+        for t in [t for t, s in self._sessions.items() if s.kiosk]:
+            self._sessions.pop(t, None)
+        self._revoked.clear()
+
     def touch(self, session: Session) -> None:
         """Caducidad deslizante (sesiones de kiosco): el muro abierto no caduca nunca."""
         session.expires = time.time() + self.hours * 3600

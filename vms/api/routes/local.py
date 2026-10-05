@@ -87,7 +87,7 @@ async def kiosk_session(body: KioskSessionRequest, request: Request,
     """Cambia el token de kiosco (leído del archivo por el visor) por la cookie de kiosco firmada."""
     if not is_local(request):
         raise ForbiddenError("La entrada de los muros solo funciona desde el propio equipo", code="kiosk_remote")
-    expected = state.settings.kiosk_token.get_secret_value() if state.settings.kiosk_token else ""
+    expected = state.kiosk_token()
     if not expected:
         raise ForbiddenError("El modo kiosco no está configurado (falta el token de kiosco)", code="kiosk_disabled")
     ip = client_ip(request)

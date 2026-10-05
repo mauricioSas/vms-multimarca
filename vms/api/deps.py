@@ -60,6 +60,7 @@ def sessions_of(conn: HTTPConnection, state: AppState) -> tuple[Session | None, 
     las cookies (en `vms_session`) sigue valiendo como kiosco."""
     user: Session | None = None
     kiosk: Session | None = None
+    state.kiosk_token()   # si `vmsctl kiosk rotate` cambió el token, las cookies de kiosco anteriores ya no valen
     for name in SESSION_COOKIES:
         s = state.sessions.get(conn.cookies.get(name))
         if s is None:

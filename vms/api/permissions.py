@@ -6,10 +6,8 @@ v2; las rutas de B6 (salud, marcadores, evidencias, línea de tiempo) también.
 
 Reglas (principio de acceso mínimo, art. 32 RGPD):
 - administradores: todo (no tienen ámbito);
-- kiosco: el vivo, igual que en la v1 (los muros los monta un operador o un administrador). DESVIACIÓN
-  PENDIENTE de CONTRATO §18.8 («el kiosco ve el vivo de las cámaras de los muros»): restringirlo exige cambiar
-  dos pruebas de la v1 (`tests/api/test_live_recordings.py`, `tests/api/test_review_security.py`) que usan
-  el kiosco con una cámara fuera de los muros; está pedido al arquitecto con el diff exacto;
+- kiosco: solo el vivo de las cámaras que están en alguno de los 4 muros (CONTRATO §18.8; los muros los monta
+  un operador o un administrador). Una cámara que no está en ningún muro responde 404 al kiosco;
 - operador sin `camera_scope`: todas las cámaras y acciones, como en la v1 (compatibilidad);
 - operador con `camera_scope`: solo `scope.cameras` y solo las acciones marcadas (`live`, `playback`,
   `export`, `bookmark`). Una cámara fuera del ámbito responde 404: no se revela que existe.
@@ -39,12 +37,17 @@ def scope_of(state: AppState, principal: Principal) -> CameraScope | None:
     return user.camera_scope if user is not None else None
 
 
+def wall_camera_ids(state: AppState) -> set[str]:
+    """Cámaras puestas en alguna celda de los 4 muros (lo único que ve el kiosco)."""
+    return {c for w in state.config().walls for c in w.cells if c}
+
+
 def camera_allowed(state: AppState, principal: Principal, camera_id: str, action: CameraAction) -> bool:
     """¿Puede `principal` hacer `action` sobre la cámara?"""
     if principal.role == "admin":
         return True
     if principal.kiosk:
-        return action == "live"
+        return action == "live" and camera_id in wall_camera_ids(state)
     scope = scope_of(state, principal)
     if scope is None:
         return True

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from vms.core.errors import DeviceAuthFailed, DeviceUnreachable, EngineUnavailable
@@ -46,6 +46,7 @@ class FakeEngine:
         self.apply_calls = 0
         self.offline: set[str] = set()          # camera_id sin vídeo
         self.spans: dict[str, list[RecordingSpan]] = {}
+        self.on_event: Callable[[dict[str, Any]], None] | None = None   # lo conecta el backend (evento SSE «engine»)
 
     async def start(self) -> None:
         self.running = True

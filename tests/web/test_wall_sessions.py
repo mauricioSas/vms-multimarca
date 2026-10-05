@@ -83,7 +83,7 @@ def enter_wall(ctx: Any, site: Site, wall: int) -> Any:
     page.goto("/api/local/kiosk")
     assert page.evaluate(EXCHANGE_JS, [site.backend.opt.kiosk_token, f"/wall/{wall}"]) == 204
     page.goto(f"/wall/{wall}")
-    page.wait_for_function("window.__vmsWall && window.__vmsWall.cells().length === 4", timeout=15000)
+    page.wait_for_function("() => window.__vmsWall && window.__vmsWall.cells().length === 4", timeout=15000)
     return page
 
 
@@ -118,7 +118,7 @@ def test_panel_and_walls_in_the_same_profile_keep_their_own_session(site: Site,
       body: JSON.stringify({username: u, password: p})})).status""", list(OPERATOR))
     assert status == 200
     wall.reload()
-    wall.wait_for_function("window.__vmsWall && window.__vmsWall.cells().length === 4 && window.__vmsWall.kiosk !== null",
+    wall.wait_for_function("() => window.__vmsWall && window.__vmsWall.cells().length === 4 && window.__vmsWall.kiosk !== null",
                            timeout=15000)
     view = wall_view(wall)
     assert view["kiosk"] is True and "Cámara no disponible" not in view["notices"], view
@@ -126,7 +126,7 @@ def test_panel_and_walls_in_the_same_profile_keep_their_own_session(site: Site,
     # 3) cerrar sesión en el panel no toca el muro, y el panel vuelve al login (no salta al muro)
     panel.evaluate("async () => fetch('/api/auth/logout', {method: 'POST', headers: {'X-Requested-With': 'vms'}})")
     wall.reload()
-    wall.wait_for_function("window.__vmsWall && window.__vmsWall.kiosk === true", timeout=15000)
+    wall.wait_for_function("() => window.__vmsWall && window.__vmsWall.kiosk === true", timeout=15000)
     assert wall.url.endswith("/wall/1"), wall.url
     panel.goto("/")
     assert "/login" in panel.url, panel.url
@@ -171,7 +171,7 @@ def test_many_tabs_do_not_starve_the_wall(site: Site, make_context: Callable[...
     status.wait_for_load_state("load")
     wall = ctx.new_page()
     wall.goto("/wall/1")
-    wall.wait_for_function("window.__vmsWall && window.__vmsWall.cells().length === 4", timeout=15000)
+    wall.wait_for_function("() => window.__vmsWall && window.__vmsWall.cells().length === 4", timeout=15000)
     playback = ctx.new_page()
     t0 = time.monotonic()
     playback.goto("/playback", timeout=15000)

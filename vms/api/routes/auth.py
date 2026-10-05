@@ -111,7 +111,7 @@ async def setup(body: UserCreate, request: Request, state: AppState = Depends(ge
 @router.get("/kiosk")
 async def kiosk(request: Request, token: str = "", next: str = "/wall/1",
                 state: AppState = Depends(get_state)) -> Response:
-    expected = state.settings.kiosk_token.get_secret_value() if state.settings.kiosk_token else ""
+    expected = state.kiosk_token()
     if not expected:
         raise ForbiddenError("El modo kiosco no está configurado (falta VMS_KIOSK_TOKEN)", code="kiosk_disabled")
     if not is_local(request) and not state.settings.kiosk_allow_remote:

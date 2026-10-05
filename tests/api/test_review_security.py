@@ -148,6 +148,7 @@ async def test_recording_access_is_audited(setup: tuple[Harness, FakeMediaMtx, s
         r = await op.get(f"/api/recordings/{cam}/video", params={"start": "2026-10-04T10:00:05Z", "duration": 30,
                                                                   "format": "mp4", "download": "true"})
         assert r.status_code == 200
+        assert (await (await api.login()).put("/api/walls/1", json={"cells": [cam]})).status_code == 200
         k = await api.kiosk()
         await k.post(f"/api/live/{cam}/main/whep", content=b"v=0", headers={"Content-Type": "application/sdp"})
     events = [json.loads(rec.getMessage()) for rec in caplog.records if rec.name == "vms.audit"]

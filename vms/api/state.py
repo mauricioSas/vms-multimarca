@@ -66,6 +66,46 @@ class AppState:
     _apply_dirty: bool = False
     _paths_cache: tuple[float, dict[str, PathStatus]] | None = None
     _engine_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _kiosk_seen: tuple[Any, str] | None = None
+
+    # ------------------------------------------------------------------ token de kiosco
+    def kiosk_token(self) -> str:
+        """Token de kiosco vigente («» = kiosco desactivado).
+
+        `secrets/kiosk.token` (lo escriben el instalador y `vmsctl kiosk rotate`, con DPAPI de máquina en Windows;
+        es el que lee el visor) manda sobre `VMS_KIOSK_TOKEN`. Se vuelve a leer si el archivo cambia: al rotarlo,
+        la firma de las cookies de kiosco cambia y las anteriores dejan de valer sin reiniciar el backend."""
+        path = self.paths.secrets_dir / "kiosk.token"
+        env_token = self.settings.kiosk_token.get_secret_value() if self.settings.kiosk_token else ""
+        try:
+            st = path.stat()
+            file_stamp: Any = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            file_stamp = None
+        stamp = (file_stamp, env_token)
+        if self._kiosk_seen is not None and self._kiosk_seen[0] == stamp:
+            return self._kiosk_seen[1]
+        token = ""
+        if file_stamp is not None:
+            try:
+                from vms.core.winsec import read_secret_text
+                token = read_secret_text(path)
+            except (OSError, ValueError, UnicodeDecodeError) as exc:
+                log.error("No se pudo leer el token de kiosco de %s: %s", path, exc)
+        if not token:
+            token = env_token
+        previous = self._kiosk_seen[1] if self._kiosk_seen is not None else None
+        self._kiosk_seen = (stamp, token)
+        if token != previous:
+            from .security import KioskSigner
+            current = self.sessions.kiosk_signer
+            signer = KioskSigner(token) if token else None
+            if previous is None and current is not None and token and token == env_token:
+                signer = current   # arranque: la firma creada con VMS_KIOSK_TOKEN sigue valiendo
+            self.sessions.reset_kiosk(signer)
+            if previous is not None:
+                log.warning("Token de kiosco cambiado: los muros tendrán que volver a entrar")
+        return token
 
     # ------------------------------------------------------------------ configuración
     def config(self) -> AppConfig:

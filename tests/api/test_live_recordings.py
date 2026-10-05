@@ -75,7 +75,10 @@ async def setup(api: Harness, mock_server: Callable[[Any], Any]) -> tuple[Harnes
 
 async def test_live_info_and_whep_negotiation_via_proxy(setup: tuple[Harness, FakeMediaMtx, str]) -> None:
     api, fake, cam = setup
-    k = await api.kiosk()  # los muros en kiosco pueden ver en vivo
+    k = await api.kiosk()  # los muros en kiosco pueden ver en vivo las cámaras de los muros (CONTRATO §18.8)
+    assert (await k.get(f"/api/live/{cam}")).status_code == 404       # aún en ningún muro
+    admin = await api.login()
+    assert (await admin.put("/api/walls/1", json={"cells": [cam]})).status_code == 200
     info = (await k.get(f"/api/live/{cam}")).json()
     assert info == {"camera_id": cam, "stream": "sub", "whep_url": f"/api/live/{cam}/sub/whep",
                     "ready": True, "tracks": ["H264"]}

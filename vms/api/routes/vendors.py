@@ -20,12 +20,14 @@ administrador (rol A):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from pydantic import BaseModel, Field, SecretStr
 from starlette.responses import Response
 
@@ -45,7 +47,23 @@ from .devices import info_changes
 from ..state import AppState
 
 log = logging.getLogger("vms.api.vendors")
-router = APIRouter(prefix="/api", tags=["vendors"])
+
+
+@asynccontextmanager
+async def ip_watch_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Arranca con el backend la vigilancia de «seguir la IP» (`ip_watch_loop`) y la cancela al parar."""
+    task = asyncio.create_task(ip_watch_loop(app.state.vms), name="ip-watch")
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+router = APIRouter(prefix="/api", tags=["vendors"], lifespan=ip_watch_lifespan)
 
 PROPOSAL_TTL_S = 600.0
 _proposals: dict[int, tuple[float, list[IpChangeProposal]]] = {}   # id(AppState) → (hora, [IpChangeProposal])

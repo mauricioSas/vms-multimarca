@@ -318,7 +318,12 @@ se suscribe a cambios de configuración (aplicación con antirrebote de 1 s) →
   `unauthorized` 401, `forbidden` 403, `not_found` 404, `conflict` 409, `rate_limited` 429,
   `device_*` 502/501, `engine_unavailable`/`not_configured` 503).
 - Sesión: cookie `vms_session` (aleatoria, `HttpOnly`, `SameSite=Strict`, `Secure` si HTTPS),
-  almacenada en memoria del servidor; caduca a las `VMS_SESSION_HOURS` horas.
+  almacenada en memoria del servidor; caduca a las `VMS_SESSION_HOURS` horas. El kiosco va en **otra**
+  cookie, `vms_kiosk` (revisión v2): en un mismo navegador o perfil, entrar en los muros no cierra la sesión
+  del panel ni el login del panel convierte los muros en operador. Las peticiones de un muro llevan
+  `X-VMS-Client: wall` (`/api/events?client=wall`, EventSource no admite cabeceras) y usan la de kiosco; el
+  resto usan la del usuario y las páginas del panel ignoran la de kiosco (sin sesión de usuario → `/login`).
+  Una cookie de kiosco antigua en `vms_session` sigue valiendo como kiosco.
 - CSRF: toda petición que modifica (`POST/PUT/PATCH/DELETE`) exige la cabecera
   `X-Requested-With: vms` (y no se habilita CORS). Sin ella → 403 `csrf`.
 - Roles: **admin** (todo), **operator** (ver, vivo, reproducción, cambiar muros), **kiosk**
@@ -1174,14 +1179,19 @@ Respuesta: `[DriverPublic]` (sin funciones). La interfaz construye el formulario
 `VMS Operadores`). El visor lo lee y lo cambia por la cookie de kiosco con
 `POST /api/local/kiosk-session` (`{"token": "…", "next": "/wall/1"}` → 204 + cookie; solo desde
 127.0.0.1; router `local`), sin pasarlo por la línea de órdenes ni por la URL. `vmsctl kiosk rotate` lo
-cambia. Un usuario fuera del grupo ve «Sin permiso para abrir los muros».
+cambia. Un usuario fuera del grupo ve «Sin permiso para abrir los muros». El backend usa ese archivo (DPAPI de
+máquina en Windows) con preferencia sobre `VMS_KIOSK_TOKEN` y lo vuelve a leer si cambia: al rotarlo, la firma
+de las cookies de kiosco cambia y las anteriores dejan de valer sin reiniciar el backend.
 
 ### 17.2 Ventanas y datos
 
 `%APPDATA%\VMSMultimarca\viewer.json`:
 `{"schema": 1, "servers": [{"name", "url", "sha256"}], "walls": [{"wall": 1, "server": "local", "monitor_key": "<nombre>|<x>,<y>|<ancho>x<alto>"}]}`.
-Todas las ventanas comparten la carpeta de datos de WebView2. Páginas remotas sin IPC (capacidades de
-Tauri solo para `tauri://localhost`). Fijación del certificado del servidor remoto: **pendiente de S5**.
+Dos carpetas de datos de WebView2 en `%LOCALAPPDATA%\VMSMultimarca\WebView2\`: `muros` (las 4 ventanas de
+muro: un solo proceso de GPU y un SharedWorker con UNA conexión de eventos para todas) y `panel` (panel y
+páginas locales). Así la sesión de kiosco y la del operador no comparten almacén de cookies (revisión v2,
+crítico 1). Páginas remotas sin IPC (capacidades de Tauri solo para `tauri://localhost`). Fijación del
+certificado del servidor remoto: **pendiente de S5**.
 
 ### 17.3 Eventos SSE nuevos (`vms/api/events.py`: dueño el arquitecto hasta que B2 arranque; después B2)
 
@@ -1322,7 +1332,8 @@ cuadra). Nunca se recodifica (sin libx264); H.265 se entrega tal cual.
 
 `User.camera_scope: CameraScope | None` (`cameras`, `live`, `playback`, `export`, `bookmark`). `None` =
 todas (compatibilidad v1); los administradores no tienen ámbito; el kiosco ve el vivo de las cámaras de
-los muros. Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la fase 0 en:
+los muros (una cámara que no está en ninguna celda de los 4 muros responde 404 al kiosco, también en
+`GET /api/cameras`). Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la fase 0 en:
 - cámaras, vivo, grabaciones y descargas: una cámara fuera del ámbito responde 404;
 - `PUT /api/walls/{monitor}`: una cámara que se **añade** al muro tiene que estar en el ámbito `live` (si
   no, 422 «La cámara no existe», como una inexistente); las que ya estaban se pueden dejar o quitar. Así un
@@ -1332,8 +1343,12 @@ los muros. Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la f
 - `GET /api/status`: `cameras` y `analytics.cameras` filtradas (`live`). El usuario del agente de sede
   (`VMS_AGENT_USERNAME`) tiene que ser un operador **sin** ámbito, o el latido saldría incompleto.
 `GET /api/walls` no se filtra (el kiosco necesita los identificadores; no lleva nombres). Lo administra `PATCH /api/users/{username}` con
-`camera_scope` (router `users`, dueño B6 en la v2). Pendiente de pedir a B2: filtrar el evento SSE
-`status` por ámbito.
+`camera_scope` (router `users`, dueño B6 en la v2).
+- `GET /api/events` (revisión v2, `vms/api/routes/events.py`): `status` solo con las cámaras `live` del
+  usuario; `health` (`live`) y `bookmark` (`playback`) solo de cámaras de su ámbito; `notice` solo si todas
+  sus `camera_ids` están en su ámbito; `evidence` solo a quien pidió la exportación (o a un administrador)
+  mientras pueda exportar esas cámaras; el kiosco no recibe `notice`, `health`, `bookmark` ni `evidence`.
+  Las claves «_…» de una carga son para este filtro y no llegan al navegador.
 
 ### 18.9 Contenedores, módulos y estilos en las páginas
 

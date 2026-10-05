@@ -651,8 +651,7 @@ class OpsService:
                 raise NotFoundError("La cámara no existe")
         exp = EvidenceExport(export_id=new_export_id(), created_by=user, request=req)
         self.store.save_export(exp)
-        self.state.bus.publish(EVENT_EVIDENCE, {"export_id": exp.export_id, "state": "queued", "progress": 0.0,
-                                          "message_es": "En cola"})
+        self._evidence_event(exp, "queued", 0.0, "En cola")
         self._spawn(self._run_export(exp, ip), f"ops-export-{exp.export_id}")
         return exp
 
@@ -706,8 +705,7 @@ class OpsService:
             if p - last >= 0.05 or p >= 1.0:
                 last = p
                 await asyncio.to_thread(self.store.save_export, exp)
-                self.state.bus.publish(EVENT_EVIDENCE, {"export_id": exp.export_id, "state": "running", "progress": p,
-                                                  "message_es": msg})
+                self._evidence_event(exp, "running", p, msg)
 
         exp.state = "running"
         await asyncio.to_thread(self.store.save_export, exp)
@@ -731,8 +729,14 @@ class OpsService:
             exp.state, exp.error = "failed", "No se pudo generar el paquete; revisa el registro del sistema"
             msg = exp.error
         await asyncio.to_thread(self.store.save_export, exp)
-        self.state.bus.publish(EVENT_EVIDENCE, {"export_id": exp.export_id, "state": exp.state, "progress": exp.progress,
-                                          "message_es": msg})
+        self._evidence_event(exp, exp.state, exp.progress, msg)
+
+    def _evidence_event(self, exp: EvidenceExport, state: str, progress: float, msg: str) -> None:
+        # `_owner` y `_cameras` no salen al navegador: /api/events los usa para mandar el progreso solo a quien
+        # pidió la exportación (o a un administrador) mientras siga pudiendo exportar esas cámaras
+        self.state.bus.publish(EVENT_EVIDENCE, {"export_id": exp.export_id, "state": state, "progress": progress,
+                                                "message_es": msg, "_owner": exp.created_by,
+                                                "_cameras": list(exp.request.camera_ids)})
 
     def delete_export(self, export_id: str) -> None:
         self.builder.zip_path(export_id).unlink(missing_ok=True)
