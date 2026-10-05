@@ -20,7 +20,6 @@ import json
 import os
 import re
 import secrets
-import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -190,8 +189,6 @@ def write_secrets(path: Path, token: str) -> None:
                 data = {**prev, **data}
         except ValueError:
             pass
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+    from .keys import write_private_file
+
+    write_private_file(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))

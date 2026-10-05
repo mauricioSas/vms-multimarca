@@ -4,7 +4,9 @@
 
 1. Toma los zips de componente de `--artifacts` (`components/<c>/<c>-<versión>.zip`, como los deja
    `tools.build`) y comprueba cada uno con el mismo código que usa el actualizador (manifiesto, rutas).
-2. Los componentes que no vienen se heredan de la versión anterior publicada (mismo hash: no se descargan).
+2. Los componentes que no vienen se heredan de la versión publicada inmediatamente anterior (por número de
+   versión; mismo hash: no se descargan). Se puede publicar un arreglo menor que la última (p. ej. la 2.1.1
+   para `stable` con la 2.2.0 ya en `pilot`) si no existe todavía.
 3. Escribe el descriptor `bundles/vms-<X>.json` y lo añade con los componentes a `targets` de los dos
    repositorios, firma `targets` (llave física) y, en desarrollo o con `--meta local`, `snapshot`/`timestamp`.
    En producción, `snapshot`/`timestamp` del repositorio `online` los firma CI (`publish-meta.yml`); los del
@@ -38,6 +40,8 @@ DEFAULT_RESTART: dict[str, list[str]] = {
 }
 _ZIP = re.compile(r"^(?P<comp>[a-z]+)-(?P<ver>[0-9A-Za-z][0-9A-Za-z._-]*)\.zip$")
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "vms" / "db" / "migrations"
+# Windows 10 22H2 (19045): admitido con ESU (decisión D11; PLAN-V2 §2.7). Más alto solo si la versión lo exige.
+DEFAULT_WINDOWS_BUILD_MIN = 19045
 
 
 class PublishError(Exception):
@@ -112,12 +116,16 @@ def check_zip(comp: str, path: Path) -> None:
             raise PublishError(f"{path.name}: {exc.message_es}") from exc
 
 
-def latest_bundle(repo: TufRepository) -> tuple[str, dict[str, Any]] | None:
+def latest_bundle(repo: TufRepository, *, below: str | None = None) -> tuple[str, dict[str, Any]] | None:
+    """La versión publicada más alta (o la más alta por debajo de `below`) y su descriptor."""
+    limit = Version.parse(below) if below else None
     best: tuple[Version, str] | None = None
     for name, tf in repo.all_targets().items():
         c = custom_of(tf)
         if c.get("kind") == "bundle" and isinstance(c.get("version"), str):
             v = Version.parse(c["version"])
+            if limit is not None and not v < limit:
+                continue
             if best is None or v > best[0]:
                 best = (v, name)
     if best is None:
@@ -158,7 +166,7 @@ def build_descriptor(version: str, components: dict[str, dict[str, Any]], *, min
     doc: dict[str, Any] = {
         "schema": 1, "product": PRODUCT, "version": version, "min_from": min_from, "security": security,
         "severity": severity, "notes_es": notes_es, "config_schema": config_schema, "db": db,
-        "requires": requires or {"windows_build_min": 22631, "webview2_min": None},
+        "requires": requires or {"windows_build_min": DEFAULT_WINDOWS_BUILD_MIN, "webview2_min": None},
         "authenticode": authenticode, "components": components,
     }
     ReleaseDescriptor.model_validate(doc)          # el mismo modelo que usa el actualizador
@@ -178,15 +186,28 @@ class PublishOptions:
     authenticode: dict[str, Any] | None = None
     accept_irreversible: bool = False
     meta: str = "local"
+    windows_build_min: int | None = DEFAULT_WINDOWS_BUILD_MIN   # None = sin mínimo
+    webview2_min: str | None = None
 
 
 def publish(repos: Repos, opt: PublishOptions) -> dict[str, Any]:
     Version.parse(opt.version)
     if repos.online.get_target(bundle_target(opt.version)) is not None:
         raise PublishError(f"La {opt.version} ya está publicada: publica una versión nueva")
-    prev = latest_bundle(repos.online)
-    if prev is not None and not Version.parse(opt.version) > Version.parse(prev[0]):
-        raise PublishError(f"La {opt.version} no es mayor que la última publicada ({prev[0]})")
+    if opt.windows_build_min is not None and opt.windows_build_min < 10240:
+        raise PublishError(f"--windows-build-min {opt.windows_build_min} no es un build de Windows 10/11 válido")
+    # Herencia y migraciones: desde la publicada inmediatamente anterior a ESTA versión (un arreglo 2.1.1
+    # hereda de la 2.1.0 aunque ya exista la 2.2.0).
+    prev = latest_bundle(repos.online, below=opt.version)
+    newest = latest_bundle(repos.online)
+    if opt.channel:
+        cur = repos.online.get_target(channel_target(opt.channel))
+        if cur is not None:
+            cur_version = json.loads(repos.online.read_target(channel_target(opt.channel))).get("version")
+            if isinstance(cur_version, str) and Version.parse(cur_version) > Version.parse(opt.version):
+                raise PublishError(f"El canal «{opt.channel}» ya está en la {cur_version}, mayor que la "
+                                   f"{opt.version}: las tiendas no bajan de versión. Publica el arreglo como "
+                                   f"{cur_version.rsplit('.', 1)[0]}.x o en otro canal")
     found = find_component_zips(opt.artifacts)
     comps: dict[str, dict[str, Any]] = {}
     new_files: dict[str, Path] = {}
@@ -224,7 +245,8 @@ def publish(repos: Repos, opt: PublishOptions) -> dict[str, Any]:
     desc = build_descriptor(opt.version, dict(sorted(comps.items())), min_from=opt.min_from, security=opt.security,
                             severity=opt.severity, notes_es=opt.notes_es,
                             config_schema=opt.config_schema or default_config_schema(), db=db,
-                            authenticode=opt.authenticode)
+                            authenticode=opt.authenticode,
+                            requires={"windows_build_min": opt.windows_build_min, "webview2_min": opt.webview2_min})
     released = utcnow_iso()
     for target, path in new_files.items():
         comp = target.split("/")[1]
@@ -235,7 +257,9 @@ def publish(repos: Repos, opt: PublishOptions) -> dict[str, Any]:
     repos.commit(meta=opt.meta)
     return {"version": opt.version, "new_components": sorted(c.split("/")[1] for c in new_files),
             "inherited": sorted(inherited), "channel": opt.channel, "targets_version": repos.online.targets.signed.version,
-            "previous": prev[0] if prev else None, "meta": opt.meta}
+            "previous": prev[0] if prev else None, "meta": opt.meta,
+            "older_than_latest": bool(newest and Version.parse(newest[0]) > Version.parse(opt.version)),
+            "windows_build_min": opt.windows_build_min}
 
 
 def channel_doc(name: str, version: str, *, paused: bool) -> bytes:

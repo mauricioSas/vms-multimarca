@@ -152,12 +152,34 @@ class Keyring:
 
 
 # --------------------------------------------------------------------------- generación de desarrollo
-def _write_private(path: Path, pem: bytes) -> None:
-    path.write_bytes(pem)
+def write_private_file(path: Path, data: bytes) -> None:
+    """Escribe un secreto que **nace** solo legible por el propietario: temporal creado con `O_EXCL` y modo
+    0600 (nunca existe un instante con el umask por defecto) y sustitución atómica. En Windows el modo no
+    cambia el ACL: la protección la da la carpeta del perfil (`%USERPROFILE%`, solo el usuario y SYSTEM)."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
+        tmp.unlink()
+    except FileNotFoundError:
         pass
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp, flags, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _write_private(path: Path, pem: bytes) -> None:
+    write_private_file(path, pem)
 
 
 def init_dev(folder: Path, *, pkcs11_lib: str = "", token_label: str = "vms-dev", pin: str = "",

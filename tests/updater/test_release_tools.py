@@ -125,10 +125,59 @@ def test_publish_rules(tmp_path: Path, keyring: Keyring) -> None:
     publish(repos, PublishOptions(version="2.0.0", artifacts=art))
     with pytest.raises(PublishError, match="ya está publicada"):
         publish(repos, PublishOptions(version="2.0.0", artifacts=art))
-    with pytest.raises(PublishError, match="no es mayor"):
+    with pytest.raises(PublishError, match="Faltan componentes"):        # no hay nada anterior a la 1.9.0
         publish(repos, PublishOptions(version="1.9.0", artifacts=empty))
     out = publish(repos, PublishOptions(version="2.0.1", artifacts=empty))
     assert out["inherited"] == ["app", "runtime"] and out["new_components"] == []
+    assert out["windows_build_min"] == 19045
+
+
+def test_fix_for_stable_while_newer_version_is_in_pilot(tmp_path: Path, keyring: Keyring) -> None:
+    """PUBLICAR-VERSION.md §5.4: con la 2.2.0 en pilot se puede publicar la 2.1.1 para stable."""
+    repos = Repos.open(tmp_path / "repo", keyring, create=True)
+    art = make_artifacts(tmp_path)
+    publish(repos, PublishOptions(version="2.1.0", artifacts=art, channel="stable"))
+    art2 = make_artifacts(tmp_path / "v220", version="2.2.0")
+    publish(repos, PublishOptions(version="2.2.0", artifacts=art2, channel="pilot"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    out = publish(repos, PublishOptions(version="2.1.1", artifacts=empty, channel="stable"))
+    assert out["previous"] == "2.1.0" and out["older_than_latest"] is True
+    d211 = json.loads(repos.online.read_target("bundles/vms-2.1.1.json"))
+    d210 = json.loads(repos.online.read_target("bundles/vms-2.1.0.json"))
+    assert d211["components"] == d210["components"]                  # hereda de la 2.1.0, no de la 2.2.0
+    assert json.loads(repos.online.read_target("channels/stable.json"))["version"] == "2.1.1"
+    assert json.loads(repos.online.read_target("channels/pilot.json"))["version"] == "2.2.0"
+    # un canal nunca retrocede al publicar
+    with pytest.raises(PublishError, match="ya está en la 2.2.0"):
+        publish(repos, PublishOptions(version="2.1.2", artifacts=empty, channel="pilot"))
+    with pytest.raises(PublishError, match="ya está publicada"):
+        publish(repos, PublishOptions(version="2.1.1", artifacts=empty))
+
+
+def test_windows_build_min_default_and_options(tmp_path: Path, keyring: Keyring) -> None:
+    """Windows 10 22H2 (19045, con ESU, D11) recibe actualizaciones por defecto; el mínimo se puede subir o
+    quitar desde la CLI."""
+    from tools.release.__main__ import build_parser
+
+    repos = Repos.open(tmp_path / "repo", keyring, create=True)
+    art = make_artifacts(tmp_path)
+    publish(repos, PublishOptions(version="2.0.0", artifacts=art))
+    d = json.loads(repos.online.read_target("bundles/vms-2.0.0.json"))
+    assert d["requires"] == {"windows_build_min": 19045, "webview2_min": None}
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    publish(repos, PublishOptions(version="2.0.1", artifacts=empty, windows_build_min=22631,
+                                  webview2_min="120.0.0.0"))
+    d = json.loads(repos.online.read_target("bundles/vms-2.0.1.json"))
+    assert d["requires"] == {"windows_build_min": 22631, "webview2_min": "120.0.0.0"}
+    publish(repos, PublishOptions(version="2.0.2", artifacts=empty, windows_build_min=None))
+    assert json.loads(repos.online.read_target("bundles/vms-2.0.2.json"))["requires"]["windows_build_min"] is None
+    with pytest.raises(PublishError, match="no es un build"):
+        publish(repos, PublishOptions(version="2.0.3", artifacts=empty, windows_build_min=7))
+    a = build_parser().parse_args(["publish", "--version", "2.0.3", "--artifacts", str(empty),
+                                   "--windows-build-min", "0", "--webview2-min", "120.0.0.0"])
+    assert a.windows_build_min == 0 and a.webview2_min == "120.0.0.0"
 
 
 def test_irreversible_central_migration_needs_explicit_ack(tmp_path: Path, keyring: Keyring,

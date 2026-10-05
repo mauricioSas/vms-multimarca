@@ -7,7 +7,7 @@
     publish --version X.Y.Z --artifacts DIR [--channel pilot] [--dry-run] [--meta local|ci] …
     channel NOMBRE (--version X.Y.Z | --pause | --resume)
     data advisories ARCHIVO.json
-    mirror --version X.Y.Z --out CARPETA [--days 60]
+    mirror [--channel stable | --version X.Y.Z] --out CARPETA [--days 60]
     verify [--mode online|offline] [--file]
     sign-meta [--mode online] [--timestamp-only]   (CI: publish-meta.yml y timestamp.yml)
     root-rotate --revoke KEYNAME [--add-soft NOMBRE --role root|targets] (ensayo «Si roban una llave»)
@@ -78,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--authenticode-c", default="ES")
     p.add_argument("--authenticode-issuer", action="append", default=[])
     p.add_argument("--accept-irreversible", action="store_true")
+    p.add_argument("--windows-build-min", type=int, default=None,
+                   help="build mínimo de Windows (por defecto 19045 = Windows 10 22H2; 0 = sin mínimo)")
+    p.add_argument("--webview2-min", default=None, help="versión mínima de WebView2 (p. ej. 120.0.0.0)")
     p.add_argument("--meta", choices=["local", "ci"], default=None,
                    help="quién firma snapshot/timestamp del repositorio online (dev: local)")
     p.add_argument("--dry-run", action="store_true")
@@ -97,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--meta", choices=["local", "ci"], default=None)
 
     m = sub.add_parser("mirror")
-    m.add_argument("--version", required=True)
+    m.add_argument("--channel", default=None, help="canal que servirá el USB (por defecto stable)")
+    m.add_argument("--version", default=None, help="versión que debe tener ese canal (comprobación)")
     m.add_argument("--out", required=True, type=Path)
     m.add_argument("--days", type=int, default=60)
 
@@ -144,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(a: argparse.Namespace) -> int:
-    from .publish import (PublishOptions, Repos, dry_run_copy, publish, publish_advisories, set_channel)
+    from .publish import (DEFAULT_WINDOWS_BUILD_MIN, PublishOptions, Repos, dry_run_copy, publish,
+                          publish_advisories, set_channel)
 
     if a.cmd == "keys":
         if a.keys_cmd == "init-dev":
@@ -181,7 +186,10 @@ def _run(a: argparse.Namespace) -> int:
         opt = PublishOptions(version=a.version, artifacts=a.artifacts, channel=a.channel, notes_es=a.notes_es,
                              min_from=a.min_from, security=a.security, severity=a.severity,
                              config_schema=a.config_schema, authenticode=auth,
-                             accept_irreversible=a.accept_irreversible, meta=a.meta or meta_default)
+                             accept_irreversible=a.accept_irreversible, meta=a.meta or meta_default,
+                             windows_build_min=(DEFAULT_WINDOWS_BUILD_MIN if a.windows_build_min is None
+                                                else (a.windows_build_min or None)),
+                             webview2_min=a.webview2_min)
         if a.dry_run:
             from .verify import verify_dir
             work = dry_run_copy(base)
@@ -209,8 +217,8 @@ def _run(a: argparse.Namespace) -> int:
     if a.cmd == "mirror":
         from .mirror import make_mirror
         from .verify import verify_dir
-        res = make_mirror(Repos.open(base, kr), a.version, a.out, days=a.days)
-        res["verify"] = verify_dir(a.out, mode="offline", use_file=True, versions=[a.version])
+        res = make_mirror(Repos.open(base, kr), a.version, a.out, days=a.days, channel=a.channel)
+        res["verify"] = verify_dir(a.out, mode="offline", use_file=True, versions=[res["version"]])
         _print(res)
         return 0
     if a.cmd == "verify":
