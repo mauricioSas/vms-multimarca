@@ -20,6 +20,7 @@ from vms import __version__
 from vms.core.config_store import ConfigRepository, UserStore
 from vms.core.credentials import CredentialStore
 from vms.core.errors import EngineUnavailable, VmsError
+from vms.core.heartbeat_extras import collect_extras
 from vms.core.interfaces import DeviceClient, DeviceTestResult, DiscoveredDevice, Engine, PathStatus
 from vms.core.models import AppConfig, Device, DeviceBase, Site
 from vms.core.paths import AppPaths
@@ -244,4 +245,6 @@ class AppState:
             "disk": {"percent": disk.percent, "free_gb": round(disk.free / 1e9, 1)} if disk else {},
             "analytics": {"running": bool(ov["analytics"].get("running")),
                           "stale": bool(ov["analytics"].get("stale", True))},
+            # update (B4), health y evidence_key (B6): cada bloque aporta su proveedor (heartbeat_extras)
+            **await asyncio.to_thread(collect_extras, self.paths),
         }

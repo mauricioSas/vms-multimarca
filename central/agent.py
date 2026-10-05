@@ -38,6 +38,7 @@ import httpx
 from pydantic import SecretStr
 
 from vms import __version__
+from vms.core.heartbeat_extras import collect_extras
 from vms.core.logging_setup import setup_logging
 from vms.core.models import Site
 from vms.core.paths import AppPaths
@@ -228,6 +229,8 @@ class HeartbeatAgent:
         temp = read_temperature()
         if temp is not None:
             payload["temperature_c"] = temp
+        # update (B4), health y evidence_key (B6): cada bloque aporta su proveedor (vms/core/heartbeat_extras.py)
+        payload.update(await asyncio.to_thread(collect_extras, self.paths))
         return site, HeartbeatPayload.model_validate(payload)
 
     @staticmethod

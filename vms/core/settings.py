@@ -29,6 +29,9 @@ from .paths import AppPaths, default_data_dir, install_dir, restrict_permissions
 DISABLED_VALUES = frozenset({"off", "none", "disabled", "-"})
 
 
+UPDATE_SOURCE_SCHEMES = ("https://", "http://", "file:///")
+
+
 class VmsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VMS_", extra="ignore", env_file_encoding="utf-8",
                                       env_ignore_empty=True)
@@ -67,6 +70,14 @@ class VmsSettings(BaseSettings):
     mtx_api_address: str = "127.0.0.1:9997"
     mtx_playback_address: str = "127.0.0.1:9996"
     mtx_metrics_address: str = "127.0.0.1:9998"
+    # Motor como servicio aparte (CONTRATO §13.10). `child`: el backend lanza MediaMTX (desarrollo y v1);
+    # `attach`: lo lanza `vmsctl run --service VMSEngine` y el backend solo escribe el YAML. B1 lo implementa.
+    engine_mode: Literal["child", "attach"] = "child"
+
+    # --- actualizaciones (CONTRATO §15.1; lo usa B4) ----------------------------
+    # https://updates.<dominio>/ (Worker), http://<host>:<puerto>/ (repositorio estático, pruebas y CI) o
+    # file:///D:/vms-updates (USB o carpeta compartida). Vacío = sin actualizaciones automáticas.
+    update_source: str = ""
 
     # --- PostgreSQL / central ------------------------------------------------
     pg_dsn: SecretStr | None = None
@@ -89,6 +100,14 @@ class VmsSettings(BaseSettings):
         """
         if isinstance(v, str) and v.strip().lower() in DISABLED_VALUES:
             return ""
+        return v
+
+    @field_validator("update_source")
+    @classmethod
+    def _update_source(cls, v: str) -> str:
+        v = v.strip()
+        if v and not v.lower().startswith(UPDATE_SOURCE_SCHEMES):
+            raise ValueError("VMS_UPDATE_SOURCE tiene que empezar por https://, http:// o file:///")
         return v
 
     @model_validator(mode="after")
