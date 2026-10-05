@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from .authenticode import system_verifier
@@ -68,6 +69,17 @@ def root_is_dev(root_bytes: bytes) -> bool:
     return bool(isinstance(signed, dict) and signed.get("x-vms-env") == "dev")
 
 
+def backend_url(env: Mapping[str, str]) -> str:
+    """URL local del backend para el health check: `VMS_BACKEND_URL` o, si no, `VMS_HTTP_PORT` del `.env` (se lo
+    pasa `vmsctl run`). Con un puerto personalizado, mirar el 8600 daría siempre «caído» y cada actualización
+    volvería atrás (hallazgo A3)."""
+    url = env.get("VMS_BACKEND_URL", "").strip()
+    if url:
+        return url.rstrip("/")
+    port = env.get("VMS_HTTP_PORT", "").strip()
+    return f"http://127.0.0.1:{int(port)}" if port.isdigit() and 0 < int(port) < 65536 else "http://127.0.0.1:8600"
+
+
 def build_engine(layout: Layout | None = None) -> Engine:
     layout = (layout or Layout.from_env()).ensure()
     source_url = os.environ.get("VMS_UPDATE_SOURCE", "").strip()
@@ -90,7 +102,7 @@ def build_engine(layout: Layout | None = None) -> Engine:
         return TufClient(source, metadata_dir=layout.tuf_metadata_dir, targets_dir=layout.tuf_targets_dir,
                          trusted_root=trusted)
 
-    health = DeepHealthChecker(os.environ.get("VMS_BACKEND_URL", "http://127.0.0.1:8600"),
+    health = DeepHealthChecker(backend_url(os.environ),
                                lambda: read_internal_token(layout.secrets_dir),
                                timeout_s=float(os.environ.get("VMS_UPDATER_HEALTH_TIMEOUT", "120")),
                                interval_s=float(os.environ.get("VMS_UPDATER_HEALTH_INTERVAL", "2")))

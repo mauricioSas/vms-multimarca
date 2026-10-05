@@ -422,7 +422,7 @@ jobs:
     if: needs.changes.outputs.b3 == 'true'
     uses: ./.github/workflows/windows-installer.yml
     with:
-      doubles: true
+      doubles: false        # vmsctl y vmshost reales (revisión v2): el doble solo para fallos inyectados
       e2e: true
       with_v1: true
 

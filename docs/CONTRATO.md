@@ -1028,20 +1028,29 @@ la v1. En SSD el borrado seguro no está garantizado (se documenta).
 
 ```
 vmsctl run --service <Servicio>                       anfitrión del proceso real (lo lanza vmshost)
-vmsctl services install --role control|store|central|viewer --data-dir <ruta>
+vmsctl services install --role control|store|central|viewer --data-dir <ruta> [--recordings-dir <ruta>]
 vmsctl services uninstall [--purge]
 vmsctl services start|stop|restart [--only VMSBackend,VMSEngine]
-vmsctl firewall apply --profiles private[,domain] | firewall remove
-vmsctl acl apply --data-dir <ruta>
-vmsctl ports check
+vmsctl firewall apply --profiles private[,domain] [--role <rol>] | firewall remove
+vmsctl acl apply --data-dir <ruta> [--role <rol>] [--recordings-dir <ruta>]
+vmsctl ports check [--role <rol>] [--http-port N] [--https-port N]   (instalación nueva: aún sin registro ni .env)
 vmsctl health wait --timeout 120 [--deep]
 vmsctl version switch <X.Y.Z> | version show
 vmsctl update check|status|rollback [--to X.Y.Z] [--reason <texto>]   (por la tubería; exige elevación)
+vmsctl update lock --owner installer [--ttl 3600] | update unlock --owner installer   (cerrojo del instalador)
 vmsctl tls setup --hostname <nombre> [--import-root]
 vmsctl kiosk rotate
 vmsctl diag bundle --out <zip>                        registros y estado, nunca secretos ni mediamtx.yml
 vmsctl migrate-from-v1                                servicios WinSW → vmshost, datos intactos
 ```
+La tabla de órdenes y opciones es `native/vmsctl/src/cli_spec.json` (revisión v2): `vmsctl` rechaza lo que no
+esté en ella, `vmsctl help --json` la devuelve, el doble de pruebas del instalador la incluye tal cual y
+`tests/windows/test_vmsctl_cli.py` comprueba con ella cada llamada del `[Code]` del instalador. `services
+install` deja `state\active.json` apuntando a la versión instalada: el instalador ya no llama a `version
+switch` (en una instalación nueva no hay puntero previo). `update …` abre la tubería con
+`SECURITY_IDENTIFICATION` y no envía nada si el servidor no es SYSTEM; un `busy` del actualizador llega como
+`error.code = "busy"`. A `VMSUpdater`, `run` le pasa las variables `VMS_*` del `.env` (no lo lee él):
+`VMS_UPDATE_SOURCE` y `VMS_HTTP_PORT` (su health check usa ese puerto).
 Todas aceptan `--json`. `run`: lanza `runtime\python.exe -m vms` (o `engine\mediamtx.exe`…), lo mete en
 su Job Object, parada en 3 escalones (`POST /api/internal/shutdown` o `CTRL_BREAK` → 10 s →
 `TerminateJobObject`), reinicio con backoff 1/2/5/10/30 s y `logs\<servicio>.log` redactado con rotación

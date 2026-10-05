@@ -77,12 +77,13 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-vms.txt
+            requirements-updater.txt
             requirements-test.txt
       - name: Dependencias (lock de sede con SHA-256 + pytest del lock de pruebas)
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true   # un programa que falla corta el paso
-          python -m pip install --require-hashes --no-deps -r requirements-vms.txt
+          python -m pip install --require-hashes --no-deps -r requirements-vms.txt -r requirements-updater.txt
           python tests/windows/e2e_requirements.py > "$env:RUNNER_TEMP\e2e-req.txt"
           python -m pip install --no-deps -r "$env:RUNNER_TEMP\e2e-req.txt"
           python -m pip install --no-deps -e .
@@ -104,19 +105,40 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tests/windows/doubles/target
-          key: cargo-dobles-windows-${{ hashFiles('tests/windows/doubles/Cargo.lock', 'tests/windows/doubles/src/**') }}
+            native/target
+          key: cargo-instalador-windows-${{ hashFiles('tests/windows/doubles/Cargo.lock', 'tests/windows/doubles/src/**', 'native/Cargo.lock', 'native/**/*.rs') }}
+          restore-keys: cargo-instalador-windows-
+      - name: Roots de confianza de desarrollo (el e2e instala con UpdateSource; sin root el instalador lo rechaza)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m tools.build dev-roots --out "$env:RUNNER_TEMP\trusted"
+          "VMS_BUILD_TRUSTED_ROOTS=$env:RUNNER_TEMP\trusted" >> $env:GITHUB_ENV
+      # Sin dobles: el vmsctl y el vmshost REALES de native/ (revisión v2: con el doble, CI salía verde con el flujo
+      # real roto) y el runtime de Python de verdad. El visor sigue siendo el doble: el real lo prueba el job de B2.
+      - name: Binarios reales (vmshost, vmsctl), visor doble y runtime de Python con los locks de sede
+        if: ${{ !inputs.doubles }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          Push-Location native; cargo build --release --locked -p vmshost -p vmsctl; Pop-Location
+          Push-Location tests\windows\doubles; cargo build --release --locked; Pop-Location
+          python -m distribution.runtime.build --out build\runtime
+          $n = @('--vmshost', 'native\target\release\vmshost.exe', '--vmsctl', 'native\target\release\vmsctl.exe',
+                 '--viewer', 'tests\windows\doubles\target\release\VMS.exe', '--runtime-dir', 'build\runtime')
+          "NATIVES=$($n -join ' ')" >> $env:GITHUB_ENV
       - name: Inno Setup 7.1.0 (descarga verificada con SHA-256)
         run: python -m tools.build inno --install
       - name: Build completa → instalador
         shell: pwsh
         run: |
-          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' }
+          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' } elseif ($env:NATIVES) { $extra += $env:NATIVES -split ' ' }
           python -m tools.build all --version $env:VERSION @extra --out dist
       - name: Reproducibilidad del payload Python/web (dos builds limpias, PLAN-V2 §4.1)
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' }
+          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' } elseif ($env:NATIVES) { $extra += $env:NATIVES -split ' ' }
           python -m tools.build repro --version $env:VERSION @extra --out dist\repro
           Get-Content dist\repro\repro.json
       - name: Artefacto del instalador

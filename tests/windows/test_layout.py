@@ -38,7 +38,29 @@ def artifacts(tmp_path: Path) -> dict[str, Path]:
     (runtime / "python312._pth").write_text("python312.zip\n.\nLib\\site-packages\n..\\app\n", encoding="utf-8")
     (runtime / "Lib" / "site-packages" / "distutils-precedence.pth").write_text("x\n", encoding="utf-8")
     (runtime / "VERSION").write_text("3.12.10-r1\n", encoding="utf-8")
+    fake_dists(runtime / "Lib" / "site-packages")
     return {"bins": bins, "engine": engine, "runtime": runtime}
+
+
+def fake_dists(site: Path) -> list[str]:
+    """Como deja pip cada paquete de requirements-updater.txt (los que aplican a Windows): ``*.dist-info`` con
+    METADATA y RECORD y un módulo. La ranura del actualizador se monta con ellos (hallazgo C3)."""
+    from distribution.layout import UPDATER_REQUIREMENTS
+    from distribution.runtime.build import windows_pins
+
+    names = []
+    for pin in windows_pins([UPDATER_REQUIREMENTS]):
+        mod = pin.name.replace("-", "_")
+        info = site / f"{mod}-{pin.version}.dist-info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {pin.name}\nVersion: {pin.version}\n\n",
+                                       encoding="utf-8")
+        (site / mod).mkdir(exist_ok=True)
+        (site / mod / "__init__.py").write_text(f"# {pin.name}\n", encoding="utf-8")
+        (info / "RECORD").write_text(f"{mod}/__init__.py,,\n{info.name}/METADATA,,\n{info.name}/RECORD,,\n",
+                                     encoding="utf-8")
+        names.append(pin.name)
+    return names
 
 
 def _inputs(a: dict[str, Path], **kw: object) -> LayoutInputs:
@@ -94,7 +116,9 @@ def test_components_have_manifest_and_fixed_metadata(tmp_path: Path, artifacts: 
             assert "MANIFEST.sha256" in names
             infos = zf.infolist()
             assert {i.date_time for i in infos} == {(2025, 10, 5, 0, 0, 0)}
-            assert {i.external_attr for i in infos} == {0x20}
+            # formato único de B4 (tools.release.package.make_zip): permisos POSIX fijos, nunca los del disco
+            assert {i.external_attr for i in infos} <= {0o100644 << 16, 0o100755 << 16}
+            assert {i.create_system for i in infos} == {3}
             manifest = zf.read("MANIFEST.sha256").decode()
             for line in manifest.splitlines():
                 digest, rel = line.split("  ", 1)

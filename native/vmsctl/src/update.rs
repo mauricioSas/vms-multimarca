@@ -6,6 +6,10 @@
 //! La tubería solo admite SYSTEM y Administradores con el token elevado: desde una consola normal (o la
 //! bandeja sin UAC) la respuesta es «acceso denegado» → código 11. En desarrollo (macOS/Linux) la tubería
 //! es un socket Unix (`VMS_UPDATER_PIPE`, por defecto `<datos>/updater/control.sock`).
+//!
+//! Suplantación (revisión v2, Seguridad ALTO 2): se abre con `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`
+//! (un servidor falso que se quede con el nombre solo podría *identificar* al administrador, nunca actuar como
+//! él) y, antes de escribir nada, se comprueba que el proceso servidor es de SYSTEM (`VMSUpdater`).
 
 use crate::cli::{CtlError, Outcome};
 use crate::ctx::Ctx;
@@ -39,13 +43,71 @@ fn exchange<S: io::Read + Write>(mut s: S, msg: &Value) -> io::Result<Value> {
     serde_json::from_str(resp.trim()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+/// ¿Es SYSTEM la cuenta del proceso que atiende la tubería `pipe`?
+#[cfg(windows)]
+fn server_is_system(pipe: &std::fs::File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, IsWellKnownSid, TokenUser, WinLocalSystemSid, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    use windows_sys::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    struct Owned(HANDLE);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: handle propio, abierto aquí y cerrado una sola vez.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+    let mut pid: u32 = 0;
+    // SAFETY: handle válido de la tubería abierta; `pid` es un u32 de esta función.
+    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: llamada sin punteros; el handle devuelto se cierra con `Owned`.
+    let proc_h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if proc_h.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let proc_h = Owned(proc_h);
+    let mut tok: HANDLE = std::ptr::null_mut();
+    // SAFETY: `tok` recibe un handle nuevo que se cierra con `Owned`.
+    if unsafe { OpenProcessToken(proc_h.0, TOKEN_QUERY, &mut tok) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let tok = Owned(tok);
+    let mut buf = vec![0u8; 256];
+    let mut len: u32 = 0;
+    // SAFETY: `buf` tiene `buf.len()` bytes; TokenUser cabe de sobra en 256 (TOKEN_USER + un SID).
+    if unsafe { GetTokenInformation(tok.0, TokenUser, buf.as_mut_ptr().cast(), buf.len() as u32, &mut len) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: GetTokenInformation(TokenUser) deja un TOKEN_USER al principio de `buf`.
+    let user = unsafe { std::ptr::read_unaligned(buf.as_ptr().cast::<TOKEN_USER>()) };
+    // SAFETY: el SID apunta dentro de `buf`, que sigue vivo.
+    Ok(unsafe { IsWellKnownSid(user.User.Sid, WinLocalSystemSid) } != 0)
+}
+
 #[cfg(windows)]
 fn connect_and_send(path: &std::path::Path, msg: &Value) -> io::Result<Value> {
+    use std::os::windows::fs::OpenOptionsExt;
     const ERROR_PIPE_BUSY: i32 = 231;
+    /// `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`: el servidor solo puede identificar al cliente.
+    const SQOS_IDENTIFICATION: u32 = 0x0010_0000 | 0x0001_0000;
     let mut last = None;
     for _ in 0..25 {
-        match std::fs::OpenOptions::new().read(true).write(true).open(path) {
-            Ok(f) => return exchange(f, msg),
+        match std::fs::OpenOptions::new().read(true).write(true).security_qos_flags(SQOS_IDENTIFICATION).open(path) {
+            Ok(f) => {
+                if !server_is_system(&f)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "la tubería del actualizador no la atiende SYSTEM (posible suplantación): no se envía nada",
+                    ));
+                }
+                return exchange(f, msg);
+            }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 last = Some(e);
                 std::thread::sleep(Duration::from_millis(200));

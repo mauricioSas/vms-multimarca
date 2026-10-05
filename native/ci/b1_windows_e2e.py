@@ -282,9 +282,25 @@ def main() -> int:
         assert prof.strip() == "Private", f"perfil {prof!r}"
         return f"{names} solo en perfil Privado"
 
+    def print_log_tails(lines: int = 60) -> None:
+        """Final de los registros de cada servicio en la salida del job (el artefacto no siempre se puede abrir)."""
+        for f in sorted((data / "logs").glob("*.log")):
+            try:
+                tail = f.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+            except OSError as exc:
+                print(f"--- {f.name}: no se pudo leer ({exc})", flush=True)
+                continue
+            print(f"--- {f.name} (últimas {len(tail)} líneas)", flush=True)
+            for ln in tail:
+                print(f"    {ln}", flush=True)
+
     def start_and_health() -> str:
         ctl("services", "start", timeout=180)
-        out = ctl("health", "wait", "--timeout", "240", timeout=300)
+        try:
+            out = ctl("health", "wait", "--timeout", "240", timeout=300)
+        except AssertionError:
+            print_log_tails()
+            raise
         checks = {c["name"]: c for c in out["data"]["checks"]}
         for s in SERVICES:
             assert checks[f"{s} (proceso)"]["ok"], checks

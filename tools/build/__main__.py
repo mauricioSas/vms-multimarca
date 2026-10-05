@@ -197,6 +197,12 @@ def cmd_sbom(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dev_roots(args: argparse.Namespace) -> int:
+    from .dev_roots import main as dev_roots_main
+
+    return dev_roots_main(args.out)
+
+
 def cmd_pascal_check(args: argparse.Namespace) -> int:
     from .pascal_check import main as pascal_main
 
@@ -255,6 +261,9 @@ def parser() -> argparse.ArgumentParser:
     sb.add_argument("--out", required=True)
     sb.add_argument("--epoch", type=int)
     sb.set_defaults(func=cmd_sbom)
+    dr = sub.add_parser("dev-roots", help="roots de confianza de desarrollo (CI y pruebas; nunca producción)")
+    dr.add_argument("--out", required=True)
+    dr.set_defaults(func=cmd_dev_roots)
     pc = sub.add_parser("pascal-check", help="comprueba el [Code] del instalador con Free Pascal (desarrollo)")
     pc.add_argument("rest", nargs=argparse.REMAINDER)
     pc.set_defaults(func=cmd_pascal_check)

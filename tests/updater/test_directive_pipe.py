@@ -99,3 +99,14 @@ def test_missing_update_source_is_a_clear_error_not_unexpected(site: Site) -> No
     out = eng.check()
     assert out.result == "error" and "VMS_UPDATE_SOURCE" in out.message_es
     assert "inesperado" not in eng.status.read().message_es.lower()
+
+
+def test_health_check_follows_the_installed_http_port() -> None:
+    """A3: con un puerto HTTP personalizado (instalador → .env → vmsctl run), el health check mira ese puerto."""
+    from vms_updater.service import backend_url
+
+    assert backend_url({}) == "http://127.0.0.1:8600"
+    assert backend_url({"VMS_HTTP_PORT": "8601"}) == "http://127.0.0.1:8601"
+    assert backend_url({"VMS_HTTP_PORT": "x"}) == "http://127.0.0.1:8600"
+    assert backend_url({"VMS_BACKEND_URL": "http://127.0.0.1:9000/", "VMS_HTTP_PORT": "8601"}) == \
+        "http://127.0.0.1:9000"
