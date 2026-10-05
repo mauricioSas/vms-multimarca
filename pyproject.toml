@@ -63,6 +63,13 @@ central = [
     "psycopg-pool>=3.2",
     "anthropic>=0.40",
 ]
+# Actualizador VMSUpdater (B4): runtime mínimo de las ranuras A/B (updater\\slot-a|b). Licencias verificadas
+# el 5-oct-2026 (metadatos de PyPI): tuf Apache-2.0 OR MIT, securesystemslib MIT, urllib3 MIT.
+updater = [
+    "tuf>=7.0.1,<8",
+    "securesystemslib[crypto]>=1.5.1,<2",
+    "urllib3>=2,<3",
+]
 # Herramientas de prueba y calidad (sin dependencias de producto). Licencias verificadas el
 # 5-oct-2026 (PyPI): ruff MIT, mypy MIT (+ mypy_extensions MIT, librt MIT, ast-serialize MIT,
 # pathspec MPL-2.0), pytest-cov MIT (+ coverage Apache-2.0), pytest-randomly MIT, types-PyYAML
@@ -80,9 +87,13 @@ test = [
     "ruff>=0.16",
     "mypy>=2.4",
     "types-PyYAML>=6",
+    # B4: pruebas del actualizador y de tools/release (firma PKCS#11 con SoftHSM: python-pkcs11 MIT, asn1crypto MIT)
+    "tuf>=7.0.1,<8",
+    "securesystemslib[crypto]>=1.5.1,<2",
+    "python-pkcs11>=0.10,<1",
 ]
 dev = [
-    "vms-multimarca[vms,analytics,central,export,test]",
+    "vms-multimarca[vms,analytics,central,export,updater,test]",
 ]
 
 [project.scripts]
@@ -139,6 +150,16 @@ exclude = ["^legacy/", "^tests/", "^spikes/", "^native/", "^build/", "^dist/"]
 [[tool.mypy.overrides]]
 module = ["vms.core.*"]
 strict = true
+
+# B4: el actualizador también en estricto (mypy updater/vms_updater). python-tuf reexporta sus clases desde
+# tuf.api.metadata y tuf.ngclient sin __all__ explícito en todos los nombres.
+[[tool.mypy.overrides]]
+module = ["vms_updater.*"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["tuf.*"]
+implicit_reexport = true
 
 [tool.coverage.run]
 source = ["vms", "analytics", "central"]

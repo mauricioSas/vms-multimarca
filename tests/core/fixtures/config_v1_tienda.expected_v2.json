@@ -1,0 +1,140 @@
+{
+  "version": 2,
+  "devices": [
+    {
+      "id": "dev-0a1b2c3d",
+      "name": "NVR almacén",
+      "vendor": "hikvision",
+      "kind": "nvr",
+      "host": "192.0.2.10",
+      "rtsp_port": 554,
+      "http_port": 80,
+      "https": false,
+      "onvif_port": null,
+      "username": "visor",
+      "enabled": true,
+      "notes": "",
+      "model": "DS-7604NI-K1",
+      "serial": "ANON-SERIE-0001",
+      "firmware": "V4.30.085",
+      "created_at": "2026-10-04T09:12:00Z",
+      "updated_at": "2026-10-04T09:12:00Z"
+    },
+    {
+      "id": "dev-4e5f6a7b",
+      "name": "Cámara caja",
+      "vendor": "dahua",
+      "kind": "camera",
+      "host": "192.0.2.21",
+      "rtsp_port": 554,
+      "http_port": 80,
+      "https": false,
+      "onvif_port": null,
+      "username": "admin",
+      "enabled": true,
+      "notes": "Instalada por Covert",
+      "model": "IPC-HFW1230S",
+      "serial": "ANON-SERIE-0002",
+      "firmware": "2.800.0000000.25.R",
+      "created_at": "2026-10-04T09:20:00Z",
+      "updated_at": "2026-10-04T10:00:00Z"
+    }
+  ],
+  "cameras": [
+    {
+      "id": "cam-11111111",
+      "name": "Puerta",
+      "device_id": "dev-0a1b2c3d",
+      "channel": 1,
+      "enabled": true,
+      "record": true,
+      "main_path": null,
+      "sub_path": null,
+      "has_sub": true,
+      "rtsp_transport": "tcp",
+      "created_at": "2026-10-04T09:13:00Z",
+      "updated_at": "2026-10-04T09:13:00Z"
+    },
+    {
+      "id": "cam-22222222",
+      "name": "Caja",
+      "device_id": "dev-4e5f6a7b",
+      "channel": 1,
+      "enabled": true,
+      "record": true,
+      "main_path": null,
+      "sub_path": null,
+      "has_sub": true,
+      "rtsp_transport": "tcp",
+      "created_at": "2026-10-04T09:21:00Z",
+      "updated_at": "2026-10-04T09:21:00Z"
+    }
+  ],
+  "walls": [
+    {
+      "monitor": 1,
+      "name": "Mostrador",
+      "grid": 4,
+      "cells": [
+        "cam-11111111",
+        "cam-22222222",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "monitor": 2,
+      "name": "",
+      "grid": 4,
+      "cells": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "analytics_cameras": [],
+  "analytics_rules": [],
+  "settings": {
+    "site": {
+      "id": "site-local",
+      "name": "Tienda 0042",
+      "code": "S0042",
+      "timezone": "Europe/Madrid"
+    },
+    "retention": {
+      "days": 30,
+      "disk_guard_percent": 90
+    },
+    "recording": {
+      "segment_seconds": 900,
+      "part_seconds": 1,
+      "recordings_dir": null
+    }
+  }
+}

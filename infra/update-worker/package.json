@@ -1,0 +1,24 @@
+{
+  "name": "vms-update-worker",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Worker de Cloudflare del repositorio de actualizaciones de VMS Multimarca (metadatos TUF libres, paquetes con token de sede).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "serve": "node scripts/dev-serve.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "miniflare": "4.20260730.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "sharp": "file:./stubs/sharp"
+  }
+}

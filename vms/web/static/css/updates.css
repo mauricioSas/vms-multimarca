@@ -1,1 +1,7 @@
-/* Estilos del estado de actualizaciones en /status. Hoja vacía de la fase 0 de la v2. Dueño: B4. */
+/* Estado de las actualizaciones en /status (#updates-root). Dueño: B4. */
+#updates-root .upd-msg {
+  margin: 0 0 14px; padding: 10px 14px; border-radius: var(--radius);
+  border: 1px solid rgba(90,174,255,.35); background: rgba(90,174,255,.08); color: #cfe6ff;
+}
+#updates-root .upd-msg.bad { border-color: rgba(255,85,85,.45); background: var(--danger-soft); color: #ffc9c9; }
+#updates-root .upd-help { margin: 14px 0 0; max-width: 72ch; }

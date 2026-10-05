@@ -1,0 +1,48 @@
+# PLANTILLA (B4) para .github/workflows/publish-meta.yml — la instala B3, dueño de .github/workflows/.
+# Firma snapshot y timestamp del repositorio ONLINE después de que el PC de publicación haya subido los
+# targets firmados con la llave física. NO tiene acceso a `targets` ni a Authenticode (PLAN-V2 §1.6, §1.8).
+# Pendiente de la cuenta de Cloudflare (D5): los pasos de R2 usan la API S3 de R2 con un token de solo ese bucket.
+name: Firma de snapshot y timestamp
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [publish-meta]          # lo dispara «tools.release publish --meta ci» (gh api …/dispatches)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuf-online-meta            # nunca dos firmas a la vez
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: tuf-online         # entorno protegido: solo main, con revisores
+    timeout-minutes: 15
+    env:
+      VMS_TUF_SNAPSHOT_PEM: ${{ secrets.VMS_TUF_SNAPSHOT_PEM }}
+      VMS_TUF_TIMESTAMP_PEM: ${{ secrets.VMS_TUF_TIMESTAMP_PEM }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Dependencias (lock con SHA-256)
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-updater.txt
+          python -m pip install --no-deps -e .
+      - name: Bajar los metadatos publicados
+        run: aws s3 sync "s3://vms-updates/online/metadata/" repo/online/metadata/ --endpoint-url "$R2_ENDPOINT"
+      - name: Firmar snapshot y timestamp (llavero de CI: solo claves públicas de root/targets + secretos)
+        run: python -m tools.release --keys tools/release/ci/keyring --repo repo sign-meta --mode online
+      - name: Validar con el cliente real antes de subir
+        run: python -m tools.release --keys tools/release/ci/keyring --repo repo verify --mode online
+      - name: Subir (timestamp.json el último)
+        run: |
+          aws s3 cp repo/online/metadata/ "s3://vms-updates/online/metadata/" --recursive --exclude timestamp.json --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp repo/online/metadata/timestamp.json "s3://vms-updates/online/metadata/timestamp.json" --endpoint-url "$R2_ENDPOINT"

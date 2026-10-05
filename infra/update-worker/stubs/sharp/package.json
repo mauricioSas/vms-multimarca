@@ -1,0 +1,7 @@
+{
+  "name": "sharp",
+  "version": "0.0.0-vms-stub",
+  "description": "Sustituto vacío de sharp: Miniflare solo lo carga para el binding de imágenes, que el Worker no usa. Evita instalar libvips (LGPL) en las pruebas.",
+  "license": "MIT",
+  "main": "index.js"
+}
