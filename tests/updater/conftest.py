@@ -82,7 +82,7 @@ class ReleaseFactory:
         shutil.rmtree(art, ignore_errors=True)
         for comp in comps:
             if comp == "app":
-                files = {"app/vms/__init__.py": f"__version__ = '{version}'\n".encode(),
+                files = {"app/VERSION.txt": f"{version}\n".encode(),
                          "bin/vmsctl.exe": b"MZ vmsctl " + version.encode(),
                          "THIRD_PARTY_NOTICES.txt": b"avisos\n"}
                 if broken:
