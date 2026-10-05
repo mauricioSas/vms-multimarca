@@ -3,7 +3,7 @@
     python -m tests.viewer.smoke_windows --exe native/viewer/src-tauri/target/release/VMS.exe --out visor-smoke
 
 Usa la build de PRUEBA del visor (`--features prueba`: abre el puerto CDP de WebView2 con VMS_VIEWER_CDP_PORT) y
-se conecta a ella con Playwright (`connect_over_cdp`, sin descargar navegadores). Monta lo mismo que una tienda en
+se conecta a ella por CDP directo (`/json/list` + `websockets`, que ya viene en el lock de sede). Monta lo mismo que una tienda en
 pequeño: simulador de cámaras (MediaMTX + ffmpeg de pruebas) + backend real (`python -m vms`), y comprueba:
 
 1. muro: `VMS.exe --walls` abre /wall/1 entrando con el token de kiosco del archivo (sin login ni token en la
@@ -228,34 +228,99 @@ class Viewer:
         wait_for(closed, 30, "el visor anterior sigue vivo")
 
 
-class Cdp:
-    def __init__(self) -> None:
-        from playwright.sync_api import sync_playwright
-        self.pw = sync_playwright().start()
-        self.browser: Any = None
+class CdpError(RuntimeError):
+    pass
 
-    def connect(self) -> None:
-        self.close_browser()
-        self.browser = self.pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}", timeout=30000)
 
-    def pages(self) -> list[Any]:
-        return [p for c in self.browser.contexts for p in c.pages]
+def _targets() -> list[dict[str, Any]]:
+    r = httpx.get(f"http://127.0.0.1:{CDP_PORT}/json/list", timeout=5)
+    return [t for t in r.json() if t.get("type") == "page"]
 
-    def find(self, pred: Callable[[str], bool], timeout: float, what: str) -> Any:
-        return wait_for(lambda: next((p for p in self.pages() if pred(p.url)), None), timeout,
-                        f"{what}; páginas: {[p.url for p in self.pages()] if self.browser else []}")
 
-    def close_browser(self) -> None:
-        if self.browser is not None:
+class Page:
+    """Una página (un WebView) por CDP directo. Cada orden abre su propia conexión al objetivo, así sirve aunque
+    la página cambie de origen (tauri.localhost → backend), cosa que Playwright con WebView2 no siguió (CI)."""
+
+    def __init__(self, target_id: str) -> None:
+        self.id = target_id
+
+    def _info(self) -> dict[str, Any]:
+        for t in _targets():
+            if t["id"] == self.id:
+                return t
+        raise CdpError(f"la página {self.id} ya no existe")
+
+    @property
+    def url(self) -> str:
+        return str(self._info().get("url", ""))
+
+    def send(self, method: str, params: dict[str, Any] | None = None, timeout: float = 60) -> dict[str, Any]:
+        from websockets.sync.client import connect
+        ws_url = self._info()["webSocketDebuggerUrl"]
+        with connect(ws_url, max_size=None, open_timeout=10, close_timeout=2) as ws:
+            ws.send(json.dumps({"id": 1, "method": method, "params": params or {}}))
+            deadline = time.monotonic() + timeout
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise CdpError(f"{method}: sin respuesta en {timeout} s")
+                msg = json.loads(ws.recv(timeout=left))
+                if msg.get("id") == 1:
+                    if "error" in msg:
+                        raise CdpError(f"{method}: {msg['error']}")
+                    return dict(msg.get("result") or {})
+
+    def evaluate(self, fn: str, arg: Any = None, timeout: float = 60) -> Any:
+        expr = f"({fn})({json.dumps(arg)})"
+        res = self.send("Runtime.evaluate", {"expression": expr, "awaitPromise": True, "returnByValue": True},
+                        timeout)
+        if "exceptionDetails" in res:
+            d = res["exceptionDetails"]
+            raise CdpError(f"excepción en la página: {d.get('exception', {}).get('description') or d.get('text')}")
+        return res.get("result", {}).get("value")
+
+    def wait_for_function(self, fn: str, timeout: float = 30000) -> Any:
+        def check() -> Any:
             try:
-                self.browser.close()
-            except Exception:  # noqa: BLE001 - al cerrar solo se informa
-                pass
-            self.browser = None
+                return self.evaluate(fn, None, 10)
+            except CdpError:
+                return None
+        return wait_for(check, timeout / 1000, f"no se cumplió en la página: {fn[:80]}")
+
+    def inner_text(self, selector: str) -> str:
+        return str(self.evaluate("(s) => document.querySelector(s).textContent", selector))
+
+    def goto(self, url: str) -> None:
+        self.send("Page.navigate", {"url": url})
+
+    def screenshot(self, path: str) -> None:
+        import base64
+        res = self.send("Page.captureScreenshot", {"format": "png"})
+        Path(path).write_bytes(base64.b64decode(res["data"]))
+
+
+class Cdp:
+    def connect(self) -> None:
+        wait_for(lambda: _targets(), 30, "el visor no tiene páginas en CDP")
+
+    def pages(self) -> list[Page]:
+        return [Page(t["id"]) for t in _targets()]
+
+    def find(self, pred: Callable[[str], bool], timeout: float, what: str) -> Page:
+        def look() -> Page | None:
+            for t in _targets():
+                if pred(str(t.get("url", ""))):
+                    return Page(t["id"])
+            return None
+        try:
+            found: Page = wait_for(look, timeout, what)
+            return found
+        except TimeoutError as exc:
+            urls = [t.get("url") for t in _targets()]
+            raise TimeoutError(f"{exc}; páginas: {urls}") from None
 
     def stop(self) -> None:
-        self.close_browser()
-        self.pw.stop()
+        pass
 
 
 # ============================================================================================ escenario

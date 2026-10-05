@@ -86,7 +86,8 @@ fn local_pages_reach_only_viewer_commands() {
 #[test]
 fn commands_build_rs_and_capability_agree() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let build = std::fs::read_to_string(root.join("build.rs")).unwrap();
+    // en Windows, git puede dejar el archivo con CRLF
+    let build = std::fs::read_to_string(root.join("build.rs")).unwrap().replace("\r\n", "\n");
     for cmd in COMMANDS {
         assert!(build.contains(&format!("\"{cmd}\",")), "falta {cmd} en build.rs");
     }

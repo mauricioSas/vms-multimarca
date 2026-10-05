@@ -266,11 +266,10 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: native/viewer/src-tauri
         run: npx --yes @tauri-apps/cli@2.12.1 build --no-bundle --ci --features prueba
-      - name: Dependencias de la prueba de humo (lock de sede con SHA-256 + Playwright sin navegadores)
+      - name: Dependencias de la prueba de humo (lock de sede con SHA-256; CDP directo con websockets del lock)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-vms.txt
-          python -m pip install --no-deps "playwright==1.63.0" "greenlet==3.5.6" "pyee==13.0.1"
       - name: MediaMTX v1.21.1 (verificado por SHA-256)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/cache@v6
