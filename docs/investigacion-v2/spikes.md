@@ -9,7 +9,7 @@
 | **S1** WebView2 decodifica 4×16 flujos por hardware | PC Windows del laboratorio (la ejecuta el usuario) | **Pendiente.** Kit listo (visor Tauri mínimo + `s1.ps1` + guía de 3 pasos). B2 espera |
 | **S2** MediaMTX v1.21.1 con el YAML como fuente única | macOS (MacBook M1 Pro) | **Aprobada** (7/7), con un matiz sobre la retención |
 | **S3** Firma TUF `root`/`targets` ECDSA P-256 + python-tuf 7 | macOS (software) y CI Ubuntu (SoftHSM2) | **Aprobada** (6/6 casos con claves software y 6/6 con PKCS#11/SoftHSM2). Falta repetirla con YubiKey cuando se compren (D4) |
-| **S4** `windows-service-rs` + `vmshost` + Job Object + cuenta virtual | CI `windows-latest` | Ver §S4 |
+| **S4** `windows-service-rs` + `vmshost` + Job Object + cuenta virtual | CI `windows-latest` | **Aprobada** (9/9 pasos en Windows real), con un hallazgo de diseño para B1 |
 | **S5** Fijación del certificado del visor remoto | — | No toca en la fase 0 (va en paralelo a B2 cuando S1 apruebe) |
 
 ---
@@ -95,7 +95,7 @@ leído en el código instalado. Además, como `tools/release` no se distribuye, 
 que llega a las tiendas.
 
 **Ejecución en CI** (job `spike-s3`, run [37245437660](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245437660),
-Ubuntu, `softhsm2` de apt, token `vms-dev` creado y destruido con el runner): los 6 casos dan lo mismo con
+Ubuntu, `softhsm2` de apt; repetida en [37245939158](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245939158) con la clase de cada firmante en la salida: `root` = `HSMSigner`, `HSMSigner`, `CryptoSigner` (la «de papel») y `targets` = `HSMSigner`; token `vms-dev` creado y destruido con el runner): los 6 casos dan lo mismo con
 `--signer software` (0,58 s) y con `--signer pkcs11` (0,66 s). Las claves ECDSA P-256 de `root` (2 de 3) y
 `targets` se generaron dentro del token con python-pkcs11 y firmaron con `HSMSigner` (`CKM_ECDSA` sobre el
 SHA-256 y conversión a DER); python-tuf 7 las verificó con `ecdsa-sha2-nistp256`.
@@ -117,7 +117,24 @@ por SID (el SID del servicio; sin herencia), arranca, consulta, rompe y desinsta
 pruebas unitarias (`cargo test`, verdes en macOS) y `clippy -D warnings` limpio para
 `x86_64-pc-windows-msvc`.
 
-<!-- S4-CI -->
+**Ejecución en CI** (job `spike-s4`, `windows-latest`, run
+[37245939158](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245939158), artefacto `spike-s4`):
+
+| Paso de `run-s4.ps1` | Resultado |
+|---|---|
+| Disposición en disco; `active.json` creado desde el diario | OK |
+| `sc create` con `obj= "NT SERVICE\VMSS4Hello"`, recuperación 1/5/30 s, ACL solo SYSTEM + Administradores + SID del servicio | OK |
+| Arrancar y consultar: el hijo corre como `NT SERVICE\VMSS4Hello`, **dentro del Job Object** (`IsProcessInJob`) y **no puede escribir en `bin\`** | OK |
+| Matar el arrancador (`Stop-Process -Force`): el hijo muere con él (kill-on-close) y el SCM relanza el servicio | OK |
+| Versión rota a prueba (2.0.0): 3 caídas en ~4 s → vuelta atrás sola a 1.0.0 | OK |
+| `active.json` corrupto → reconstruido con `last_good` del diario | OK |
+| Versión buena sin confirmar → vuelta atrás al pasar el plazo (25 s en la prueba, 30 min en el producto) | OK |
+| Versión confirmada → se queda y el diario la marca como buena | OK |
+| Parar (sin procesos huérfanos) y desinstalar | OK |
+
+La primera ejecución falló en el paso del puntero corrupto por una carrera **de la prueba** (leía el latido
+anterior); el registro del servicio mostraba que el puntero sí se había reconstruido. Corregida la prueba,
+9/9.
 
 **Hallazgo de diseño** (para B1, CONTRATO §13.3): `vmshost` corre con la cuenta del servicio que hospeda;
 con el diseño de la prueba, todas las cuentas virtuales necesitan permiso de modificar `state\` para poder

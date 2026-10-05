@@ -10,7 +10,8 @@ concepto: [`investigacion-v2/spikes.md`](investigacion-v2/spikes.md).
   permisos por cámara, `devices.js`, contenedores y módulos en las páginas, extensión del panel central);
   `native/` en Rust con `vms-common`; infraestructura de pruebas (prueba de la hora arreglada, ruff, mypy
   estricto en `vms/core`, cobertura, orden aleatorio, detector de voseo, vectores de redacción compartidos
-  con Rust); CI en GitHub (`ci.yml` con un job por bloque y `s1-kit.yml`); S2 y S3 aprobadas; S4 en CI.
+  con Rust); CI en GitHub verde (`ci.yml` con un job por bloque y `s1-kit.yml`, run 37245939158: pytest
+  750 en Ubuntu con 83,3 % de cobertura y 748 en macOS); S2, S3 y S4 aprobadas.
 - **Pendiente del usuario:** ejecutar S1 en el PC del laboratorio (`spikes/s1-webview2/GUIA.md`).
   Decisiones con dinero o cuentas (D1, D3-D6, D12) sin cambios: la v2 avanza sin firma, sin YubiKey y sin
   Cloudflare (PLAN-V2 §9).
