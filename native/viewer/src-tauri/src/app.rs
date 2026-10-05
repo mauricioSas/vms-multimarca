@@ -682,7 +682,7 @@ fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, ev| on_menu(app, ev))
         .on_tray_icon_event(|tray, ev| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
-                open_panel(tray.app_handle(), "/");
+                off_ui(tray.app_handle(), |app| open_panel(app, "/"));
             }
         })
         .build(app)?;
@@ -700,9 +700,25 @@ fn refresh_wall_menu<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Los menús, la bandeja y la segunda instancia llegan en el hilo de la interfaz: lo que crea ventanas o hace
+/// E/S va a otro hilo (crear un WebView2 esperando en el hilo de la interfaz puede bloquearla en Windows).
+fn off_ui<R: Runtime>(app: &AppHandle<R>, f: impl FnOnce(&AppHandle<R>) + Send + 'static) {
+    let app = app.clone();
+    std::thread::spawn(move || f(&app));
+}
+
 fn on_menu<R: Runtime>(app: &AppHandle<R>, ev: MenuEvent) {
     let id = ev.id().as_ref().to_string();
-    match id.as_str() {
+    if id == "salir" {
+        log::info("Salir desde la bandeja (los servicios y la grabación siguen)");
+        app.exit(0);
+        return;
+    }
+    off_ui(app, move |app| on_menu_action(app, &id));
+}
+
+fn on_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    match id {
         "panel" => open_panel(app, "/"),
         "estado" => open_panel(app, "/status"),
         "muros:todos" => toggle_all_walls(app),
@@ -715,10 +731,6 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, ev: MenuEvent) {
         }
         "act:buscar" | "act:volver" => open_local_window(app, "actualizaciones"),
         "inicio" => toggle_autostart(app),
-        "salir" => {
-            log::info("Salir desde la bandeja (los servicios y la grabación siguen)");
-            app.exit(0);
-        }
         other => {
             if let Some(n) = other.strip_prefix("muro:").and_then(|n| n.parse().ok()) {
                 toggle_wall(app, n);
@@ -972,7 +984,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let o = parse_args(&argv);
             log::info(format!("Segunda instancia: {o:?}"));
-            apply_options(app, &o);
+            off_ui(app, move |app| apply_options(app, &o));
         }))
         .manage(v)
         .invoke_handler(handlers())

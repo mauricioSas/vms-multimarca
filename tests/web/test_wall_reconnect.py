@@ -167,7 +167,7 @@ def playing(pages: list[Any], gap: float = 0.6) -> bool:
     """Todas las celdas con cámara en vivo, con imagen y con fotogramas nuevos."""
     before = [{c["i"]: c for c in p.evaluate(CELLS_JS)} for p in pages]
     time.sleep(gap)
-    for p, prev in zip(pages, before):
+    for p, prev in zip(pages, before, strict=True):
         now = p.evaluate(CELLS_JS)
         if not now:
             return False
@@ -254,7 +254,7 @@ def test_backend_restart_keeps_walls_without_login_and_video(stack: Stack, walls
     took = stack.restart_backend()
     # durante el reinicio el vídeo no se corta: va directo del motor al muro (WebRTC)
     frames_during = [sum(c["frames"] for c in p.evaluate(CELLS_JS)) for p in pages]
-    assert all(b > a for a, b in zip(frames_before, frames_during)), (frames_before, frames_during)
+    assert all(b > a for a, b in zip(frames_before, frames_during, strict=True)), (frames_before, frames_during)
     time.sleep(6)   # la conexión SSE vuelve (retry 3 s) y el muro relee su configuración
     for p in pages:
         assert "/wall/" in p.url and "/login" not in p.url

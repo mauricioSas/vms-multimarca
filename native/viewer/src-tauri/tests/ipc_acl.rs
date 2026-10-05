@@ -13,7 +13,8 @@ use tauri::{App, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use vms_viewer::app::{handlers, COMMANDS};
 use vms_viewer::state::Viewer;
 
-const LOCAL: &str = if cfg!(windows) { "http://tauri.localhost/servidores.html" } else { "tauri://localhost/servidores.html" };
+const LOCAL: &str =
+    if cfg!(windows) { "http://tauri.localhost/servidores.html" } else { "tauri://localhost/servidores.html" };
 
 /// Orígenes que nunca deben tener IPC: el backend local, uno remoto y una página cualquiera.
 const REMOTE: &[&str] = &[
@@ -94,7 +95,8 @@ fn commands_build_rs_and_capability_agree() {
         serde_json::from_str(&std::fs::read_to_string(root.join("capabilities/local.json")).unwrap()).unwrap();
     assert!(cap.get("remote").is_none(), "la capacidad no puede abrir IPC a orígenes remotos");
     assert_eq!(cap["local"], true);
-    let perms: Vec<String> = cap["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect();
+    let perms: Vec<String> =
+        cap["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect();
     let wanted: Vec<String> = COMMANDS.iter().map(|c| format!("allow-{}", c.replace('_', "-"))).collect();
     assert_eq!(perms, wanted, "solo los comandos propios, uno a uno");
     let conf: serde_json::Value =
