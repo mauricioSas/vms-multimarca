@@ -106,17 +106,20 @@ function SuggestSiteId(const Source: String): String;
 var
   I: Integer;
   C: Char;
-  S, Accents, Plain: String;
+  S, CS, Accents, Plain: String;
+  P: Integer;
 begin
   Result := '';
   Accents := 'áéíóúüñàèìòùç';
   Plain := 'aeiouunaeiouc';
-  S := Lowercase(Trim(Source));
+  S := AnsiLowercase(Trim(Source));
   for I := 1 to Length(S) do
   begin
     C := S[I];
-    if Pos(C, Accents) > 0 then
-      C := Plain[Pos(C, Accents)];
+    CS := C;
+    P := Pos(CS, Accents);
+    if P > 0 then
+      C := Plain[P];
     if ((C >= 'a') and (C <= 'z')) or IsDigitChar(C) then
       Result := Result + C
     else if (Length(Result) > 0) and (Result[Length(Result)] <> '-') then

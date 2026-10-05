@@ -348,8 +348,8 @@ begin
     Fail(CustomMessage('StatusSettings'), FmtMessage(CustomMessage('ErrWriteFile'), [EnvPath]), 20);
   if ShowsSitePage and (gFailedStep = '') then
     if not SeedConfigJson(SiteId, SiteName, SiteCode, RecordingsDir) then
-      Fail(CustomMessage('StatusSettings'), FmtMessage(CustomMessage('ErrWriteFile'),
-        [AddBackslash(gDataDir) + 'config\config.json']), 20);
+      Fail(CustomMessage('StatusSettings'),
+        FmtMessage(CustomMessage('ErrWriteFile'), [AddBackslash(gDataDir) + 'config\config.json']), 20);
 end;
 
 procedure WriteRegistryState;

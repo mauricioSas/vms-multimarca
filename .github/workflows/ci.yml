@@ -237,7 +237,7 @@ jobs:
           python -m pip install --no-deps -r requirements-test.txt
           python -m pip install --no-deps -e .
       - name: mypy estricto en lo de B3 (distribution, tools.build)
-        run: mypy --explicit-package-bases --strict -p distribution -p tools.build
+        run: mypy --explicit-package-bases --strict --follow-imports=silent -p distribution -p tools.build
       - name: Icono e imágenes del asistente al día
         run: python -m distribution.installer.assets.make_assets --check
       - uses: actions/cache@v6

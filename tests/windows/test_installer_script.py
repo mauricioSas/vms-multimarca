@@ -95,6 +95,9 @@ def test_ispp_would_not_misread_a_line(path: Path) -> None:
     """ISPP toma como directiva toda línea que empieza por «#» (p. ej. una continuación «#13#10, ...»)."""
     for n, line in enumerate(_text(path).splitlines(), 1):
         s = line.strip()
+        # El compilador de Inno toma «[...]» al principio de línea como sección, aunque esté dentro de [Code]
+        # (pasó con una continuación «[AddBackslash(...)]»), y «;» como comentario.
+        assert not s.startswith(("[", ";")), f"{path.name}:{n}: una línea no puede empezar por «[» ni «;»: {s}"
         if s.startswith("#"):
             assert re.match(r"#(ifdef|ifndef|else|endif|include|define)\b", s), f"{path.name}:{n}: {s}"
 
