@@ -1,0 +1,46 @@
+# Dobles de prueba de B3 (PLAN-V2 §6.2): sustituyen a vmshost/vmsctl (B1) y al visor (B2) en el instalador
+# de CI mientras esos bloques no entregan. NUNCA van en un instalador de producción: tools.build solo los usa
+# con --doubles, y el instalador resultante se compila como build de prueba (TestBuild).
+[package]
+name = "vms-dobles"
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Propietario"
+publish = false
+rust-version = "1.85"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "vmsctl"
+path = "src/bin/vmsctl.rs"
+
+[[bin]]
+name = "vmshost"
+path = "src/bin/vmshost.rs"
+
+[[bin]]
+name = "VMS"
+path = "src/bin/viewer.rs"
+
+[dependencies]
+serde_json = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Services",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+[profile.release]
+codegen-units = 1
+strip = "symbols"

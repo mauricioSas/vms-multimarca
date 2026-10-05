@@ -1,0 +1,26 @@
+; Respuestas para la instalación silenciosa de una tienda (PLAN-V2 §1.4):
+;   VMSMultimarca-Setup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="C:\vms-install.log" ^
+;       /TYPE=store /LOADINF="tienda.inf" /SECRETS="secrets.json"
+; NADA SECRETO AQUÍ: la contraseña del administrador y el token de la sede van en secrets.json (/SECRETS), que el
+; instalador lee y borra. Claves documentadas en docs/INSTALACION-WINDOWS.md (sección «Instalación silenciosa»).
+[Setup]
+; --- claves estándar de Inno Setup
+SetupType=store
+Tasks=storeviewer
+; --- grabaciones
+RecordingsDir=D:\Grabaciones CCTV
+Cameras=16
+MbpsPerCamera=4
+; --- sede
+SiteName=Tienda Centro
+SiteCode=S0042
+SiteId=s0042
+CentralUrl=https://central.empresa.local:8700
+; --- red (1 = sí, 0 = no)
+Https=1
+DomainProfile=0
+HttpPort=8600
+HttpsPort=8643
+SetPrivateNetwork=0
+; --- actualizaciones (opcional; vacío = sin actualizaciones automáticas)
+UpdateSource=

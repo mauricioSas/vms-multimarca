@@ -1,0 +1,53 @@
+# Build del instalador (PLAN-V2 §1.8): PR a main, etiquetas v* y a mano. Dueño: B3.
+# Compila desde un commit limpio, comprueba que el payload es reproducible, genera el SBOM y deja los artefactos
+# SIN firma de publicación (la firma Authenticode y la de TUF se hacen en local: PLAN-V2 §1.6). En etiquetas,
+# además, la atestación de procedencia de GitHub (si el plan del repositorio la admite).
+name: Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión X.Y.Z (vacío = 2.0.0-ci.<número>)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    uses: ./.github/workflows/windows-installer.yml
+    with:
+      # En una etiqueta «v2.0.0», tools.build quita la «v».
+      version: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version || '' }}
+      # Mientras B1 y B2 no entreguen, con dobles. En la integración: false (payload de producto).
+      doubles: true
+      e2e: false
+      with_v1: false
+
+  provenance:
+    name: Atestación de procedencia (solo etiquetas)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: instalador
+          path: instalador
+      - name: Atestación (en repositorios privados exige un plan que la incluya; si no, se anota y sigue)
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            instalador/*.exe
+            instalador/sbom-*.cdx.json
