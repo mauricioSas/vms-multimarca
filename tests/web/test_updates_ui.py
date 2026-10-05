@@ -45,4 +45,5 @@ def test_operator_sees_update_state_and_no_actions(fake_stub: Any, make_context:
     page = make_context(server.base_url).new_page()
     login(page, user=OPERATOR, next_path="/status")
     page.wait_for_selector("#updates-root:not([hidden]) .pill.ok")
-    assert page.locator("#updates-root button").count() == 0          # aquí no se actualiza ni se revierte
+    # aquí no se actualiza ni se revierte (el «?» de ayuda de B6 no es una acción)
+    assert page.locator("#updates-root button:not(.help-btn)").count() == 0
