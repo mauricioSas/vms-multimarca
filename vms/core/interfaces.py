@@ -44,6 +44,12 @@ class ChannelInfo(BaseModel):
     ip_address: str | None = None       # IP de la cámara detrás del NVR, si se conoce
     main_path: str | None = None        # solo ONVIF/genérico: ruta RTSP descubierta
     sub_path: str | None = None
+    # v2 (B5, aditivo): datos que la API da y que sirven para avisar en el alta (PLAN-V2 §3.2 puntos 7 y 10)
+    main_bitrate_kbps: int | None = None   # tasa máxima configurada (VBR: tope; CBR: fija)
+    sub_bitrate_kbps: int | None = None
+    gop_seconds: float | None = None       # intervalo entre fotogramas clave del principal, si se puede calcular
+    smart_codec: bool | None = None        # H.264+/H.265+/Smart Codec activado (GOP largo y variable)
+    analog: bool | None = None             # entrada analógica de un DVR/XVR (None = no se sabe)
 
 
 class DiscoveredDevice(BaseModel):
@@ -56,6 +62,11 @@ class DiscoveredDevice(BaseModel):
     xaddrs: list[str] = Field(default_factory=list)
     scopes: list[str] = Field(default_factory=list)
     already_added: bool = False         # lo rellena la API comparando con la configuración
+    # v2 (B5, aditivo): identidad y origen del hallazgo (WSD, SADP, DHIP), para seguir un cambio de IP
+    serial: str = ""
+    firmware: str = ""
+    vendor_score: float = 0.0           # 0..1 de best_match para vendor_guess
+    sources: list[Literal["wsd", "sadp", "dhip"]] = Field(default_factory=list)
 
 
 class DeviceTestResult(BaseModel):
@@ -66,6 +77,17 @@ class DeviceTestResult(BaseModel):
     info: DeviceInfo | None = None
     channels: list[ChannelInfo] = Field(default_factory=list)
     message: str = ""                   # explicación en español para el usuario
+    # v2 (B5, aditivo; PLAN-V2 §3.2): el alta los muestra además de `message`
+    locked: bool = False                # el equipo dice que el usuario está bloqueado (≠ contraseña mala)
+    lockout_minutes: int | None = None  # minutos que hay que esperar si se sabe
+    warnings: list[str] = Field(default_factory=list)   # avisos en español (códec, GOP largo, Basic…)
+    bandwidth_kbps: int | None = None   # suma de tasas leídas por API (entrada estimada al importar todo)
+    sdp_ms: float | None = None         # lo que tardó el DESCRIBE con el SDP
+    first_frame_ms: float | None = None  # lo que tardó el primer fotograma clave (None = no se midió)
+    gop_slow: bool = False              # SDP o primer fotograma > 4 s (H.264+/H.265+): el muro espera 12 s
+    working_path: str | None = None     # ruta RTSP que respondió (si no es la del preset, hay que guardarla)
+    session_limit: bool = False         # el equipo rechazó la sesión por límite (453/503)
+    firmware_changed: str | None = None  # «A → B» si el firmware cambió y RTSP/ONVIF dejó de responder
 
 
 class DeviceTime(BaseModel):
@@ -205,6 +227,10 @@ class DriverSpec:
     notes_es: tuple[str, ...] = ()                # avisos para el instalador («Desactiva Smart Coding…»)
     setup_hints_es: tuple[str, ...] = ()          # pasos previos («Activa RTSP en la app Ezviz…»)
     extra: dict[str, str] = field(default_factory=dict)
+    # v2 (B5, aditivo): rutas alternativas que se prueban SOLO si la del preset da 404 con la contraseña ya
+    # aceptada (nunca tras un 401). Ezviz `/h264/ch1/main/av_stream`, Milesight `//main`…
+    path_variants: Callable[[int, DeviceKind], tuple[StreamPreset, ...]] | None = None
+    double_slash: bool = False                    # el driver declara rutas con «//» a propósito
 
     def public(self) -> DriverPublic:
         return DriverPublic(
@@ -214,7 +240,28 @@ class DriverSpec:
             lockout=None if self.lockout is None else {"attempts": self.lockout.attempts,
                                                        "minutes": self.lockout.minutes},
             manual_path=self.presets is None and self.client is None,
-            notes_es=list(self.notes_es), setup_hints_es=list(self.setup_hints_es))
+            notes_es=list(self.notes_es), setup_hints_es=list(self.setup_hints_es),
+            preset_examples=self._examples())
+
+    def _examples(self) -> list[PresetExample]:
+        """Rutas de los canales 1 y 2 para que la interfaz las enseñe sin repetir los presets en JS."""
+        if self.presets is None:
+            return []
+        kind: DeviceKind = "camera" if "camera" in self.kinds else self.kinds[0]
+        out: list[PresetExample] = []
+        for ch in (1, 2):
+            p = self.presets(ch, kind)
+            out.append(PresetExample(channel=ch, main=p.main, sub=p.sub, rtsp_port=p.rtsp_port,
+                                     scheme=p.scheme))
+        return out
+
+
+class PresetExample(BaseModel):
+    channel: int
+    main: str
+    sub: str | None = None
+    rtsp_port: int = 554
+    scheme: Literal["rtsp", "rtsps"] = "rtsp"
 
 
 class DriverPublic(BaseModel):
@@ -232,6 +279,7 @@ class DriverPublic(BaseModel):
     manual_path: bool = False
     notes_es: list[str] = Field(default_factory=list)
     setup_hints_es: list[str] = Field(default_factory=list)
+    preset_examples: list[PresetExample] = Field(default_factory=list)   # v2 (B5): canales 1 y 2
 
 
 # =========================================================================== motor

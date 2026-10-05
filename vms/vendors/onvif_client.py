@@ -1,32 +1,61 @@
-"""ONVIF genérico con onvif-zeep-async (MIT): información, perfiles, URIs RTSP y snapshot.
+"""ONVIF genérico con un cliente SOAP propio sobre httpx (sin WSDL): información, perfiles, URIs y hora.
 
-Canales: cada «video source» del equipo es un canal (una cámara = 1; un NVR ONVIF = N).
-Dentro de cada canal, el perfil de mayor resolución es el principal y el siguiente, el
-subflujo. Las rutas RTSP descubiertas (parte tras host:puerto, con su query) se devuelven en
-ChannelInfo.main_path/sub_path para guardarlas en la cámara (las URIs nunca llevan credenciales).
+Por qué propio: necesitamos **Media2** (Profile T, `tr2:GetProfiles`/`tr2:GetStreamUri`), que describe
+bien H.265 y que la biblioteca anterior no traía, poder reproducir respuestas grabadas con un transporte
+httpx (fixtures) y controlar exactamente cuántas peticiones llevan credenciales.
+
+- **Media2 primero** (`GetServices` dice si el equipo lo tiene); si no, Media1 (PLAN-V2 §3.2 punto 9).
+- **Desfase de reloj:** `GetSystemDateAndTime` (sin autenticar) da la hora del equipo; el `Created` del
+  `UsernameToken` se ajusta a esa hora, así un equipo con el reloj ±2 h no rechaza la contraseña buena.
+- **Un solo intento con credenciales:** si el equipo responde `NotAuthorized`, el cliente queda fundido y
+  no vuelve a mandar la contraseña.
+- Canales: cada «video source» es un canal (cámara = 1; NVR ONVIF = N). En cada canal, el perfil de más
+  resolución es el principal y el siguiente el subflujo. Las rutas RTSP (parte tras host:puerto, con su
+  query) van en `ChannelInfo.main_path/sub_path`; las URI nunca llevan credenciales.
 """
 from __future__ import annotations
 
 import asyncio
-import re
+import base64
+import hashlib
 import logging
-from typing import Any, Literal, TypeVar
-from urllib.parse import urlsplit
+import os
+import re
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
+from xml.sax.saxutils import escape
 
+import httpx
+
+from vms.core import rtsp
 from vms.core.errors import (DeviceAuthFailed, DeviceError, DeviceProtocolError, DeviceUnreachable,
                              DeviceUnsupported)
-from vms.core.interfaces import ChannelInfo, DeviceInfo
+from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings, DeviceTime
 from vms.core.models import DeviceBase, Vendor
 
-from ._http import VendorHttp, device_label
+from ._http import USER_AGENT, VendorAuth, VendorHttp, device_label
+from .clock import Stopwatch
+from .codec import normalize_codec
 
 log = logging.getLogger("vms.vendors.onvif")
 
-T = TypeVar("T")
+NS_DEVICE = "http://www.onvif.org/ver10/device/wsdl"
+NS_MEDIA = "http://www.onvif.org/ver10/media/wsdl"
+NS_MEDIA2 = "http://www.onvif.org/ver20/media/wsdl"
+NS_SCHEMA = "http://www.onvif.org/ver10/schema"
+_WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+_WSU = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+_PW_DIGEST = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest"
+_B64 = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"
 
 _AUTH_MARKERS = ("notauthorized", "not authorized", "unauthorized", "authority", "authentication")
 # «401» solo como código suelto: no dentro de un puerto o una IP (p. ej. «10.0.0.2:4010»).
 _AUTH_401_RE = re.compile(r"(?<![\d.:])401(?!\d)")
+
+ONVIF_OFF_HINT = ("Comprueba que ONVIF esté activado en el equipo (en Hikvision viene desactivado desde el "
+                  "firmware 5.5 y usa usuarios propios) y el puerto ONVIF")
 
 
 def rtsp_path_of(uri: str) -> str:
@@ -37,6 +66,7 @@ def rtsp_path_of(uri: str) -> str:
 
 
 def _translate(exc: BaseException, label: str) -> DeviceError:
+    """Traduce cualquier excepción de una llamada ONVIF a un error de dominio (lo usa también el motor)."""
     if isinstance(exc, DeviceError):
         return exc
     text = f"{type(exc).__name__} {exc}".lower()
@@ -50,97 +80,277 @@ def _translate(exc: BaseException, label: str) -> DeviceError:
     return DeviceProtocolError(f"Error ONVIF en {label}: {type(exc).__name__}")
 
 
+def _strip(root: ET.Element) -> ET.Element:
+    for el in root.iter():
+        if isinstance(el.tag, str) and "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
+    return root
+
+
+def _t(el: ET.Element | None, path: str) -> str:
+    if el is None:
+        return ""
+    v = el.findtext(path)
+    return v.strip() if v else ""
+
+
+def password_digest(nonce: bytes, created: str, password: str) -> str:
+    return base64.b64encode(hashlib.sha1(nonce + created.encode("utf-8") + password.encode("utf-8")).digest()).decode()
+
+
+class _Profile:
+    def __init__(self, el: ET.Element) -> None:
+        self.token = el.get("token", "")
+        self.name = _t(el, "Name")
+        enc = el.find("VideoEncoderConfiguration")
+        if enc is None:
+            enc = el.find("Configurations/VideoEncoder")
+        self.has_video = enc is not None
+        src = el.find("VideoSourceConfiguration")
+        if src is None:
+            src = el.find("Configurations/VideoSource")
+        self.source = _t(src, "SourceToken") or "default"
+        self.codec = normalize_codec(_t(enc, "Encoding")) if enc is not None else None
+        w, h = _t(enc, "Resolution/Width"), _t(enc, "Resolution/Height")
+        self.width, self.height = int(w) if w.isdigit() else 0, int(h) if h.isdigit() else 0
+        br = _t(enc, "RateControl/BitrateLimit")
+        self.kbps = int(br) if br.isdigit() else None
+        fps = _t(enc, "RateControl/FrameRateLimit")
+        # Media2: GovLength es atributo de VideoEncoder; Media1: elemento dentro de H264
+        gov = ((enc.get("GovLength") or "") if enc is not None else "") or _t(enc, "GovLength") \
+            or _t(enc, "H264/GovLength") or _t(enc, "H265/GovLength")
+        try:
+            self.gop_s: float | None = round(int(gov) / float(fps), 2) if gov and fps and float(fps) > 0 else None
+        except ValueError:
+            self.gop_s = None
+
+    @property
+    def resolution(self) -> str | None:
+        return f"{self.width}x{self.height}" if self.width and self.height else None
+
+
 class OnvifClient:
     vendor: Vendor = "onvif"
 
-    def __init__(self, device: DeviceBase, password: str, *, timeout: float = 5.0) -> None:
+    def __init__(self, device: DeviceBase, password: str, *, timeout: float = 5.0,
+                 transport: httpx.AsyncBaseTransport | None = None, port: int | None = None) -> None:
         self.device = device
-        self.password = password
+        self._password = password
         self.timeout = timeout
-        self.port = device.onvif_port or device.http_port
+        self.port = port or device.onvif_port or device.http_port
         self.label = device_label(device)
-        self._cam: Any = None
-        self._media: Any = None
-        self._profiles: list[Any] | None = None
+        self._transport = transport
+        self._auth = VendorAuth(device.username, password, allow_basic=device.allow_basic) if device.username else None
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)), verify=False,
+                                        follow_redirects=False, transport=transport, auth=self._auth,
+                                        headers={"User-Agent": USER_AGENT})
+        scheme = "https" if device.https else "http"
+        self.base = f"{scheme}://{rtsp.format_host(device.host)}:{int(self.port)}"
+        self.device_xaddr = f"{self.base}/onvif/device_service"
+        self.media_xaddr: str | None = None
+        self.media2_xaddr: str | None = None
+        self.clock_offset = timedelta(0)
+        self.ws_credentialed = 0           # peticiones con UsernameToken (para las pruebas)
+        self._failure: DeviceError | None = None
+        self._services_done = False
+        self._profiles: list[_Profile] | None = None
         self._info: DeviceInfo | None = None
+        self.device_utc: datetime | None = None
+        self.time_mode: Literal["ntp", "manual", "unknown"] = "unknown"
+        self._measured = datetime.now(timezone.utc)
+        self._rtt = 0.0
+        if device.vendor and device.vendor != "onvif":
+            self.vendor = device.vendor     # perfiles de marca que usan ONVIF para leer el equipo
 
-    async def _call(self, coro: Any) -> Any:
+    @property
+    def credentialed_requests(self) -> int:
+        return self.ws_credentialed + (self._auth.credentialed if self._auth else 0)
+
+    @property
+    def uses_media2(self) -> bool:
+        return self.media2_xaddr is not None
+
+    # ------------------------------------------------------------------ SOAP
+    def _fix_xaddr(self, url: str) -> str:
+        """Equipos tras NAT o con varias IP anuncian XAddrs internas: se usa la dirección configurada."""
+        parts = urlsplit(url)
+        if not parts.scheme or (parts.hostname or "").lower() == self.device.host.strip("[]").lower():
+            return url if parts.scheme else self.base + url
+        base = urlsplit(self.base)
+        return urlunsplit((base.scheme, base.netloc, parts.path or "/", parts.query, ""))
+
+    def _security_header(self) -> str:
+        if not self.device.username:
+            return ""
+        nonce = os.urandom(16)
+        created = (datetime.now(timezone.utc) + self.clock_offset).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        self.ws_credentialed += 1
+        return (f'<s:Header><wsse:Security xmlns:wsse="{_WSSE}" xmlns:wsu="{_WSU}" s:mustUnderstand="1">'
+                f"<wsse:UsernameToken><wsse:Username>{escape(self.device.username)}</wsse:Username>"
+                f'<wsse:Password Type="{_PW_DIGEST}">{password_digest(nonce, created, self._password)}</wsse:Password>'
+                f'<wsse:Nonce EncodingType="{_B64}">{base64.b64encode(nonce).decode()}</wsse:Nonce>'
+                f"<wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security></s:Header>")
+
+    async def _soap(self, url: str, ns: str, op: str, body: str = "", *, auth: bool = True) -> ET.Element:
+        if self._failure is not None:
+            raise self._failure
+        header = self._security_header() if auth else ""
+        envelope = (f'<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                    f'xmlns:tt="{NS_SCHEMA}" xmlns:m="{ns}">{header}<s:Body><m:{op}>{body}</m:{op}></s:Body></s:Envelope>')
         try:
-            return await asyncio.wait_for(coro, timeout=self.timeout)
-        except Exception as exc:  # noqa: BLE001 - se traduce a error de dominio
-            raise _translate(exc, self.label) from exc
+            resp = await self.client.post(url, content=envelope.encode("utf-8"), headers={
+                "Content-Type": f'application/soap+xml; charset=utf-8; action="{ns}/{op}"'})
+        except httpx.TimeoutException as exc:
+            raise DeviceUnreachable(f"El equipo {self.label} no responde por ONVIF (tiempo agotado)") from exc
+        except httpx.ConnectError as exc:
+            raise DeviceUnreachable(f"No se puede conectar por ONVIF con {self.label}. {ONVIF_OFF_HINT}") from exc
+        except httpx.HTTPError as exc:
+            raise DeviceUnreachable(f"Error de red ONVIF con {self.label}: {type(exc).__name__}") from exc
+        text = resp.text
+        root: ET.Element | None = None
+        try:
+            root = _strip(ET.fromstring(resp.content)) if resp.content else None
+        except ET.ParseError:
+            root = None
+        fault = root.find(".//Fault") if root is not None else None
+        if resp.status_code == 401 or (fault is not None and "notauthorized" in ET.tostring(fault, encoding="unicode").lower()):
+            err = DeviceAuthFailed(f"Usuario o contraseña ONVIF incorrectos en {self.label}. En algunas marcas el "
+                                   "usuario ONVIF es distinto del de la web (Hikvision): créalo en el equipo.")
+            if auth or resp.status_code == 401:
+                self._failure = err
+            raise err
+        if fault is not None or resp.status_code >= 400:
+            reason = _t(fault, ".//Text") if fault is not None else ""
+            sub = _t(fault, ".//Subcode/Value") if fault is not None else ""
+            if resp.status_code in (404, 405) and root is None:
+                raise DeviceUnsupported(f"{self.label} no responde a ONVIF en {urlsplit(url).path}. {ONVIF_OFF_HINT}")
+            raise DeviceProtocolError(f"Error ONVIF en {self.label} ({op}: {sub or resp.status_code} {reason[:80]})".strip(),
+                                      details={"status": resp.status_code, "fault": sub})
+        if root is None:
+            raise DeviceProtocolError(f"{self.label} respondió a {op} con algo que no es SOAP ({text[:40]!r})")
+        body_el = root.find("Body")
+        if body_el is None or not len(body_el):
+            raise DeviceProtocolError(f"{self.label} respondió a {op} sin contenido")
+        return body_el[0]
 
-    async def _camera(self) -> Any:
-        if self._cam is None:
-            try:
-                from onvif import ONVIFCamera
-            except ImportError as exc:  # pragma: no cover - dependencia del extra [vms]
-                raise DeviceUnsupported("Falta el módulo ONVIF (onvif-zeep-async)") from exc
-            cam = ONVIFCamera(self.device.host, self.port, self.device.username or None, self.password or None,
-                              adjust_time=True)
-            self._cam = cam
-            await self._call(cam.update_xaddrs())
-        return self._cam
+    # ------------------------------------------------------------------ hora y servicios
+    async def _sync_clock(self) -> None:
+        if self.device_utc is not None:
+            return
+        try:
+            with Stopwatch() as sw:
+                resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetSystemDateAndTime", auth=False)
+        except DeviceAuthFailed:
+            self._failure = None   # algunos equipos piden autenticación hasta para la hora: no es un intento
+            return
+        except DeviceError as exc:
+            if isinstance(exc, DeviceUnreachable):
+                raise
+            log.debug("GetSystemDateAndTime no disponible en %s: %s", self.label, exc)
+            return
+        sdt = resp.find("SystemDateAndTime")
+        utc = sdt.find("UTCDateTime") if sdt is not None else None
+        if utc is None:
+            return
+        try:
+            dev = datetime(int(_t(utc, "Date/Year")), int(_t(utc, "Date/Month")), int(_t(utc, "Date/Day")),
+                           int(_t(utc, "Time/Hour")), int(_t(utc, "Time/Minute")), int(_t(utc, "Time/Second")),
+                           tzinfo=timezone.utc)
+        except ValueError:
+            return
+        self.device_utc = dev
+        self._measured = sw.midpoint
+        self._rtt = sw.round_trip_ms
+        self.clock_offset = dev - sw.midpoint
+        if abs(self.clock_offset) > timedelta(seconds=5):
+            log.info("%s tiene el reloj desfasado %.0f s; se ajusta la autenticación ONVIF", self.label,
+                     self.clock_offset.total_seconds())
+        dtype = _t(sdt, "DateTimeType").lower()
+        self.time_mode = "ntp" if dtype == "ntp" else "manual" if dtype == "manual" else "unknown"
 
-    async def _media_service(self) -> Any:
-        if self._media is None:
-            cam = await self._camera()
-            self._media = await self._call(cam.create_media_service())
-        return self._media
+    async def _services(self) -> None:
+        if self._services_done:
+            return
+        await self._sync_clock()
+        try:
+            resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetServices",
+                                    "<m:IncludeCapability>false</m:IncludeCapability>")
+            for svc in resp.iter("Service"):
+                ns, xaddr = _t(svc, "Namespace"), _t(svc, "XAddr")
+                if ns == NS_MEDIA2:
+                    self.media2_xaddr = self._fix_xaddr(xaddr)
+                elif ns == NS_MEDIA:
+                    self.media_xaddr = self._fix_xaddr(xaddr)
+        except DeviceAuthFailed:
+            raise
+        except DeviceError as exc:
+            if isinstance(exc, DeviceUnreachable):
+                raise
+            log.debug("GetServices no disponible en %s (%s); se usa GetCapabilities", self.label, exc)
+            resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetCapabilities", "<m:Category>All</m:Category>")
+            media = resp.find(".//Media/XAddr")
+            if media is not None and media.text:
+                self.media_xaddr = self._fix_xaddr(media.text.strip())
+        if self.media_xaddr is None and self.media2_xaddr is None:
+            self.media_xaddr = f"{self.base}/onvif/media_service"
+        self._services_done = True
 
+    # ------------------------------------------------------------------ DeviceClient
     async def probe(self) -> DeviceInfo:
-        cam = await self._camera()
-        dm = await self._call(cam.create_devicemgmt_service())
-        info_raw = await self._call(dm.GetDeviceInformation())
-        manufacturer = str(getattr(info_raw, "Manufacturer", "") or "")
-        sources = await self._grouped_profiles()
+        await self._sync_clock()
+        resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
+        await self._services()
+        manufacturer = _t(resp, "Manufacturer")
+        groups = await self._grouped_profiles()
+        mac = ""
+        try:
+            ni = await self._soap(self.device_xaddr, NS_DEVICE, "GetNetworkInterfaces")
+            mac = _t(ni, ".//Info/HwAddress").lower()
+        except DeviceAuthFailed:
+            raise
+        except DeviceError as exc:
+            log.debug("GetNetworkInterfaces no disponible en %s: %s", self.label, exc)
         info = DeviceInfo(
-            vendor="onvif", kind="nvr" if len(sources) > 1 else "camera",
-            model=str(getattr(info_raw, "Model", "") or ""), serial=str(getattr(info_raw, "SerialNumber", "") or ""),
-            firmware=str(getattr(info_raw, "FirmwareVersion", "") or ""), name=manufacturer,
-            channel_count=max(len(sources), 1))
+            vendor=self.vendor, kind="nvr" if len(groups) > 1 else "camera",
+            model=_t(resp, "Model"), serial=_t(resp, "SerialNumber"), firmware=_t(resp, "FirmwareVersion"),
+            name=manufacturer, mac=mac, channel_count=max(len(groups), 1))
         self._info = info
         return info
 
-    async def _get_profiles(self) -> list[Any]:
+    async def _get_profiles(self) -> list[_Profile]:
         if self._profiles is None:
-            media = await self._media_service()
-            self._profiles = list(await self._call(media.GetProfiles()) or [])
+            await self._services()
+            if self.media2_xaddr:
+                resp = await self._soap(self.media2_xaddr, NS_MEDIA2, "GetProfiles", "<m:Type>All</m:Type>")
+            else:
+                assert self.media_xaddr is not None
+                resp = await self._soap(self.media_xaddr, NS_MEDIA, "GetProfiles")
+            self._profiles = [_Profile(el) for el in resp if el.tag == "Profiles"]
         return self._profiles
 
-    async def _grouped_profiles(self) -> list[list[Any]]:
+    async def _grouped_profiles(self) -> list[list[_Profile]]:
         """Perfiles agrupados por video source, cada grupo ordenado de mayor a menor resolución."""
-        groups: dict[str, list[Any]] = {}
+        groups: dict[str, list[_Profile]] = {}
         for p in await self._get_profiles():
-            vsc = getattr(p, "VideoSourceConfiguration", None)
-            if getattr(p, "VideoEncoderConfiguration", None) is None:
-                continue  # perfiles solo de audio/metadatos
-            key = str(getattr(vsc, "SourceToken", "") or "default") if vsc is not None else "default"
-            groups.setdefault(key, []).append(p)
-
-        def pixels(p: Any) -> int:
-            res = getattr(getattr(p, "VideoEncoderConfiguration", None), "Resolution", None)
-            return int(getattr(res, "Width", 0) or 0) * int(getattr(res, "Height", 0) or 0)
-
-        return [sorted(g, key=pixels, reverse=True) for g in groups.values()]
+            if p.has_video:
+                groups.setdefault(p.source, []).append(p)
+        return [sorted(g, key=lambda p: p.width * p.height, reverse=True) for g in groups.values()]
 
     async def _stream_uri(self, token: str) -> str:
-        media = await self._media_service()
-        req = {"StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}, "ProfileToken": token}
-        res = await self._call(media.GetStreamUri(req))
-        uri = str(getattr(res, "Uri", "") or "")
+        if self.media2_xaddr:
+            resp = await self._soap(self.media2_xaddr, NS_MEDIA2, "GetStreamUri",
+                                    f"<m:Protocol>RTSP</m:Protocol><m:ProfileToken>{escape(token)}</m:ProfileToken>")
+            uri = _t(resp, "Uri")
+        else:
+            assert self.media_xaddr is not None
+            resp = await self._soap(
+                self.media_xaddr, NS_MEDIA, "GetStreamUri",
+                "<m:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol>"
+                f"</tt:Transport></m:StreamSetup><m:ProfileToken>{escape(token)}</m:ProfileToken>")
+            uri = _t(resp, "MediaUri/Uri")
         if not uri.lower().startswith("rtsp"):
             raise DeviceProtocolError(f"{self.label} devolvió una URI de vídeo no RTSP")
         return uri
-
-    @staticmethod
-    def _describe(p: Any) -> tuple[str | None, str | None]:
-        vec = getattr(p, "VideoEncoderConfiguration", None)
-        enc = str(getattr(vec, "Encoding", "") or "").upper()
-        codec = {"H264": "H.264", "H265": "H.265", "JPEG": "MJPEG"}.get(enc, enc or None)
-        res = getattr(vec, "Resolution", None)
-        w, h = getattr(res, "Width", None), getattr(res, "Height", None)
-        return codec, (f"{w}x{h}" if w and h else None)
 
     async def list_channels(self) -> list[ChannelInfo]:
         groups = await self._grouped_profiles()
@@ -156,13 +366,12 @@ class OnvifClient:
             if main_port and main_port != self.device.rtsp_port:
                 log.warning("%s anuncia RTSP en el puerto %s pero el equipo está configurado con %s",
                             self.label, main_port, self.device.rtsp_port)
-            main_codec, main_res = self._describe(main_p)
-            sub_codec, sub_res = self._describe(sub_p) if sub_p is not None else (None, None)
-            name = str(getattr(main_p, "Name", "") or "")
             out.append(ChannelInfo(
-                channel=i, name=(f"Canal {i}" if len(groups) > 1 or not name else name), online=True,
-                has_sub=sub_p is not None, main_codec=main_codec, sub_codec=sub_codec,
-                main_resolution=main_res, sub_resolution=sub_res,
+                channel=i, name=(f"Canal {i}" if len(groups) > 1 or not main_p.name else main_p.name), online=True,
+                has_sub=sub_p is not None, main_codec=main_p.codec, sub_codec=sub_p.codec if sub_p else None,
+                main_resolution=main_p.resolution, sub_resolution=sub_p.resolution if sub_p else None,
+                main_bitrate_kbps=main_p.kbps, sub_bitrate_kbps=sub_p.kbps if sub_p else None,
+                gop_seconds=main_p.gop_s,
                 main_path=rtsp_path_of(main_uri), sub_path=rtsp_path_of(sub_uri) if sub_uri else None))
         return out
 
@@ -172,30 +381,69 @@ class OnvifClient:
             raise DeviceProtocolError(f"El canal {channel} no existe en {self.label}")
         group = groups[channel - 1]
         profile = group[1] if stream == "sub" and len(group) > 1 else group[0]
-        media = await self._media_service()
-        res = await self._call(media.GetSnapshotUri({"ProfileToken": profile.token}))
-        uri = str(getattr(res, "Uri", "") or "")
+        if self.media2_xaddr:
+            resp = await self._soap(self.media2_xaddr, NS_MEDIA2, "GetSnapshotUri",
+                                    f"<m:ProfileToken>{escape(profile.token)}</m:ProfileToken>")
+            uri = _t(resp, "Uri")
+        else:
+            assert self.media_xaddr is not None
+            resp = await self._soap(self.media_xaddr, NS_MEDIA, "GetSnapshotUri",
+                                    f"<m:ProfileToken>{escape(profile.token)}</m:ProfileToken>")
+            uri = _t(resp, "MediaUri/Uri")
         if not uri.lower().startswith("http"):
             raise DeviceUnsupported(f"{self.label} no ofrece snapshot por ONVIF")
-        parts = urlsplit(uri)
+        parts = urlsplit(self._fix_xaddr(uri))
         path = parts.path + (f"?{parts.query}" if parts.query else "")
         snap_dev = self.device.model_copy(update={"host": parts.hostname or self.device.host,
                                                   "https": parts.scheme == "https"})
-        http = VendorHttp(snap_dev, self.password, timeout=self.timeout,
+        http = VendorHttp(snap_dev, self._password, timeout=self.timeout, transport=self._transport,
                           port=parts.port or (443 if parts.scheme == "https" else 80))
         try:
-            resp = await http.get(path)
+            resp_http = await http.get(path)
         finally:
             await http.aclose()
-        if not resp.content.startswith(b"\xff\xd8"):
+        if not resp_http.content.startswith(b"\xff\xd8"):
             raise DeviceProtocolError(f"El equipo {self.label} no devolvió una imagen JPEG")
-        return resp.content
+        return resp_http.content
+
+    # ------------------------------------------------------------------ TIME_READ
+    async def device_time(self) -> DeviceTime:
+        """`GetSystemDateAndTime` sin autenticar (CONTRATO §18.3)."""
+        self.device_utc = None
+        await self._sync_clock()
+        if self.device_utc is None:
+            raise DeviceProtocolError(f"{self.label} no devolvió su hora por ONVIF")
+        ntp = ""
+        if self.time_mode == "ntp" and self.device.username and self._failure is None:
+            try:
+                r = await self._soap(self.device_xaddr, NS_DEVICE, "GetNTP")
+                ntp = _t(r, ".//DNSname") or _t(r, ".//IPv4Address")
+            except DeviceAuthFailed:
+                raise
+            except DeviceError as exc:
+                log.debug("GetNTP no disponible en %s: %s", self.label, exc)
+        return DeviceTime(device_time=self.device_utc, measured_at=self._measured,
+                          round_trip_ms=round(self._rtt, 1), time_mode=self.time_mode, ntp_server=ntp, source="onvif")
+
+    # ------------------------------------------------------------------ SECURITY_READ
+    async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:
+        """ONVIF solo permite saber si responde sin credenciales (`anonymous_onvif`)."""
+        anon = OnvifClient(self.device.model_copy(update={"username": ""}), "", timeout=self.timeout,
+                           transport=self._transport, port=self.port)
+        out = DeviceSecuritySettings()
+        try:
+            await anon._soap(anon.device_xaddr, NS_DEVICE, "GetDeviceInformation", auth=False)
+            out.anonymous_onvif = True
+        except DeviceAuthFailed:
+            out.anonymous_onvif = False
+        except DeviceError as exc:
+            log.debug("Comprobación de ONVIF anónimo en %s: %s", self.label, exc)
+        finally:
+            await anon.aclose()
+        return out
 
     async def aclose(self) -> None:
-        if self._cam is not None:
-            try:
-                await self._cam.close()
-            except Exception:  # noqa: BLE001 - cerrar nunca debe romper la petición
-                log.debug("Error al cerrar la sesión ONVIF de %s", self.label, exc_info=True)
-            self._cam = None
+        await self.client.aclose()
 
+
+__all__ = ["OnvifClient", "rtsp_path_of", "password_digest", "NS_DEVICE", "NS_MEDIA", "NS_MEDIA2"]

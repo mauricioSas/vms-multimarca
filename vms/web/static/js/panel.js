@@ -2,11 +2,9 @@
 import { ApiError, get, post, put, patch, del, enc, subscribeEvents } from "./api.js";
 import {
   $, $$, esc, mountShell, toast, toastError, busy, confirmDialog, showFieldErrors, clearFieldErrors,
-  errorText, VENDOR_LABELS,
+  errorText,
 } from "./ui.js";
-import { bindDevices, openDeviceDialog, presetPaths, renderDevices, setFormError } from "./devices.js";
-
-export { presetPaths };
+import { bindDevices, openDeviceDialog, presetFor, renderDevices, setFormError, vendorLabel } from "./devices.js";
 
 
 const state = {
@@ -86,7 +84,7 @@ function renderCameras() {
     <tr data-camera="${esc(c.id)}">
       <td><strong>${esc(c.name)}</strong>
         ${c.live && c.live.codec_warning ? `<div class="small" style="color:var(--warn)">${esc(c.live.codec_warning)}</div>` : ""}</td>
-      <td>${esc(c.device_name || "")} <span class="vendor-tag ${esc(c.vendor || "")}">${esc(VENDOR_LABELS[c.vendor] || c.vendor || "")}</span></td>
+      <td>${esc(c.device_name || "")} <span class="vendor-tag ${esc(c.vendor || "")}">${esc(vendorLabel(c.vendor))}</span></td>
       <td class="mono">${Number(c.channel)}</td>
       <td>${camStatus(c)}</td>
       <td>${recStatus(c)}</td>
@@ -123,11 +121,15 @@ $("#cameras-table").addEventListener("click", async (ev) => {
 const cameraDialog = $("#camera-dialog");
 const cameraForm = $("#camera-form");
 
-function updateCameraPlaceholders() {
+let placeholderSeq = 0;
+async function updateCameraPlaceholders() {
+  const seq = ++placeholderSeq;
   const dev = state.devices.find((d) => d.id === cameraForm.device_id.value);
-  const preset = dev ? presetPaths(dev.vendor, cameraForm.channel.value) : null;
+  // rutas del registro de drivers del servidor (no se repiten presets en JS)
+  const preset = dev ? await presetFor(dev.vendor, cameraForm.channel.value, dev.kind) : null;
+  if (seq !== placeholderSeq) return;   // llegó una respuesta más nueva
   cameraForm.main_path.placeholder = preset ? preset[0] : "/stream1";
-  cameraForm.sub_path.placeholder = preset ? preset[1] : "/stream2";
+  cameraForm.sub_path.placeholder = preset && preset[1] ? preset[1] : "/stream2";
 }
 
 function openCameraDialog(cam = null) {
@@ -137,7 +139,7 @@ function openCameraDialog(cam = null) {
   setFormError($("#camera-form-error"), "");
   $("#camera-dialog-title").textContent = cam ? `Editar «${cam.name}»` : "Añadir cámara manual";
   const sel = cameraForm.device_id;
-  sel.innerHTML = state.devices.map((d) => `<option value="${esc(d.id)}">${esc(d.name)} (${esc(VENDOR_LABELS[d.vendor] || d.vendor)})</option>`).join("");
+  sel.innerHTML = state.devices.map((d) => `<option value="${esc(d.id)}">${esc(d.name)} (${esc(vendorLabel(d.vendor))})</option>`).join("");
   sel.disabled = !!cam;
   if (!state.devices.length) {
     toast("Primero añade un equipo", "bad");

@@ -46,8 +46,9 @@ async def test_onvif_probe_channels_and_snapshot(mock_server: Callable[[Any], An
 
 
 async def test_onvif_orders_profiles_by_resolution(mock_server: Callable[[Any], Any]) -> None:
+    # H.265 solo se describe bien por Media2 (Profile T); el mock imita a un equipo con Media2
     mock = OnvifMock(profiles=[OnvifProfile("p-low", "low", 640, 360, "/low"),
-                               OnvifProfile("p-high", "high", 1920, 1080, "/high", encoding="H265")])
+                               OnvifProfile("p-high", "high", 1920, 1080, "/high", encoding="H265")], media2=True)
     srv = mock_server(mock.app)
     mock.base_url = srv.base_url
     client = OnvifClient(_onvif_device(srv.port), mock.password)
@@ -74,7 +75,12 @@ async def test_onvif_bad_password(mock_server: Callable[[Any], Any]) -> None:
 def test_guess_vendor() -> None:
     assert guess_vendor(hikvision_scopes()) == "hikvision"
     assert guess_vendor(dahua_scopes()) == "dahua"
-    assert guess_vendor(["onvif://www.onvif.org/name/AXIS"], "P3245") == "onvif"
+    # v2: Axis tiene perfil propio; una marca sin driver cae en ONVIF genérico
+    assert guess_vendor(["onvif://www.onvif.org/name/AXIS"], "P3245") == "axis"
+    assert guess_vendor(["onvif://www.onvif.org/name/VIVOTEK"], "FD9389") == "onvif"
+    # «IPC-» ya no implica Dahua: el modelo de Uniview gana con su prefijo y el nombre manda sobre el modelo
+    assert guess_vendor([], "IPC2122LB-SF28-A") == "uniview"
+    assert guess_vendor(["onvif://www.onvif.org/name/UNV"], "IPC-HDW2431T") == "uniview"
 
 
 def test_parse_probe_matches_filters_other_probes() -> None:
