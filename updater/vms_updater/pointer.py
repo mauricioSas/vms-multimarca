@@ -71,8 +71,10 @@ class PointerStore:
         now = int(self.clock())
         old = cur.updater
         prev = old.slot if old.slot != slot else old.previous_slot
-        upd = UpdaterSlot(slot=slot, previous_slot=prev, trial=trial,  # type: ignore[arg-type]
-                          trial_since_unix=now if trial else None)
+        if slot not in ("a", "b"):
+            raise ValueError(f"ranura no válida: {slot!r}")
+        upd = UpdaterSlot.model_validate({"slot": slot, "previous_slot": prev, "trial": trial,
+                                          "trial_since_unix": now if trial else None})
         return self.write(cur.model_copy(update={"updater": upd}))
 
     def confirm_updater(self) -> ActivePointer | None:

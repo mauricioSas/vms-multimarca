@@ -11,6 +11,7 @@ anthropic==1.11.0
 anyio==4.15.1
 argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
+asn1crypto==1.5.1
 ast-serialize==0.12.1
 attrs==26.1.0
 certifi==2026.7.22
@@ -109,6 +110,7 @@ pytest-randomly==5.0.0
 pytest-timeout==2.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.4
+python-pkcs11==0.10.0
 pywin32-ctypes>=0.2.0 ; sys_platform == "win32"  # no instalado en esta plataforma: fijar al regenerar en destino
 pyyaml==6.0.3
 regex==2026.9.29
@@ -122,6 +124,7 @@ ruff==0.16.10
 safetensors==0.8.0
 scipy==1.18.1
 secretstorage>=3.2 ; sys_platform == "linux"  # no instalado en esta plataforma: fijar al regenerar en destino
+securesystemslib==1.5.1
 setuptools==84.0.0
 shellingham==1.5.4
 six==1.17.0
@@ -137,6 +140,7 @@ trackers==2.6.1
 transformers==5.18.0
 triton~=3.8.0 ; sys_platform == "linux"  # no instalado en esta plataforma: fijar al regenerar en destino
 truststore==0.10.4
+tuf==7.0.1
 typer==0.27.2
 types-pyyaml==6.0.12.20260906
 typing-extensions==4.16.0

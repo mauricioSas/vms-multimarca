@@ -68,7 +68,7 @@ def verify_dir(mode_dir: Path, *, mode: str, trusted_root: bytes | None = None, 
                 desc = ReleaseDescriptor.model_validate_json(client.read(name))
                 if versions and desc.version not in versions:
                     continue
-                for comp, ref in desc.components.items():
+                for ref in desc.components.values():
                     p = client.download(ref.target)
                     if p.stat().st_size != ref.length:
                         raise AssertionError(f"{ref.target}: longitud distinta del descriptor")

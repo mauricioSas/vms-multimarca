@@ -182,6 +182,8 @@ class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
         self._thread.start()
 
     def _loop(self) -> None:
+        if sys.platform != "win32":
+            return
         import ctypes
         from ctypes import wintypes
 

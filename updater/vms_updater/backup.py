@@ -71,8 +71,7 @@ def restore_config(*, data_dir: Path, backup_dir: Path) -> list[str]:
                 restored.append(rel.as_posix())
     cfg = data_dir / "config"
     for name in ("config.json", "users.json"):
-        rel = f"config/{name}"
-        if rel not in in_backup and (cfg / name).is_file():
+        if f"config/{name}" not in in_backup and (cfg / name).is_file():
             (cfg / name).replace(cfg / f"{name}.after-rollback")
     return restored
 

@@ -42,7 +42,8 @@ def read_internal_token(secrets_dir: Path) -> str:
     except OSError:
         return ""
     try:  # pragma: no cover - depende de B1 y de Windows
-        from vms.core import winsec  # type: ignore[attr-defined]
+        import importlib
+        winsec = importlib.import_module("vms.core.winsec")
         unprotect = getattr(winsec, "unprotect_file_bytes", None)
         if callable(unprotect):
             raw = unprotect(raw)
@@ -59,14 +60,16 @@ def evaluate(sample: dict[str, Any] | None, *, expected_version: str | None, min
     version = sample.get("release") or sample.get("version")
     if expected_version is not None and version != expected_version:
         return HealthResult(False, f"la versión en marcha es {version!r}, se esperaba {expected_version}", sample)
-    engine = sample.get("engine") if isinstance(sample.get("engine"), dict) else {}
+    raw_engine = sample.get("engine")
+    engine: dict[str, Any] = raw_engine if isinstance(raw_engine, dict) else {}
     if not engine.get("running") or not engine.get("api_ok"):
         return HealthResult(False, "el motor de vídeo no está en marcha", sample)
     if min_recording is not None and min_recording > 0:
         rec = int(sample.get("cameras_recording") or 0)
         if rec < min_recording - 1:
             return HealthResult(False, f"graban {rec} cámaras y antes grababan {min_recording}", sample)
-    an = sample.get("analytics") if isinstance(sample.get("analytics"), dict) else {}
+    raw_an = sample.get("analytics")
+    an: dict[str, Any] = raw_an if isinstance(raw_an, dict) else {}
     if an.get("enabled"):
         age = an.get("age_s")
         if not an.get("running") or age is None or float(age) >= 30:

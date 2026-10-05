@@ -23,7 +23,6 @@ import signal
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from .authenticode import system_verifier
@@ -50,7 +49,8 @@ def read_update_token(layout: Layout) -> str | None:
     except OSError:
         return None
     try:  # pragma: no cover - DPAPI de B1 en Windows
-        from vms.core import winsec  # type: ignore[attr-defined]
+        import importlib
+        winsec = importlib.import_module("vms.core.winsec")
         unprotect = getattr(winsec, "unprotect_file_bytes", None)
         if callable(unprotect):
             raw = unprotect(raw)
@@ -64,7 +64,7 @@ def root_is_dev(root_bytes: bytes) -> bool:
         signed = json.loads(root_bytes).get("signed", {})
     except (ValueError, AttributeError):
         return False
-    return signed.get("x-vms-env") == "dev"
+    return bool(isinstance(signed, dict) and signed.get("x-vms-env") == "dev")
 
 
 def build_engine(layout: Layout | None = None) -> Engine:

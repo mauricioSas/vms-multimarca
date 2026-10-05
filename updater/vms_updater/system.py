@@ -58,7 +58,7 @@ class RealSystem:
     def windows_build(self) -> int | None:
         if sys.platform != "win32":
             return None
-        return int(sys.getwindowsversion().build)  # type: ignore[attr-defined]
+        return int(sys.getwindowsversion().build)
 
     def write_installed_version(self, version: str, app_id: str | None) -> None:
         if sys.platform != "win32":

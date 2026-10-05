@@ -11,13 +11,11 @@ from __future__ import annotations
 import errno
 import logging
 import os
-import shutil
-import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 

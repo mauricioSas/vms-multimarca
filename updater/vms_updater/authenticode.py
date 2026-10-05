@@ -102,6 +102,8 @@ def system_verifier() -> Verifier | None:
 
 # --------------------------------------------------------------------------- Windows (ctypes)
 def _win_verify(path: Path) -> SignatureInfo | None:  # pragma: no cover - solo Windows (job B4 de CI)
+    if sys.platform != "win32":
+        return None
     import ctypes
     import hashlib
     from ctypes import wintypes

@@ -79,7 +79,8 @@ class VmsctlServices:
             except ValueError:
                 pass
         if proc.returncode != EXIT_OK or data.get("ok") is False:
-            err = data.get("error") if isinstance(data.get("error"), dict) else {}
+            raw_err = data.get("error")
+            err: dict[str, Any] = raw_err if isinstance(raw_err, dict) else {}
             msg = str(err.get("message_es") or f"vmsctl {' '.join(args)} falló (código {proc.returncode})")
             raise ServiceError(msg, code=proc.returncode, error_code=str(err.get("code") or ""))
         return data
