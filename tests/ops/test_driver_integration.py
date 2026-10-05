@@ -118,3 +118,90 @@ async def test_health_of_brand_without_api_uses_local_rtsp(api: Harness) -> None
     r = await admin.post(f"/api/camera-health/{cam}/check")
     assert r.status_code == 200, r.text
     assert calls == [cam] and factory_calls == [], "sin API no se pide cliente: directo al RTSP local"
+
+
+# --------------------------------------------------------------------------- A2/A3: firmware y marca reales
+async def _firmware_findings(dev: Device) -> list[Any]:
+    from vms.ops.security.advisories import version_table
+    from vms.ops.security.audit import AuditDeps, audit_device
+
+    async def tcp(h: str, p: int, t: float) -> bool:
+        return False
+
+    async def rtsp(*a: Any, **k: Any) -> Any:
+        class R:
+            status = 401
+        return R()
+
+    async def onvif(*a: Any) -> bool | None:
+        return False
+    deps = AuditDeps(client_factory=lambda d, p: None, get_password=lambda i: "Larga#Clave99",  # type: ignore[arg-type,return-value]
+                     tcp_check=tcp, rtsp_probe=rtsp, onvif_probe=onvif, ssdp=None)
+    return [f for f in await audit_device(dev, [], deps, version_table(), None, None, None)
+            if f.check == "firmware_cve"]
+
+
+async def test_hikvision_build_date_is_saved_and_audited(api: Harness) -> None:
+    """Driver ISAPI real → alta → auditoría: la fecha del build (que Hikvision da aparte) se guarda y la auditoría
+    detecta CVE-2021-36260 (KEV). Antes se perdía al guardar y salía «Desconocido»."""
+    mock = HikvisionMock(password=PW, kind="camera", firmware="V5.5.0", firmware_released="build 200101")
+    api.state.client_factory = _factory(mock)
+    admin = await api.login()
+    d = await new_device(admin, name="Cámara caja", vendor="hikvision", kind="camera", host="10.0.0.5",
+                         password=PW, import_channels=[1])
+    saved = api.state.config().device(d["id"])
+    assert saved is not None and (saved.firmware, saved.firmware_date) == ("V5.5.0", "2020-01-01")
+    found = await _firmware_findings(saved)
+    assert any(f.status == "probably_vulnerable" and f.advisory_ids == ["ADV-2026-001"] for f in found), found
+
+    # leer la identidad de nuevo (equipo actualizado): firmware y fecha cambian juntos
+    mock.firmware, mock.firmware_released = "V5.7.3", "build 220112"
+    r = await admin.post(f"/api/devices/{d['id']}/identity")
+    assert r.status_code == 200, r.text
+    saved = api.state.config().device(d["id"])
+    assert saved is not None and (saved.firmware, saved.firmware_date) == ("V5.7.3", "2022-01-12")
+
+
+async def test_probar_conexion_refreshes_firmware(api: Harness) -> None:
+    """«Probar conexión» de un equipo guardado deja al día firmware y fecha (lo que pide la auditoría)."""
+    from vms.core.interfaces import DeviceInfo, DeviceTestResult
+    admin = await api.login()
+    d = await new_device(admin, name="Cámara caja", vendor="hikvision", kind="camera", host="10.0.0.5")
+
+    async def tester(device: Any, password: str) -> DeviceTestResult:
+        return DeviceTestResult(ok=True, reachable=True, auth_ok=True, info=DeviceInfo(
+            vendor="hikvision", kind="camera", model="DS-2CD2143G2-I", firmware="V5.5.0", firmware_date="2020-01-01"))
+    api.state.device_tester = tester
+    assert (await admin.post(f"/api/devices/{d['id']}/test")).status_code == 200
+    saved = api.state.config().device(d["id"])
+    assert saved is not None and (saved.model, saved.firmware, saved.firmware_date) == \
+        ("DS-2CD2143G2-I", "V5.5.0", "2020-01-01")
+
+
+async def test_hikvision_registered_as_onvif_is_not_a_false_ok(api: Harness) -> None:
+    """Hikvision dada de alta como «ONVIF (otras marcas)» con firmware vulnerable: antes «Sin CVE conocidos»."""
+    from tools.mocks.onvif import OnvifMock
+    mock = OnvifMock(password=PW, firmware="V5.5.0 build 200101")      # HIKVISION DS-2CD2143G2-I por ONVIF
+    api.state.client_factory = lambda dev, pw: client_for(dev, pw, transport=httpx.ASGITransport(app=mock.app))
+    admin = await api.login()
+    d = await new_device(admin, name="Cámara ONVIF", vendor="onvif", kind="camera", host="10.0.0.6",
+                         password=PW, import_channels=[1])
+    saved = api.state.config().device(d["id"])
+    assert saved is not None and saved.manufacturer == "HIKVISION"
+    found = await _firmware_findings(saved)
+    assert any(f.status == "probably_vulnerable" and f.advisory_ids == ["ADV-2026-001"] for f in found), found
+
+
+async def test_unknown_brand_or_uncovered_brand_is_unknown_never_ok() -> None:
+    base = dict(name="x", kind="camera", host="10.0.0.8", model="X-1000", firmware="1.2.3")
+    for dev in (Device(vendor="onvif", manufacturer="ACME Vision", **base),     # marca que nadie conoce
+                Device(vendor="onvif", **base),                                 # ONVIF sin fabricante
+                Device(vendor="generic", **base),
+                Device(vendor="axis", **base),                                  # marca sin avisos en la tabla
+                Device(vendor="onvif", manufacturer="AXIS", **base)):
+        found = await _firmware_findings(dev)
+        assert [f.status for f in found] == ["unknown"], (dev.vendor, dev.manufacturer, found)
+    # marca cubierta por la tabla y modelo fuera de los avisos: aquí sí cabe «Sin CVE conocidos en la tabla»
+    nvr = Device(vendor="hikvision", **{**base, "model": "DS-7608NI-K2/8P", "firmware": "V4.30.085",
+                                        "firmware_date": "2020-09-16"})
+    assert [f.status for f in await _firmware_findings(nvr)] == ["ok"]

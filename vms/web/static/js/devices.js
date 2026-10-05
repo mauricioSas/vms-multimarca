@@ -335,9 +335,12 @@ function renderTestResult(r) {
   ].map(([label, v]) => `<span class="pill ${v === true ? "ok" : v === false ? "bad" : "off"}">${label}</span>`).join(" ");
   parts.push(`<div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap">${checks}</div>`);
   if (info.model || info.serial) {
-    parts.push(`<div class="small muted">${esc(vendorLabel(info.vendor))} ${esc(info.model || "")}
+    // Con «ONVIF (otras marcas)» el driver no dice la marca: se enseña la que dice el equipo (la auditoría la usa).
+    const maker = info.manufacturer && info.manufacturer.toLowerCase() !== String(vendorLabel(info.vendor)).toLowerCase()
+      ? ` (fabricante: ${esc(info.manufacturer)})` : "";
+    parts.push(`<div class="small muted">${esc(vendorLabel(info.vendor))}${maker} ${esc(info.model || "")}
       ${info.serial ? `· n.º de serie <span class="mono">${esc(info.serial)}</span>` : ""}
-      ${info.firmware ? `· firmware ${esc(info.firmware)}` : ""}</div>`);
+      ${info.firmware ? `· firmware ${esc(info.firmware)}${info.firmware_date ? ` (${esc(info.firmware_date)})` : ""}` : ""}</div>`);
   }
   if ((r.warnings || []).length) {
     parts.push(`<ul class="small" style="margin:8px 0 0 18px;padding:0;color:var(--warn)">${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`);

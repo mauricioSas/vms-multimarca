@@ -30,7 +30,7 @@ from vms.core.models import Camera, Device
 from vms.core.rtsp import format_host, preset_paths, redact
 from vms.core.sources import camera_paths
 
-from ..drivers import SECURITY_READ, capabilities, driver_name, has_api
+from ..drivers import SECURITY_READ, brand_from, capabilities, driver_name, has_api
 from ..host import dynamic
 from ..models import ClockCheck, SecurityAuditReport, SecurityFinding
 from .advisories import LoadedTable, evaluate
@@ -265,13 +265,47 @@ async def audit_device(dev: Device, cams: list[Camera], deps: AuditDeps, table: 
         out.append(_f(did, "anonymous_onvif", "info", "ok", "ONVIF pide usuario y contraseña."))
     else:
         out.append(_f(did, "anonymous_onvif", "info", "unknown", "ONVIF no responde o está desactivado."))
-    # 4) firmware frente a la tabla de avisos
-    fw_date = str(getattr(dev, "firmware_date", "") or "")
-    matches = evaluate(table.table, dev.vendor, dev.model, dev.firmware, fw_date)
+    # 4) firmware frente a la tabla de avisos: nunca «ok» sin saber la marca real, el modelo y el firmware
+    out.extend(firmware_findings(dev, table))
+    # 5) hora
+    if clock is None or clock.status == "unknown":
+        out.append(_f(did, "clock", "info", "unknown", clock.message_es if clock else "No hay medida de la hora."))
+    else:
+        sev = {"ok": "info", "warning": "warning", "critical": "critical"}[clock.status]
+        out.append(_f(did, "clock", sev, "ok" if clock.status == "ok" else "vulnerable", clock.message_es))
+    return out
+
+
+def firmware_findings(dev: Device, table: LoadedTable) -> list[SecurityFinding]:
+    """Firmware frente a la tabla de avisos (CONTRATO §18.12).
+
+    La marca es la del driver; con «ONVIF (otras marcas)» o RTSP manual, la que dice el propio equipo
+    (`Device.manufacturer`) o su modelo (`drivers.brand_from`). Sin marca segura, sin aviso para esa marca en la
+    tabla, sin modelo o sin firmware (versión o fecha de build): «Desconocido», nunca «Sin CVE conocidos»."""
+    did = dev.id
+    out: list[SecurityFinding] = []
+    fw_date = dev.firmware_date
+    brand = brand_from(dev.vendor, dev.manufacturer, dev.model)
+    action_probe = "Pulsa «Probar conexión» en el equipo para leer el modelo y el firmware."
+    if brand is None:
+        who = f"«{dev.manufacturer}»" if dev.manufacturer else "sin identificar"
+        out.append(_f(did, "firmware_cve", "info", "unknown",
+                      f"Desconocido: el equipo está dado de alta como «{driver_name(dev.vendor)}» y su marca real "
+                      f"({who}) no se puede saber con seguridad, así que no se compara con la tabla de avisos.",
+                      "Si es de una marca con driver propio (Hikvision, Dahua…), dalo de alta con esa marca; si no, "
+                      "comprueba el firmware en la web del fabricante." if dev.model else action_probe))
+        return out
+    if not any(a.vendor == brand for a in table.table.advisories):
+        out.append(_f(did, "firmware_cve", "info", "unknown",
+                      f"Desconocido: la tabla de avisos de esta versión no cubre los equipos «{driver_name(brand)}».",
+                      "Comprueba los avisos de seguridad en la web del fabricante y actualiza el firmware."))
+        return out
     if not dev.model or not (dev.firmware or fw_date):
         out.append(_f(did, "firmware_cve", "info", "unknown", "No se conoce el modelo o el firmware del equipo.",
-                      "Pulsa «Probar conexión» en el equipo para leerlos."))
-    elif not matches:
+                      action_probe))
+        return out
+    matches = evaluate(table.table, brand, dev.model, dev.firmware, fw_date)
+    if not matches:
         out.append(_f(did, "firmware_cve", "info", "ok", "Sin CVE conocidos en la tabla para este modelo y firmware."))
     else:
         for m in matches:
@@ -291,12 +325,6 @@ async def audit_device(dev: Device, cams: list[Camera], deps: AuditDeps, table: 
             else:
                 out.append(_f(did, "firmware_cve", "info", "ok", f"Sin CVE conocidos en la tabla: {m.detail_es}",
                               "", [adv.id]))
-    # 5) hora
-    if clock is None or clock.status == "unknown":
-        out.append(_f(did, "clock", "info", "unknown", clock.message_es if clock else "No hay medida de la hora."))
-    else:
-        sev = {"ok": "info", "warning": "warning", "critical": "critical"}[clock.status]
-        out.append(_f(did, "clock", sev, "ok" if clock.status == "ok" else "vulnerable", clock.message_es))
     return out
 
 

@@ -375,7 +375,7 @@ class OnvifClient:
         info = DeviceInfo(
             vendor=self.vendor, kind="nvr" if len(groups) > 1 else "camera",
             model=_t(resp, "Model"), serial=_t(resp, "SerialNumber"), firmware=_t(resp, "FirmwareVersion"),
-            name=manufacturer, mac=mac, channel_count=max(len(groups), 1))
+            name=manufacturer, manufacturer=manufacturer, mac=mac, channel_count=max(len(groups), 1))
         self._info = info
         return info
 

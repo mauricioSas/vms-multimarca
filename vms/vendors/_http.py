@@ -11,13 +11,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Generator
 from typing import Any
 
 import httpx
 
 from vms.core import rtsp
-from vms.core.errors import DeviceAuthFailed, DeviceProtocolError, DeviceUnreachable
+from vms.core.errors import DeviceAuthFailed, DeviceProtocolError, DeviceUnreachable, DeviceUnsupported
 from vms.core.models import DeviceBase
 
 from . import auth as vauth
@@ -27,6 +28,20 @@ log = logging.getLogger("vms.vendors.http")
 
 MAX_BODY_BYTES = 8 * 1024 * 1024  # ninguna respuesta de configuración ni snapshot debería pasar de aquí
 USER_AGENT = "VMSMultimarca/2.0"
+
+
+_NOT_SUPPORTED_RE = re.compile(r"<subStatusCode>\s*notSupport\s*</subStatusCode>|"
+                               r"<statusString>\s*Invalid Operation\s*</statusString>", re.IGNORECASE)
+
+
+def not_supported(resp: httpx.Response) -> bool:
+    """¿Es la respuesta ISAPI «el equipo no tiene ese recurso» (statusCode 4, `notSupport` / «Invalid Operation»)?
+
+    Algunos firmwares Hikvision la dan con un 403 en recursos que no tienen (p. ej. Telnet en los que ya no lo
+    traen): no es un rechazo de la contraseña ni de permisos."""
+    if not resp.content or len(resp.content) > 65536:
+        return False
+    return _NOT_SUPPORTED_RE.search(resp.text) is not None
 
 
 def base_url(device: DeviceBase, port: int | None = None) -> str:
@@ -162,6 +177,9 @@ class VendorHttp:
                                     "HTTP y que el equipo esté encendido") from exc
         except httpx.HTTPError as exc:
             raise DeviceUnreachable(f"Error de red al hablar con {self.label}: {type(exc).__name__}") from exc
+        if resp.status_code == 403 and not_supported(resp):
+            # recurso que este equipo no tiene: ni contraseña mala ni falta de permisos (no funde el cliente)
+            raise DeviceUnsupported(f"{self.label} no admite {path}", details={"status": 403})
         if resp.status_code == 401 or (resp.status_code == 403 and self.auth is not None and self.auth.challenge):
             err = self._auth_error(resp)
             if resp.status_code == 401 or isinstance(err, DeviceLocked):

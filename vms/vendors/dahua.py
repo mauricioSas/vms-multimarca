@@ -16,8 +16,10 @@ con hardware).
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
@@ -27,7 +29,7 @@ from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings,
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import VendorHttp
-from .clock import Stopwatch, local_tz, parse_device_datetime
+from .clock import Stopwatch, local_tz, parse_naive_or_aware, round_offset
 from .codec import StreamConfigBackup, normalize_codec
 
 log = logging.getLogger("vms.vendors.dahua")
@@ -72,6 +74,39 @@ def firmware_date(version: str) -> str:
 
 def _int(value: str | None) -> int | None:
     return int(value) if value and value.strip().isdigit() else None
+
+
+# Índice de `NTP.TimeZone` → horas respecto a UTC (tabla de la API HTTP de Dahua; no verificado con hardware).
+DAHUA_TIME_ZONES: tuple[float, ...] = (
+    0, 1, 2, 3, 3.5, 4, 4.5, 5, 5.5, 5.75, 6, 6.5, 7, 8, 9, 9.5, 10, 11, 12, 13,
+    -1, -2, -3, -3.5, -4, -5, -6, -7, -8, -9, -10, -11, -12)
+
+
+def _dst_point(loc: dict[str, str], which: str, year: int) -> datetime | None:
+    """Inicio o fin del horario de verano de `Locales` («DSTStart.Month/Week/Day/Hour/Minute»). `Week` 1..4 o −1
+    (última) con `Day` = día de la semana (0 = domingo); `Week` 0 = fecha fija (`Day` = día del mes)."""
+    def get(field: str) -> int | None:
+        raw = loc.get(f"table.Locales.{which}.{field}", "").strip()
+        return int(raw) if raw.lstrip("-").isdigit() else None
+    month, week, day, hour, minute = get("Month"), get("Week"), get("Day"), get("Hour"), get("Minute")
+    if month is None or week is None or day is None or not 1 <= month <= 12:
+        return None
+    last = calendar.monthrange(year, month)[1]
+    try:
+        if week == 0:
+            d = date(year, month, day)
+        else:
+            if not 0 <= day <= 6 or week not in (1, 2, 3, 4, 5, -1):
+                return None
+            py_wd = (day - 1) % 7
+            first = date(year, month, 1)
+            dom = 1 + (py_wd - first.weekday()) % 7 + 7 * ((5 if week == -1 else week) - 1)
+            while dom > last:
+                dom -= 7
+            d = date(year, month, dom)
+        return datetime(d.year, d.month, d.day, hour or 0, minute or 0)
+    except ValueError:
+        return None
 
 
 class DahuaClient:
@@ -258,30 +293,66 @@ class DahuaClient:
 
     # ------------------------------------------------------------------ TIME_READ
     async def device_time(self) -> DeviceTime:
+        """Hora del equipo. `getCurrentTime` da la hora LOCAL sin zona («2011-7-3 21:02:32» en el ejemplo de la API):
+        la zona sale de `NTP.TimeZone` (índice de la tabla de Dahua) y el horario de verano de `Locales`. Si no se
+        pueden leer, se supone la zona del PC (misma tienda) y `utc_offset_s` queda en None. No verificado con
+        hardware (CONTRATO §18.3, docs/COMPATIBILIDAD.md)."""
         with Stopwatch() as sw:
             kv = await self._cgi("global.cgi", [("action", "getCurrentTime")])
-        # Dahua da la hora local sin zona: se interpreta en la zona del PC (misma tienda). No verificado
-        # con hardware si el equipo está en otra zona.
-        dt = parse_device_datetime(kv.get("result", ""), local_tz())
-        if dt is None:
+        local = parse_naive_or_aware(kv.get("result", ""))
+        if local is None:
             raise DeviceProtocolError(f"{self.http.label} no devolvió su hora")
         mode: Literal["ntp", "manual", "unknown"] = "unknown"
         server = ""
+        offset: timedelta | None = None
         try:
             ntp = await self._config("NTP")
             enable = ntp.get("table.NTP.Enable", "").lower()
             mode = "ntp" if enable == "true" else "manual" if enable == "false" else "unknown"
             server = ntp.get("table.NTP.Address", "")
+            offset = await self._zone_offset(local, ntp)
         except DeviceError as exc:
             log.debug("NTP no disponible en %s: %s", self.http.label, exc)
+        if local.tzinfo is not None:
+            dt = local
+            offset = local.utcoffset()
+        elif offset is not None:
+            dt = local.replace(tzinfo=timezone(offset))
+        else:
+            dt = local.replace(tzinfo=local_tz())
         return DeviceTime(device_time=dt, measured_at=sw.midpoint, round_trip_ms=round(sw.round_trip_ms, 1),
-                          time_mode=mode, ntp_server=server, source="cgi")
+                          time_mode=mode, ntp_server=server, source="cgi",
+                          utc_offset_s=round_offset(offset) if offset is not None else None)
+
+    async def _zone_offset(self, local: datetime, ntp: dict[str, str]) -> timedelta | None:
+        """Offset de la hora local del equipo: `NTP.TimeZone` + horario de verano de `Locales`. None si no se sabe."""
+        idx = _int(ntp.get("table.NTP.TimeZone"))
+        if idx is None or not 0 <= idx < len(DAHUA_TIME_ZONES):
+            return None
+        std = timedelta(hours=DAHUA_TIME_ZONES[idx])
+        try:
+            loc = await self._config("Locales")
+        except DeviceError as exc:
+            log.debug("Locales no disponible en %s: %s", self.http.label, exc)
+            return None
+        dst_on = loc.get("table.Locales.DSTEnable", "").lower()
+        if dst_on == "false":
+            return std
+        if dst_on != "true":
+            return None
+        start, end = _dst_point(loc, "DSTStart", local.year), _dst_point(loc, "DSTEnd", local.year)
+        if start is None or end is None:
+            return None
+        naive = local.replace(tzinfo=None)
+        in_dst = start <= naive < end if start < end else (naive >= start or naive < end)
+        return std + timedelta(hours=1) if in_dst else std
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:
-        """Con credenciales de administrador TEMPORALES (no se guardan ni se registran)."""
+        """Con credenciales de administrador TEMPORALES (no se guardan ni se registran). Nunca con Basic: la
+        contraseña de administrador no viaja en claro aunque el equipo lo tenga permitido."""
         dev = self.device.model_copy(update={"username": admin_username})
-        http = VendorHttp(dev, admin_password, timeout=self._timeout, transport=self._transport)
+        http = VendorHttp(dev, admin_password, timeout=self._timeout, transport=self._transport, allow_basic=False)
         out = DeviceSecuritySettings()
         try:
             async def enabled(name: str) -> bool | None:

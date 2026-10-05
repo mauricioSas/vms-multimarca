@@ -177,6 +177,10 @@ class Device(DeviceBase):
     model: str = ""
     serial: str = ""
     firmware: str = ""
+    # v2: fecha del build del firmware («2021-06-28»; Hikvision la da aparte de la versión) y fabricante que dice
+    # el propio equipo (ONVIF). Los lee el alta; la auditoría de seguridad los necesita (CONTRATO §18.12).
+    firmware_date: str = Field("", max_length=32)
+    manufacturer: str = Field("", max_length=64)
     identity: DeviceIdentity | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
