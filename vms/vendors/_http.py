@@ -61,9 +61,25 @@ class VendorAuth(httpx.Auth):
             self.challenge, request.method, uri, self.username, self._password, state=self.state)
         self.credentialed += 1
 
+    def learn(self, response: httpx.Response) -> bool:
+        """Aprende el reto de un 401 recibido **sin** credenciales; no firma ni reenvía nada.
+
+        Devuelve True si hay un reto utilizable (las siguientes peticiones irán firmadas a la primera).
+        """
+        challenges = vauth.parse_challenges(response.headers.get_list("www-authenticate"))
+        chosen = vauth.choose(challenges, allow_basic=self.allow_basic)
+        if chosen is None:
+            self.basic_only = vauth.only_basic(challenges)
+            return False
+        self.challenge, self.state = chosen, vauth.DigestState(chosen)
+        return True
+
     def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
         if self.rejected:
-            return   # VendorHttp no deja llegar aquí; por si acaso, nada de credenciales
+            # Fundido: VendorHttp y OnvifClient no dejan llegar aquí. Si alguien lo hace, se corta sin enviar
+            # nada (un `return` antes del primer `yield` daría «async generator raised StopIteration»).
+            raise DeviceAuthFailed("Usuario o contraseña incorrectos: no se vuelve a intentar con la misma "
+                                   "contraseña para no bloquear el usuario del equipo")
         if self.challenge is not None:
             self._sign(request)
         response = yield request
@@ -134,6 +150,9 @@ class VendorHttp:
                       ok_404: bool = False) -> httpx.Response:
         if self._failure is not None:
             raise self._failure      # fundido: ya se gastó el único intento con esta contraseña
+        if self.auth is not None and self.auth.rejected:
+            self._failure = DeviceAuthFailed(bad_password_message(self.label))
+            raise self._failure
         try:
             resp = await self.client.request(method, path, params=params, content=content, headers=headers)
         except httpx.TimeoutException as exc:

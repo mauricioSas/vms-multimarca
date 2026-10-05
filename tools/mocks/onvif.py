@@ -10,6 +10,13 @@ equipo y la validación del `Created` del token usan ese reloj; ±`max_skew_s`),
 (`enabled=False`: 404 sin SOAP), usuario ONVIF distinto del de la web (`username`/`password` propios) y
 H.265 solo bien descrito por Media2.
 
+Autenticación HTTP (`http_auth`, PLAN-V2 §3.2 punto 1): con «digest»/«digest-sha256»/«basic» el equipo acepta
+también Digest/Basic HTTP y responde **401 con el reto** (no un Fault) a toda petición sin credenciales válidas,
+incluido un UsernameToken malo: así se comporta parte del firmware real y es el caso que obliga a no
+reintentar. `ws_token=False` = solo Digest HTTP (ignora el UsernameToken); `clock_needs_auth=True` = pide
+credenciales hasta para `GetSystemDateAndTime`. `credentialed` cuenta las **peticiones** que traen alguna
+credencial (UsernameToken o cabecera Authorization), una sola vez por petición.
+
 Las URIs que devuelve se construyen con `base_url` (el host:puerto donde se sirve el mock) y `rtsp_base`
 (p. ej. un equipo del simulador de cámaras), así la prueba puede encadenar GetStreamUri → MediaMTX → vídeo.
 """
@@ -23,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
+
+from tools.mocks.http_auth import AuthMode, HttpAuthChecker
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -86,11 +95,16 @@ class OnvifMock:
     clock_offset_s: float = 0.0
     max_skew_s: float = 300.0
     date_time_type: str = "NTP"
+    http_auth: AuthMode = "none"            # Digest/Basic HTTP además del UsernameToken (401 + reto si falla)
+    ws_token: bool = True                   # False: ignora el UsernameToken (solo Digest HTTP)
+    clock_needs_auth: bool = False          # pide credenciales hasta para GetSystemDateAndTime
     operations: list[str] = field(default_factory=list)
-    credentialed: int = 0                   # peticiones que trajeron UsernameToken
+    credentialed: int = 0                   # peticiones que trajeron alguna credencial
     rejected: int = 0
 
     def __post_init__(self) -> None:
+        self.http = HttpAuthChecker(self.username, self.password, "onvif",
+                                    "digest" if self.http_auth == "none" else self.http_auth)
         self.app = Starlette(routes=[
             Route("/onvif/device_service", self.device_service, methods=["POST"]),
             Route("/onvif/media_service", self.media_service, methods=["POST"]),
@@ -107,11 +121,34 @@ class OnvifMock:
         m = re.search(r"<(?:[\w.\-]+:)?Body[^>]*>\s*<(?:([\w.\-]+):)?(\w+)", xml)
         return m.group(2) if m else ""
 
+    def _gate(self, request: Request, xml: str) -> Response | None:
+        """None si la petición está autorizada; si no, la respuesta de rechazo (Fault o 401 con reto)."""
+        has_header = bool(request.headers.get("authorization"))
+        has_token = re.search(r"<(?:[\w.\-]+:)?Username[^>]*>", xml) is not None
+        if has_header or has_token:
+            self.credentialed += 1
+        if self.http_auth != "none" and has_header:
+            before = self.http.credentialed
+            ok = self.http.check(request)
+            self.http.credentialed = before      # ya contado arriba (una vez por petición)
+            if ok:
+                return None
+            self.rejected += 1
+            return self.http.challenge()
+        if has_token and self.ws_token:
+            if self._authorized(xml):
+                return None
+        elif not has_token and self.anonymous:
+            return None
+        elif has_token:
+            self.rejected += 1                   # trae token pero el equipo no lo admite (solo Digest)
+        if self.http_auth != "none":
+            return self.http.challenge()
+        return self._not_authorized()
+
     def _authorized(self, xml: str) -> bool:
         user = re.search(r"<(?:[\w.\-]+:)?Username[^>]*>([^<]*)</", xml)
-        if user:
-            self.credentialed += 1
-        elif self.anonymous:
+        if not user and self.anonymous:
             return True
         pwd = re.search(r"<(?:[\w.\-]+:)?Password[^>]*>([^<]*)</", xml)
         nonce = re.search(r"<(?:[\w.\-]+:)?Nonce[^>]*>([^<]*)</", xml)
@@ -152,6 +189,10 @@ class OnvifMock:
         xml = (await request.body()).decode("utf-8", errors="replace")
         op = self._operation(xml)
         self.operations.append(op)
+        if op == "GetSystemDateAndTime" and self.clock_needs_auth:
+            denied = self._gate(request, xml)
+            if denied is not None:
+                return denied
         if op == "GetSystemDateAndTime":
             now = self.now()
             return self._reply(
@@ -162,8 +203,9 @@ class OnvifMock:
                 f"<tt:Second>{now.second}</tt:Second></tt:Time><tt:Date><tt:Year>{now.year}</tt:Year>"
                 f"<tt:Month>{now.month}</tt:Month><tt:Day>{now.day}</tt:Day></tt:Date></tt:UTCDateTime>"
                 "</tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>")
-        if not self._authorized(xml):
-            return self._not_authorized()
+        denied = self._gate(request, xml)
+        if denied is not None:
+            return denied
         if op == "GetServices":
             def svc(ns: str, path: str) -> str:
                 return (f"<tds:Service><tds:Namespace>{ns}</tds:Namespace><tds:XAddr>{self.base_url}{path}</tds:XAddr>"
@@ -244,8 +286,9 @@ class OnvifMock:
         xml = (await request.body()).decode("utf-8", errors="replace")
         op = self._operation(xml)
         self.operations.append(op)
-        if not self._authorized(xml):
-            return self._not_authorized()
+        denied = self._gate(request, xml)
+        if denied is not None:
+            return denied
         if op == "GetProfiles":
             return self._reply("<trt:GetProfilesResponse>" + "".join(self._profile_xml(p) for p in self.profiles)
                                + "</trt:GetProfilesResponse>")
@@ -269,8 +312,9 @@ class OnvifMock:
         xml = (await request.body()).decode("utf-8", errors="replace")
         op = self._operation(xml)
         self.operations.append(f"tr2:{op}")
-        if not self._authorized(xml):
-            return self._not_authorized()
+        denied = self._gate(request, xml)
+        if denied is not None:
+            return denied
         if op == "GetProfiles":
             return self._reply("<tr2:GetProfilesResponse>" + "".join(self._profile2_xml(p) for p in self.profiles)
                                + "</tr2:GetProfilesResponse>")

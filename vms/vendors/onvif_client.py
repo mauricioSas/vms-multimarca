@@ -7,8 +7,9 @@ httpx (fixtures) y controlar exactamente cuántas peticiones llevan credenciales
 - **Media2 primero** (`GetServices` dice si el equipo lo tiene); si no, Media1 (PLAN-V2 §3.2 punto 9).
 - **Desfase de reloj:** `GetSystemDateAndTime` (sin autenticar) da la hora del equipo; el `Created` del
   `UsernameToken` se ajusta a esa hora, así un equipo con el reloj ±2 h no rechaza la contraseña buena.
-- **Un solo intento con credenciales:** si el equipo responde `NotAuthorized`, el cliente queda fundido y
-  no vuelve a mandar la contraseña.
+- **Un solo intento con credenciales:** la primera operación autenticada sale sin credenciales para saber si
+  el equipo usa Digest HTTP o UsernameToken (ver `_soap`); después, si el equipo responde `NotAuthorized` o
+  401, el cliente queda fundido y no vuelve a mandar la contraseña (ni por la otra vía).
 - Canales: cada «video source» es un canal (cámara = 1; NVR ONVIF = N). En cada canal, el perfil de más
   resolución es el principal y el siguiente el subflujo. Las rutas RTSP (parte tras host:puerto, con su
   query) van en `ChannelInfo.main_path/sub_path`; las URI nunca llevan credenciales.
@@ -36,6 +37,7 @@ from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings,
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import USER_AGENT, VendorAuth, VendorHttp, device_label
+from .errors import BasicNotAllowed
 from .clock import Stopwatch
 from .codec import normalize_codec
 
@@ -151,6 +153,7 @@ class OnvifClient:
         self.media2_xaddr: str | None = None
         self.clock_offset = timedelta(0)
         self.ws_credentialed = 0           # peticiones con UsernameToken (para las pruebas)
+        self._auth_mode: Literal["unknown", "ws", "http"] = "unknown"
         self._failure: DeviceError | None = None
         self._services_done = False
         self._profiles: list[_Profile] | None = None
@@ -191,21 +194,57 @@ class OnvifClient:
                 f'<wsse:Nonce EncodingType="{_B64}">{base64.b64encode(nonce).decode()}</wsse:Nonce>'
                 f"<wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security></s:Header>")
 
-    async def _soap(self, url: str, ns: str, op: str, body: str = "", *, auth: bool = True) -> ET.Element:
-        if self._failure is not None:
-            raise self._failure
-        header = self._security_header() if auth else ""
+    async def _post(self, url: str, ns: str, op: str, body: str, *, header: str, http_auth: bool) -> httpx.Response:
         envelope = (f'<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
                     f'xmlns:tt="{NS_SCHEMA}" xmlns:m="{ns}">{header}<s:Body><m:{op}>{body}</m:{op}></s:Body></s:Envelope>')
         try:
-            resp = await self.client.post(url, content=envelope.encode("utf-8"), headers={
-                "Content-Type": f'application/soap+xml; charset=utf-8; action="{ns}/{op}"'})
+            # auth=None desactiva VendorAuth en esta petición: solo firma con Digest/Basic HTTP el modo «http»
+            return await self.client.post(url, content=envelope.encode("utf-8"), auth=self._auth if http_auth else None,
+                                          headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{ns}/{op}"'})
+        except DeviceAuthFailed:
+            raise
         except httpx.TimeoutException as exc:
             raise DeviceUnreachable(f"El equipo {self.label} no responde por ONVIF (tiempo agotado)") from exc
         except httpx.ConnectError as exc:
             raise DeviceUnreachable(f"No se puede conectar por ONVIF con {self.label}. {ONVIF_OFF_HINT}") from exc
         except httpx.HTTPError as exc:
             raise DeviceUnreachable(f"Error de red ONVIF con {self.label}: {type(exc).__name__}") from exc
+
+    def _bad_password(self) -> DeviceAuthFailed:
+        return DeviceAuthFailed(f"Usuario o contraseña ONVIF incorrectos en {self.label}. En algunas marcas el "
+                                "usuario ONVIF es distinto del de la web (Hikvision): créalo en el equipo.")
+
+    def _fuse(self, err: DeviceError) -> DeviceError:
+        self._failure = err
+        return err
+
+    async def _soap(self, url: str, ns: str, op: str, body: str = "", *, auth: bool = True) -> ET.Element:
+        """Una operación SOAP con **una sola** petición con credenciales como mucho.
+
+        Modos de autenticación (`_auth_mode`), aprendidos sin gastar la contraseña:
+        - «unknown»: la primera operación autenticada sale **sin** credenciales. Un 401 con reto Digest dice que
+          el equipo autentica por HTTP («http»); un Fault NotAuthorized (o cualquier otro error SOAP) dice que
+          usa el UsernameToken de WS-Security («ws»). Después se repite una vez con las credenciales del modo.
+        - «ws»: UsernameToken y nada más. Si el equipo responde 401 (aunque ofrezca Digest), no se reintenta
+          con Digest: sería mandar la misma contraseña dos veces (criterio 4 de B5).
+        - «http»: Digest (o Basic con `allow_basic`) firmado a la primera, sin UsernameToken.
+        Las operaciones sin autenticar (`auth=False`, p. ej. la hora) nunca llevan credenciales; si responden 401,
+        solo sirven para aprender el reto.
+        """
+        if self._failure is not None:
+            raise self._failure
+        if self._auth is not None and self._auth.rejected:
+            raise self._fuse(self._bad_password())
+        if not auth or self._auth is None:
+            return await self._exchange(url, ns, op, body, kind="pre")
+        if self._auth_mode == "unknown":
+            return await self._exchange(url, ns, op, body, kind="learn")
+        return await self._exchange(url, ns, op, body, kind=self._auth_mode)
+
+    async def _exchange(self, url: str, ns: str, op: str, body: str, *,
+                        kind: Literal["pre", "learn", "ws", "http"]) -> ET.Element:
+        header = self._security_header() if kind == "ws" else ""
+        resp = await self._post(url, ns, op, body, header=header, http_auth=kind == "http")
         text = resp.text
         root: ET.Element | None = None
         try:
@@ -213,12 +252,31 @@ class OnvifClient:
         except ET.ParseError:
             root = None
         fault = root.find(".//Fault") if root is not None else None
-        if resp.status_code == 401 or (fault is not None and "notauthorized" in ET.tostring(fault, encoding="unicode").lower()):
-            err = DeviceAuthFailed(f"Usuario o contraseña ONVIF incorrectos en {self.label}. En algunas marcas el "
-                                   "usuario ONVIF es distinto del de la web (Hikvision): créalo en el equipo.")
-            if auth or resp.status_code == 401:
-                self._failure = err
-            raise err
+        not_authorized = fault is not None and "notauthorized" in ET.tostring(fault, encoding="unicode").lower()
+        if kind == "learn":
+            if resp.status_code == 401:
+                assert self._auth is not None
+                if self._auth.learn(resp):
+                    self._auth_mode = "http"
+                elif self._auth.basic_only:
+                    raise self._fuse(BasicNotAllowed(self.label))
+                else:
+                    self._auth_mode = "ws"
+                return await self._exchange(url, ns, op, body, kind=self._auth_mode)
+            if resp.status_code in (404, 405) and root is None:
+                raise DeviceUnsupported(f"{self.label} no responde a ONVIF en {urlsplit(url).path}. {ONVIF_OFF_HINT}")
+            self._auth_mode = "ws"
+            if not_authorized or fault is not None or resp.status_code >= 400:
+                return await self._exchange(url, ns, op, body, kind="ws")
+            # respondió sin credenciales: se usa la respuesta (el equipo admite ONVIF anónimo para esta operación)
+        if resp.status_code == 401 or not_authorized:
+            if kind == "pre":
+                # sin credenciales no se ha gastado ningún intento: solo se aprende el reto, si lo hay
+                if resp.status_code == 401 and self._auth is not None and self._auth_mode == "unknown" \
+                        and self._auth.learn(resp):
+                    self._auth_mode = "http"
+                raise self._bad_password()
+            raise self._fuse(self._bad_password())
         if fault is not None or resp.status_code >= 400:
             reason = _t(fault, ".//Text") if fault is not None else ""
             sub = _t(fault, ".//Subcode/Value") if fault is not None else ""
@@ -234,15 +292,16 @@ class OnvifClient:
         return body_el[0]
 
     # ------------------------------------------------------------------ hora y servicios
-    async def _sync_clock(self) -> None:
+    async def _sync_clock(self, *, auth: bool = False) -> None:
         if self.device_utc is not None:
             return
         try:
             with Stopwatch() as sw:
-                resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetSystemDateAndTime", auth=False)
+                resp = await self._soap(self.device_xaddr, NS_DEVICE, "GetSystemDateAndTime", auth=auth)
         except DeviceAuthFailed:
-            self._failure = None   # algunos equipos piden autenticación hasta para la hora: no es un intento
-            return
+            if auth:
+                raise
+            return   # algunos equipos piden autenticación hasta para la hora; sin credenciales no gasta intento
         except DeviceError as exc:
             if isinstance(exc, DeviceUnreachable):
                 raise
@@ -414,6 +473,8 @@ class OnvifClient:
         """`GetSystemDateAndTime` sin autenticar (CONTRATO §18.3)."""
         self.device_utc = None
         await self._sync_clock()
+        if self.device_utc is None and self._auth_mode == "http" and self._failure is None:
+            await self._sync_clock(auth=True)   # equipos que piden Digest HTTP hasta para la hora
         if self.device_utc is None:
             raise DeviceProtocolError(f"{self.label} no devolvió su hora por ONVIF")
         ntp = ""

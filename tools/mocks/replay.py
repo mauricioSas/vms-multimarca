@@ -29,6 +29,13 @@ SNAPSHOT = (Path(__file__).parent / "assets" / "snapshot.jpg").read_bytes()
 _SNAPSHOT_PATHS = re.compile(r"(/picture$|/snapshot\.cgi$|/onvif/snapshot|/snapshot)", re.IGNORECASE)
 
 
+def _not_authorized() -> httpx.Response:
+    return httpx.Response(400, content=b'<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-'
+                                       b'envelope"><s:Body><s:Fault><s:Code><s:Subcode><s:Value>ter:NotAuthorized'
+                                       b"</s:Value></s:Subcode></s:Code></s:Fault></s:Body></s:Envelope>",
+                          headers={"content-type": "application/soap+xml"})
+
+
 def _query_key(items: list[tuple[str, str]] | list[list[str]]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted((str(k), str(v)) for k, v in items))
 
@@ -98,19 +105,22 @@ class ReplayTransport(httpx.AsyncBaseTransport):
             self.rejected += 1
             if self.failure:
                 return self._resp(self.failure["response"])
-            return httpx.Response(400, content=b'<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/'
-                                                b'05/soap-envelope"><s:Body><s:Fault><s:Code><s:Subcode><s:Value>'
-                                                b"ter:NotAuthorized</s:Value></s:Subcode></s:Code></s:Fault></s:Body>"
-                                                b"</s:Envelope>", headers={"content-type": "application/soap+xml"})
+            return _not_authorized()
         path = request.url.path
         if request.method == "GET" and _SNAPSHOT_PATHS.search(path):
             return httpx.Response(200, content=SNAPSHOT, headers={"content-type": "image/jpeg"})
         query = _query_key(parse_qsl(request.url.query.decode("ascii", errors="replace"), keep_blank_values=True))
-        for r in self.records:
-            rq = r["request"]
-            if rq["method"] == request.method and rq["path"] == path and rq.get("soap_op", "") == op \
-                    and _query_key(rq["query"]) == query and r["response"]["status"] != 401:
-                return self._resp(r["response"])
+        matches = [r for r in self.records
+                   if r["request"]["method"] == request.method and r["request"]["path"] == path
+                   and r["request"].get("soap_op", "") == op and _query_key(r["request"]["query"]) == query
+                   and r["response"]["status"] != 401]
+        credentialed = bool(auth) or ws is not None
+        same = [r for r in matches if bool(r["request"]["authorized"]) == credentialed]
+        if op and not credentialed and matches and not same:
+            # operación SOAP que el equipo solo contestó con credenciales: sin ellas, NotAuthorized (como el equipo)
+            return _not_authorized()
+        for r in same or matches:
+            return self._resp(r["response"])
         self.unmatched.append(f"{request.method} {path} {op}".strip())
         return httpx.Response(404, content=b"no grabado")
 
