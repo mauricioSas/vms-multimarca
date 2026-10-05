@@ -63,7 +63,8 @@ def _login(page: Any, user: tuple[str, str], path: str = "/") -> None:
     page.fill("#password", user[1])
     page.click("#login-submit")
     page.wait_for_url(lambda url: "/login" not in url)
-    page.wait_for_load_state("networkidle")
+    # el muro mantiene abierta la conexión de eventos (SharedWorker de B2): ahí la red nunca queda en reposo
+    page.wait_for_load_state("load" if path.startswith("/wall") else "networkidle")
 
 
 def _api(srv: ServerThread, user: tuple[str, str] = ADMIN) -> httpx.Client:
@@ -149,7 +150,7 @@ def test_wizard_never_on_walls_nor_for_operators(browser: Any, server: tuple[Rea
     assert not any("/vendor/driver.js" in u or "/api/onboarding" in u or "help/es.json" in u for u in requests)
     k = _page(browser, srv)
     k.goto("/api/auth/kiosk?token=kiosk-token-pruebas&next=/wall/2")
-    k.wait_for_load_state("networkidle")
+    k.wait_for_load_state("load")
     assert k.locator(".help-btn, .ob-card").count() == 0
     op = _page(browser, srv)
     _login(op, OPERATOR)
