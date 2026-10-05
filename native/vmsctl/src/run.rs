@@ -76,6 +76,15 @@ pub fn passes_env_file(def: &ServiceDef) -> bool {
     def.name == UPDATER
 }
 
+/// Argumentos tras `-m módulo`: `vms_updater` exige la orden (`run` es el servicio; sin ella argparse sale con 2).
+pub fn module_args(def: &ServiceDef) -> &'static [&'static str] {
+    if def.name == UPDATER {
+        &["run"]
+    } else {
+        &[]
+    }
+}
+
 /// Variables `VMS_*` con valor del `.env`, en orden, salvo las que ya trae el entorno del proceso.
 pub fn env_file_vars(env_file: &std::path::Path) -> Vec<(String, OsString)> {
     let mut vars: Vec<(String, OsString)> = crate::envfile::read(env_file)
@@ -127,7 +136,9 @@ pub fn build_spec(def: &ServiceDef, ctx: &Ctx, a: &Args) -> Result<RunSpec, CtlE
                 .ok()
                 .filter(|p| p.is_dir())
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            (program, vec!["-m".into(), module.into()], cwd, None)
+            let mut args: Vec<OsString> = vec!["-m".into(), module.into()];
+            args.extend(module_args(def).iter().map(OsString::from));
+            (program, args, cwd, None)
         }
     };
     Ok(RunSpec {
@@ -626,8 +637,11 @@ mod tests {
         assert_eq!(last("VMS_VACIA"), None);
         assert_eq!(last("OTRA"), None, "solo variables VMS_*");
         assert_eq!(s.cwd, slot.join("app"));
+        // CI B3: sin «run» el actualizador salía con 2 al instante, en bucle
+        assert_eq!(s.args, vec![OsString::from("-m"), "vms_updater".into(), "run".into()]);
         let b = build_spec(vms_common::services::by_name("VMSBackend").unwrap(), &ctx, &a).unwrap();
         assert!(!b.env_set.iter().any(|(n, _)| n == "VMS_UPDATE_SOURCE"), "el backend lee el .env él mismo");
+        assert_eq!(b.args, vec![OsString::from("-m"), "vms".into()]);
     }
 
     #[test]

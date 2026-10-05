@@ -37,8 +37,10 @@ def test_step10_restart(e2e: E2E, step: h.Step) -> None:
         step.note("Dobles: se comprueba que las órdenes existen y responden. Matar mediamtx.exe y python.exe y "
                   "medir la vuelta en < 10 s necesita los servicios reales (B1).")
     else:
-        for image in ("mediamtx.exe", "python.exe"):
-            subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True, check=False)
+        # Solo los procesos del producto: «taskkill /IM python.exe» mataría también al pytest de este e2e.
+        prog = str(h.program_dir()).replace("'", "''")
+        h.powershell(f"Get-Process mediamtx, python -ErrorAction SilentlyContinue | "
+                     f"Where-Object {{ $_.Path -like '{prog}\\*' }} | Stop-Process -Force")
         assert h.wait_until(lambda: _vmsctl(e2e, "health", "wait", "--timeout", "5").returncode == 0, 10, 1)
 
 

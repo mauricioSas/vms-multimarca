@@ -84,12 +84,14 @@ def test_step3_system(e2e: E2E, step: h.Step) -> None:
     new_calls = calls(e2e)[e2e.state["calls_before_install"]:]
     cmds = [h.command_of(c["argv"]) for c in new_calls]  # type: ignore[arg-type]
     step.details["vmsctl"] = cmds
-    expected = ["ports check", "version switch", "services install", "acl apply", "kiosk rotate", "firewall apply",
+    # services install apunta el puntero de versión (sin «version switch» en una instalación nueva, §13.4)
+    expected = ["ports check", "services install", "acl apply", "kiosk rotate", "firewall apply",
                 "tls setup", "services start", "health wait"]
     assert h.is_subsequence(expected, cmds), f"orden de vmsctl inesperado: {cmds}"
     by_cmd = {h.command_of(c["argv"]): c for c in new_calls}  # type: ignore[arg-type]
-    assert all(c["elevated"] for c in new_calls), "vmsctl tiene que ejecutarse elevado"
-    assert all("--json" in c["argv"] for c in new_calls), "el instalador siempre pide --json (§14.2)"
+    if e2e.doubles:   # con el vmsctl real las órdenes salen del registro de Inno (ver common.calls)
+        assert all(c["elevated"] for c in new_calls), "vmsctl tiene que ejecutarse elevado"
+        assert all("--json" in c["argv"] for c in new_calls), "el instalador siempre pide --json (§14.2)"
     argv = by_cmd["services install"]["argv"]
     assert h.flag(argv, "role") == "store" and h.flag(argv, "data-dir") == str(data)
     assert h.flag(by_cmd["firewall apply"]["argv"], "profiles") == "private,domain"

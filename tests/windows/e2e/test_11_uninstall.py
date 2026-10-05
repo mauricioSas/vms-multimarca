@@ -2,7 +2,9 @@
 desinstalar con /PURGE y los códigos de salida de error documentados (puerto ocupado, sistema que no responde)."""
 from __future__ import annotations
 
+import contextlib
 import json
+import socket
 from pathlib import Path
 
 import pytest
@@ -87,9 +89,15 @@ def test_step11d_error_exit_codes(e2e: E2E, step: h.Step) -> None:
                                                  f"/SECRETS={new_secrets(e2e, 'e1.json')}", "/MINFREEGB=999999"],
                         "disco-pequeno")
     assert small.code == 7 and "999999 GB" in small.text(), small.text()[-3000:]
-    busy = h.run_setup(e2e.installer, e2e.env, ["/TYPE=store", f"/LOADINF={inf}",
-                                                f"/SECRETS={new_secrets(e2e, 'e2.json')}", "/MINFREEGB=1"],
-                       "puerto-ocupado", extra_env={"VMS_FAKE_VMSCTL_FAIL": "ports-check=10"})
+    # Con el doble se inyecta el fallo; con el vmsctl real se ocupa de verdad el puerto web.
+    with contextlib.ExitStack() as stack:
+        if not e2e.doubles:
+            holder = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            holder.bind(("0.0.0.0", 8600))
+            holder.listen(1)
+        busy = h.run_setup(e2e.installer, e2e.env, ["/TYPE=store", f"/LOADINF={inf}",
+                                                    f"/SECRETS={new_secrets(e2e, 'e2.json')}", "/MINFREEGB=1"],
+                           "puerto-ocupado", extra_env={"VMS_FAKE_VMSCTL_FAIL": "ports-check=10"})
     assert busy.code == 7 and "puerto ocupado" in busy.text(), busy.text()[-3000:]
     if not e2e.doubles:
         step.note("Los fallos simulados necesitan el vmsctl de prueba: el resto de este paso se omite en modo real.")

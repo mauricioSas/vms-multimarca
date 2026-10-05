@@ -131,8 +131,13 @@ jobs:
         run: python -m tools.build inno --install
       - name: Build completa → instalador
         shell: pwsh
+        env:
+          E2E_BUILD: ${{ inputs.e2e }}
         run: |
           $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' } elseif ($env:NATIVES) { $extra += $env:NATIVES -split ' ' }
+          # El e2e usa los parámetros de simulación (/MINFREEGB, /CAPTURESTATE…): con binarios reales también hace
+          # falta un instalador de prueba. Sin e2e (build.yml) sale el instalador de producto.
+          if ($env:E2E_BUILD -eq 'true') { $extra += '--test-build' }
           python -m tools.build all --version $env:VERSION @extra --out dist
       - name: Reproducibilidad del payload Python/web (dos builds limpias, PLAN-V2 §4.1)
         shell: pwsh

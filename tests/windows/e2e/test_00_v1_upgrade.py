@@ -82,7 +82,7 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
 
     cmds = [h.command_of(c["argv"]) for c in calls(e2e)[first:]]
     step.details["vmsctl"] = cmds
-    assert h.is_subsequence(["migrate-from-v1", "version switch", "services install", "services start"], cmds)
+    assert h.is_subsequence(["migrate-from-v1", "services install", "services start"], cmds)
     assert "ports check" not in cmds, "con la v1 instalada sus puertos están en uso: no se comprueban"
 
     # --- 3. datos intactos

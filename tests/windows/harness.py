@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -262,6 +264,30 @@ def read_calls(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     return [json.loads(line) for line in read_text_any(path).splitlines() if line.strip()]
+
+
+#: «2026-10-05 19:40:12.987   vmsctl services install --role store …» (RunVmsctl, vmsctl.pas). La línea del
+#: resultado («… -> código 0») se descarta.
+_VMSCTL_LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d [\d:.]+\s+vmsctl (?P<args>.+)$")
+
+
+def _unquote(token: str) -> str:
+    return token[1:-1] if len(token) >= 2 and token[0] == token[-1] == '"' else token
+
+
+def calls_from_logs(logs: Path) -> list[dict[str, Any]]:
+    """Con el vmsctl REAL no hay registro de llamadas del doble: las órdenes salen de los registros de Inno
+    (instalador y desinstalador), en el orden de las ejecuciones. RunVmsctl siempre añade ``--json`` y el
+    instalador siempre corre elevado (PrivilegesRequired=admin)."""
+    out: list[dict[str, Any]] = []
+    for log in sorted(logs.glob("*.log")):
+        for line in read_text_any(log).splitlines():
+            m = _VMSCTL_LOG_LINE.match(line.strip())
+            if not m or " -> código " in m["args"]:
+                continue
+            argv = [_unquote(t) for t in shlex.split(m["args"], posix=False)]
+            out.append({"argv": [*argv, "--json"], "elevated": True, "log": log.name})
+    return out
 
 
 def command_of(argv: Sequence[str]) -> str:

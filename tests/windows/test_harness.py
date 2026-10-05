@@ -35,6 +35,27 @@ def test_read_calls(tmp_path: Path) -> None:
     assert h.read_calls(tmp_path / "no.jsonl") == []
 
 
+def test_calls_from_inno_logs_with_the_real_vmsctl(tmp_path: Path) -> None:
+    """Con el vmsctl real (CI B3, doubles: false) las órdenes se leen de los registros del instalador."""
+    (tmp_path / "02-instalacion.log").write_text(
+        "2026-10-05 19:40:02.477   config.json inicial escrito (sede e2e-01).\r\n"
+        "2026-10-05 19:40:02.479   vmsctl services install --role store --data-dir C:\\ProgramData\\VMSMultimarca"
+        " --recordings-dir \"D:\\vms-e2e\\Grabaciones CCTV\"\r\n"
+        "2026-10-05 19:40:12.987   vmsctl services install --role store -> código 0\r\n"
+        "2026-10-05 19:40:12.987     {\"code\":0}\r\n"
+        "2026-10-05 19:40:19.257   vmsctl tls setup --hostname runnervm\r\n", encoding="utf-8-sig")
+    (tmp_path / "03-desinstalar.log").write_text("2026-10-05 19:50:00.000   vmsctl services uninstall --purge\n",
+                                                encoding="utf-8")
+    calls = h.calls_from_logs(tmp_path)
+    assert [h.command_of(c["argv"]) for c in calls] == ["services install", "tls setup", "services uninstall"]
+    argv = calls[0]["argv"]
+    assert h.flag(argv, "data-dir") == r"C:\ProgramData\VMSMultimarca"
+    assert h.flag(argv, "recordings-dir") == r"D:\vms-e2e\Grabaciones CCTV"
+    assert all(c["elevated"] and c["argv"][-1] == "--json" for c in calls)
+    assert "--purge" in calls[2]["argv"]
+    assert h.calls_from_logs(tmp_path / "no-existe") == []
+
+
 def test_read_text_any(tmp_path: Path) -> None:
     (tmp_path / "a").write_bytes("ñ".encode("utf-16"))
     (tmp_path / "b").write_bytes(b"\xef\xbb\xbf" + "ñ".encode())

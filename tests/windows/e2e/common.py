@@ -51,7 +51,8 @@ def new_secrets(e2e: E2E, name: str = "ci-secrets.json") -> Path:
 
 
 def calls(e2e: E2E) -> list[dict[str, object]]:
-    return h.read_calls(e2e.env.calls_log)
+    """Órdenes de vmsctl lanzadas hasta ahora: el registro del doble o, con el vmsctl real, los de Inno."""
+    return h.read_calls(e2e.env.calls_log) if e2e.doubles else h.calls_from_logs(e2e.env.logs)
 
 
 def commands_since(e2e: E2E, start: int) -> list[str]:
