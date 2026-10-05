@@ -240,37 +240,53 @@ jobs:
           key: cargo-viewer-${{ runner.os }}-${{ hashFiles('native/viewer/src-tauri/Cargo.lock', 'native/viewer/src-tauri/rust-toolchain.toml') }}
       - name: Toolchain fijado (native/viewer/src-tauri/rust-toolchain.toml)
         run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
-      - name: cargo fmt / clippy / test del visor (con el código cfg(windows))
+      # Cada paso de comprobación corre aunque falle el anterior (if: !cancelled()): una sola ejecución en Windows
+      # da todos los resultados. El job falla igual si falla cualquiera.
+      - name: cargo fmt
         working-directory: native/viewer/src-tauri
-        run: |
-          cargo fmt --check
-          cargo clippy --all-targets --locked -- -D warnings
-          cargo test --locked
+        run: cargo fmt --check
+      - name: cargo test del visor (con el código cfg(windows) y la prueba de capacidades IPC)
+        if: ${{ !cancelled() }}
+        working-directory: native/viewer/src-tauri
+        run: cargo test --locked
+      - name: cargo clippy -D warnings (Windows)
+        if: ${{ !cancelled() }}
+        working-directory: native/viewer/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: cargo-deny (binario precompilado y verificado)
+        if: ${{ !cancelled() }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
       - name: Licencias, crates prohibidos y orígenes del visor (native/deny.toml)
+        if: ${{ !cancelled() }}
         run: cargo deny --manifest-path native/viewer/src-tauri/Cargo.toml --config native/deny.toml check licenses bans sources
       - name: "Build de PRUEBA: cargo tauri build --no-bundle (CLI oficial 2.12.1, con CDP)"
+        id: build
+        if: ${{ !cancelled() }}
         working-directory: native/viewer/src-tauri
         run: npx --yes @tauri-apps/cli@2.12.1 build --no-bundle --ci --features prueba
       - name: Dependencias de la prueba de humo (lock de sede con SHA-256 + Playwright sin navegadores)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-vms.txt
           python -m pip install --no-deps "playwright==1.63.0" "greenlet==3.5.6" "pyee==13.0.1"
       - name: MediaMTX v1.21.1 (verificado por SHA-256)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/cache@v6
         with:
           path: bin
           key: mediamtx-v1.21.1-${{ runner.os }}-${{ hashFiles('tools/fetch_mediamtx.py') }}
-      - run: python -m tools.fetch_mediamtx
+      - if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python -m tools.fetch_mediamtx
       - name: ffmpeg de pruebas (solo genera los flujos del simulador; no forma parte del producto)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/cache@v6
         with:
           path: .tmp/ffmpeg
           key: ffmpeg-9.0.2-essentials-${{ runner.os }}
       - name: Descargar ffmpeg 9.0.2 (SHA-256 fijado, el mismo que el kit de S1)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dir = '.tmp/ffmpeg'
@@ -286,6 +302,7 @@ jobs:
           }
           "VMS_TEST_FFMPEG=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Prueba de humo por CDP (muro con fotogramas, IPC, sin permiso y S5)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python -m tests.viewer.smoke_windows --exe native/viewer/src-tauri/target/release/VMS.exe --out visor-humo
       - if: always()
         uses: actions/upload-artifact@v7

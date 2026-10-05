@@ -22,7 +22,30 @@ const COMMANDS: &[&str] = &[
     "sin_permiso",
 ];
 
+/// Manifiesto con Common Controls 6 para los ejecutables de PRUEBA en Windows. tauri-build solo lo incrusta en
+/// `VMS.exe`; sin él, una prueba que enlaza Tauri entero (tests/ipc_acl.rs) no llega ni a arrancar
+/// (STATUS_ENTRYPOINT_NOT_FOUND, comprobado en windows-latest).
+const TEST_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
+
 fn main() {
+    let windows_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if windows_msvc {
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+        let manifest = out.join("pruebas.manifest");
+        std::fs::write(&manifest, TEST_MANIFEST).expect("manifiesto de pruebas");
+        println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}", manifest.display());
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )
