@@ -171,19 +171,20 @@ pub fn install(ctx: &Ctx, p: Platform<'_>, opts: &InstallOpts) -> Result<Outcome
     }
     let token_created = if needs_engine { ensure_internal_token(data)? } else { false };
     let services = opts.role.services();
-    let mut acl_steps = 0;
-    if opts.acl {
-        let group = acl::ensure_operators_group()?;
-        let steps = acl::plan(data, Some(install), &services, opts.extra_recordings.as_deref(), &|f| f.is_file());
-        acl_steps = acl::apply(p.runner, &steps)?;
-        let _ = group;
-    }
     let mut out = Vec::new();
     for def in &services {
         let spec = spec_for(def, install, data);
         let created = p.scm.install(&spec)?;
         out.push(json!({"name": def.name, "created": created, "account": spec.account,
                         "image": format!("\"{}\" {}", spec.image.display(), spec.args.join(" "))}));
+    }
+    // ACL después de crear los servicios: Windows solo acepta el SID `NT SERVICE\…` de un servicio que existe
+    // (icacls responde 1332 «No mapping between account names and security IDs» si aún no está).
+    let mut acl_steps = 0;
+    if opts.acl {
+        acl::ensure_operators_group()?;
+        let steps = acl::plan(data, Some(install), &services, opts.extra_recordings.as_deref(), &|f| f.is_file());
+        acl_steps = acl::apply(p.runner, &steps)?;
     }
     // Servicios nuestros que ya no tocan en este puesto (cambio de tipo de puesto): fuera.
     let mut removed = Vec::new();
@@ -341,7 +342,7 @@ mod tests {
         assert_eq!(spec.env[0].0, "VMS_DATA_DIR");
         assert_eq!(scm.services["VMSUpdater"].0.account, "LocalSystem");
         assert!(!scm.services["VMSEngine"].0.delayed);
-        // Orden: engine-config → ACL → servicios
+        // Orden: engine-config → servicios → ACL (el SID de un servicio solo existe cuando existe el servicio)
         assert!(runner.calls[0].contains("-m vms engine-config"), "{:?}", runner.calls);
         assert!(runner.calls[1].starts_with("icacls.exe"));
         // Puntero y diario con la versión instalada

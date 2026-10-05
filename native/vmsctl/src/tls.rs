@@ -71,24 +71,25 @@ pub fn setup(
     ))
 }
 
-pub fn kiosk_rotate(ctx: &Ctx, runner: &mut dyn Runner) -> Result<Outcome, CtlError> {
+/// `backend_installed`: el SID de `NT SERVICE\VMSBackend` solo se puede usar en una ACL si el servicio existe.
+pub fn kiosk_rotate(ctx: &Ctx, runner: &mut dyn Runner, backend_installed: bool) -> Result<Outcome, CtlError> {
     let bytes = vms_common::secret::random_bytes(32).map_err(|e| CtlError::io(&e, "generador aleatorio"))?;
     let token = vms_common::secret::b64url(&bytes);
     let path = ctx.data.secrets_dir().join("kiosk.token");
     vms_common::secret::write_secret(&path, token.as_bytes())
         .map_err(|e| CtlError::io(&e, &path.display().to_string()))?;
     let group = acl::ensure_operators_group()?;
-    let steps = vec![acl::AclStep {
-        path: path.clone(),
-        args: vec![
-            "/inheritance:r".into(),
-            "/grant:r".into(),
-            format!("*{}:F", well_known::LOCAL_SYSTEM),
-            format!("*{}:F", well_known::ADMINISTRATORS),
-            format!("*{}:R", service_sid(BACKEND)),
-            format!("{}:R", acl::OPERATORS_GROUP),
-        ],
-    }];
+    let mut args = vec![
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(),
+        format!("*{}:F", well_known::LOCAL_SYSTEM),
+        format!("*{}:F", well_known::ADMINISTRATORS),
+        format!("{}:R", acl::OPERATORS_GROUP),
+    ];
+    if backend_installed {
+        args.push(format!("*{}:R", service_sid(BACKEND)));
+    }
+    let steps = vec![acl::AclStep { path: path.clone(), args }];
     if cfg!(windows) {
         acl::apply(runner, &steps)?;
     }
@@ -122,9 +123,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(d.path(), None, None);
         let mut r = FakeRunner::default();
-        kiosk_rotate(&ctx, &mut r).unwrap();
+        kiosk_rotate(&ctx, &mut r, true).unwrap();
         let a = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
-        kiosk_rotate(&ctx, &mut r).unwrap();
+        kiosk_rotate(&ctx, &mut r, true).unwrap();
         let b = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
         assert_eq!(a.len(), 43);
         assert_ne!(a, b);

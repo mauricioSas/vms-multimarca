@@ -249,7 +249,13 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
                 a.has("--import-root"),
             )
         }
-        ("kiosk", "rotate") => tls::kiosk_rotate(ctx, &mut RealRunner),
+        ("kiosk", "rotate") => {
+            let backend = real_scm(false)
+                .and_then(|s| s.query(vms_common::services::BACKEND))
+                .map(|i| i.is_some())
+                .unwrap_or(false);
+            tls::kiosk_rotate(ctx, &mut RealRunner, backend)
+        }
         ("diag", "bundle") => {
             let out = PathBuf::from(need(a, "--out", "<archivo.zip>")?);
             let services = real_scm(false).and_then(|s| services_cmd::summary(s.as_ref())).unwrap_or(json!(null));

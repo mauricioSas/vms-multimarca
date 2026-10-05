@@ -301,7 +301,8 @@ def main() -> int:
         assert rec["from"] == BROKEN and rec["to"] == VERSION and rec["by"] == "vmshost", rec
         logs = "".join(p.read_text(encoding="utf-8", errors="replace") for p in (data / "logs").glob("vmshost-*.log"))
         assert "pido la vuelta atrás" in logs, "un servicio sin privilegios pidió la vuelta atrás"
-        assert not list((data / "state" / "requests").glob("rollback-*.json")), "peticiones consumidas"
+        # Las peticiones tardías (otro servicio que cayó justo antes) las descarta el actualizador en ≤ 0,5 s
+        wait_until(lambda: not list((data / "state" / "requests").glob("rollback-*.json")), 20, "peticiones consumidas")
         out = ctl("health", "wait", "--timeout", "240", timeout=300)
         return f"vuelta atrás en {took} s ({rec['reason']}); sano otra vez en {out['data']['waited_s']} s"
 
