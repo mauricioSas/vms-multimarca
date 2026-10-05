@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/deviceInfo",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeviceInfo version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<deviceName>Equipo</deviceName>\n<deviceID>48443030-3637-3534-3838-c42f90f1e6a1</deviceID>\n<model>DS-7608NI-K2/8P</model>\n<serialNumber>DS-7608NI-K2/8PSNBFFF9520C2</serialNumber>\n<macAddress>02:00:5e:00:53:01</macAddress>\n<firmwareVersion>V4.30.085</firmwareVersion>\n<firmwareReleasedDate>build 210812</firmwareReleasedDate>\n<encoderVersion>V5.0</encoderVersion>\n<encoderReleasedDate>build 210720</encoderReleasedDate>\n<deviceType>NVR</deviceType>\n<telecontrolID>255</telecontrolID>\n</DeviceInfo>\n",
+    "binary": false
+  }
+}

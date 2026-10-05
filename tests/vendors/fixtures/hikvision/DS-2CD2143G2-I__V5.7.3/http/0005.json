@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/time/ntpServers",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<NTPServerList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<NTPServer>\n<id>1</id>\n<addressingFormatType>hostname</addressingFormatType>\n<hostName>pool.ntp.org</hostName>\n<portNo>123</portNo>\n<synchronizeInterval>60</synchronizeInterval>\n</NTPServer>\n</NTPServerList>\n",
+    "binary": false
+  }
+}

@@ -94,11 +94,12 @@ class RtspChaosServer:
     def __init__(self, *, username: str = "admin", password: str = "Sim#Pass:1@/x", host: str = "127.0.0.1",
                  port: int = 0, scenario: str = "", realm: str = "IP Camera(CHAOS)", fps: int = 10,
                  slow_first_frame_s: float = 10.0, keepalive_timeout_s: float = 2.0, max_sessions: int = 2,
-                 lock_after: int = 3) -> None:
+                 lock_after: int = 3, paths: set[str] | None = None) -> None:
         self.username, self.password, self.host, self.port = username, password, host, port
         self.scenario, self.realm, self.fps = scenario, realm, fps
         self.slow_first_frame_s, self.keepalive_timeout_s = slow_first_frame_s, keepalive_timeout_s
         self.max_sessions_allowed, self.lock_after = max_sessions, lock_after
+        self.paths = paths            # si se da, solo esas rutas existen (el resto: 404 tras autenticar)
         self.stats = ChaosStats()
         self.locked = False
         self._nonces: set[str] = set()
@@ -141,6 +142,11 @@ class RtspChaosServer:
         for v in parse_qs(parts.query).get("scenario", []):
             names |= {n for n in v.split("+") if n in SCENARIOS}
         return names
+
+    @staticmethod
+    def _path_of(url: str) -> str:
+        parts = urlsplit(url)
+        return parts.path + (f"?{parts.query}" if parts.query else "")
 
     def codec_of(self, sc: set[str]) -> str:
         return "h265" if "h265" in sc else "mjpeg" if "mjpeg" in sc else "h264"
@@ -269,7 +275,8 @@ class RtspChaosServer:
                                                     body, self._challenges(sc)))
                         await writer.drain()
                         continue
-                    elif "double-slash" in sc and "//" not in urlsplit(url).path.split("double-slash", 1)[-1]:
+                    elif ("double-slash" in sc and "//" not in urlsplit(url).path.split("double-slash", 1)[-1]) or \
+                            (self.paths is not None and self._path_of(url) not in self.paths):
                         status, reason = 404, "Not Found"
                     else:
                         if "slow-sdp" in sc:

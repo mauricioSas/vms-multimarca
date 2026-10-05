@@ -53,6 +53,7 @@ class Detector:
     sadp: bool = False
     dhip: bool = False
     rivals: tuple[str, ...] = ()                            # nombres de otras marcas que restan
+    exclude_model_regex: str | None = None                  # modelos de una submarca con driver propio (Ezviz «CS-»)
 
     def __call__(self, hints: DetectionHints) -> float:
         signals: list[float] = []
@@ -84,6 +85,8 @@ class Detector:
         score = 1.0 - miss
         if any(r in t for t in self_texts for r in self.rivals if t) and W_SELF not in signals:
             score *= 0.3       # el equipo dice ser de otra marca
+        if self.exclude_model_regex and any(re.match(self.exclude_model_regex, m, re.IGNORECASE) for m in models if m):
+            score *= 0.3       # modelo de una submarca que tiene su propio driver
         return round(min(score, 0.99), 3)
 
 

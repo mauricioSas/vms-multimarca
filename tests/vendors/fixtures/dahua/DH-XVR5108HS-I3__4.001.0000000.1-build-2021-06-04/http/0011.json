@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/configManager.cgi",
+    "query": [
+      [
+        "action",
+        "getConfig"
+      ],
+      [
+        "name",
+        "SmartEncode"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "table.SmartEncode[0].Enable=false\r\ntable.SmartEncode[1].Enable=false\r\ntable.SmartEncode[2].Enable=false\r\ntable.SmartEncode[3].Enable=false\r\ntable.SmartEncode[4].Enable=false\r\ntable.SmartEncode[5].Enable=false\r\ntable.SmartEncode[6].Enable=false\r\ntable.SmartEncode[7].Enable=false\r\n",
+    "binary": false
+  }
+}

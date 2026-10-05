@@ -69,10 +69,12 @@ class RtspProbeResult:
 class _Conn:
     """Una conexión RTSP con CSeq, sesión y lectura de mensajes y paquetes entrelazados."""
 
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, timeout: float) -> None:
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, timeout: float,
+                 trace: list[dict[str, object]] | None = None) -> None:
         self.reader, self.writer, self.timeout = reader, writer, timeout
         self.cseq = 0
         self.session = ""
+        self.trace = trace
 
     async def request(self, method: str, url: str, headers: dict[str, str] | None = None
                       ) -> tuple[int, str, dict[str, list[str]], bytes]:
@@ -87,6 +89,11 @@ class _Conn:
         while True:
             item = await asyncio.wait_for(self._read_unit(), self.timeout)
             if isinstance(item, tuple):
+                if self.trace is not None:   # para capturar fixtures: nunca la cabecera Authorization
+                    status, reason, rh, rbody = item
+                    self.trace.append({"method": method, "url": url, "authorized": "Authorization" in (headers or {}),
+                                       "status": status, "reason": reason, "headers": rh,
+                                       "body": rbody.decode("utf-8", errors="replace")})
                 return item
             # paquete entrelazado que llega antes de la respuesta: se descarta
 
@@ -161,7 +168,8 @@ def is_keyframe(codec: str | None, payload: bytes) -> bool:
 
 async def probe_rtsp(host: str, port: int, path: str, username: str = "", password: str = "", *,
                      timeout: float = 5.0, allow_basic: bool = False, alt_paths: tuple[str, ...] = (),
-                     first_frame: bool = False, frame_timeout: float = 6.0) -> RtspProbeResult:
+                     first_frame: bool = False, frame_timeout: float = 6.0,
+                     trace: list[dict[str, object]] | None = None) -> RtspProbeResult:
     """OPTIONS + DESCRIBE a rtsp://host:port/path. Nunca lanza; devuelve el diagnóstico en español."""
     result = RtspProbeResult()
     base = f"rtsp://{rtsp.format_host(host)}:{int(port)}"
@@ -171,7 +179,7 @@ async def probe_rtsp(host: str, port: int, path: str, username: str = "", passwo
         reader, w = await asyncio.wait_for(asyncio.open_connection(host.strip("[]"), int(port)), timeout)
         writer = w
         result.reachable = True
-        conn = _Conn(reader, w, timeout)
+        conn = _Conn(reader, w, timeout, trace)
         challenge: vauth.Challenge | None = None
         dstate: vauth.DigestState | None = None
         rejected = False

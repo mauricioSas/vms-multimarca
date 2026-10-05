@@ -1,0 +1,20 @@
+{
+  "driver": "onvif",
+  "model": "FD8166A",
+  "firmware": "0100a",
+  "firmware_date": "",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "SNF66E27BAB8",
+  "channels": 1,
+  "channel_ids": [
+    1
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/live1.sdp",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "Solo Media1 y un único perfil"
+}

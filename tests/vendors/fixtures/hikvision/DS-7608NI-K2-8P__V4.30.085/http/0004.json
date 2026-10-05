@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/Video/inputs/channels",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ResponseStatus version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<requestURL>/ISAPI/System/Video/inputs/channels</requestURL>\n<statusCode>4</statusCode>\n<statusString>Invalid Operation</statusString>\n<subStatusCode>notSupport</subStatusCode>\n</ResponseStatus>\n",
+    "binary": false
+  }
+}

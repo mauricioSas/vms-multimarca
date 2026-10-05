@@ -1,0 +1,27 @@
+{
+  "driver": "dahua",
+  "model": "DH-XVR5108HS-I3",
+  "firmware": "4.001.0000000.1,build:2021-06-04",
+  "firmware_date": "2021-06-04",
+  "kind": "xvr",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "SNC0539F58E8",
+  "channels": 8,
+  "channel_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/cam/realmonitor?channel=1&subtype=0",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "XVR: 4 analógicas y 4 IP desde el canal 5 (no verificado con hardware)"
+}

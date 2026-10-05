@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/magicBox.cgi",
+    "query": [
+      [
+        "action",
+        "getProductDefinition"
+      ],
+      [
+        "name",
+        "VideoInputChannels"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "table.VideoInputChannels=0\r\n",
+    "binary": false
+  }
+}

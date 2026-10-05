@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/deviceInfo",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeviceInfo version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<deviceName>Equipo</deviceName>\n<deviceID>48443030-3637-3534-3838-c42f90f1e6a1</deviceID>\n<model>DS-2CD2143G2-I</model>\n<serialNumber>DS-2CD2143G2-ISN3B1B2E80C9</serialNumber>\n<macAddress>02:00:5e:00:53:01</macAddress>\n<firmwareVersion>V5.7.3</firmwareVersion>\n<firmwareReleasedDate>build 220112</firmwareReleasedDate>\n<encoderVersion>V5.0</encoderVersion>\n<encoderReleasedDate>build 210720</encoderReleasedDate>\n<deviceType>IPCamera</deviceType>\n<telecontrolID>255</telecontrolID>\n</DeviceInfo>\n",
+    "binary": false
+  }
+}

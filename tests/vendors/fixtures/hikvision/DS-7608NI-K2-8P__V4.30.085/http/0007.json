@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/ContentMgmt/InputProxy/channels/status",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InputProxyChannelStatusList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<InputProxyChannelStatus version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>1</id>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.10</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n</sourceInputPortDescriptor>\n<online>true</online>\n<chanDetectResult>connect</chanDetectResult>\n</InputProxyChannelStatus>\n<InputProxyChannelStatus version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>2</id>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.11</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n</sourceInputPortDescriptor>\n<online>true</online>\n<chanDetectResult>connect</chanDetectResult>\n</InputProxyChannelStatus>\n<InputProxyChannelStatus version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>3</id>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.12</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n</sourceInputPortDescriptor>\n<online>false</online>\n<chanDetectResult>offline</chanDetectResult>\n</InputProxyChannelStatus>\n<InputProxyChannelStatus version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>4</id>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.13</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n</sourceInputPortDescriptor>\n<online>true</online>\n<chanDetectResult>connect</chanDetectResult>\n</InputProxyChannelStatus>\n</InputProxyChannelStatusList>\n",
+    "binary": false
+  }
+}

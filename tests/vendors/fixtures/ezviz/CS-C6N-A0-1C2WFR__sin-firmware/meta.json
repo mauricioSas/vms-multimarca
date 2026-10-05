@@ -1,0 +1,18 @@
+{
+  "driver": "ezviz",
+  "model": "CS-C6N-A0-1C2WFR",
+  "firmware": "",
+  "firmware_date": "",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "",
+  "channels": 1,
+  "channel_ids": [],
+  "main_codec": "H.264",
+  "rtsp_path": "/ch1/main",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": ""
+}

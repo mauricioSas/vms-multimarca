@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/Video/inputs/channels",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<VideoInputChannelList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<VideoInputChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>1</id>\n<inputPort>1</inputPort>\n<videoInputEnabled>true</videoInputEnabled>\n<name>Canal 1</name>\n<videoFormat>PAL</videoFormat>\n<resDesc>1920*1080P25</resDesc>\n</VideoInputChannel>\n<VideoInputChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>2</id>\n<inputPort>2</inputPort>\n<videoInputEnabled>true</videoInputEnabled>\n<name>Canal 2</name>\n<videoFormat>PAL</videoFormat>\n<resDesc>1920*1080P25</resDesc>\n</VideoInputChannel>\n<VideoInputChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>3</id>\n<inputPort>3</inputPort>\n<videoInputEnabled>true</videoInputEnabled>\n<name>Canal 3</name>\n<videoFormat>PAL</videoFormat>\n<resDesc>1920*1080P25</resDesc>\n</VideoInputChannel>\n<VideoInputChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>4</id>\n<inputPort>4</inputPort>\n<videoInputEnabled>true</videoInputEnabled>\n<name>Canal 4</name>\n<videoFormat>PAL</videoFormat>\n<resDesc>1920*1080P25</resDesc>\n</VideoInputChannel>\n</VideoInputChannelList>\n",
+    "binary": false
+  }
+}

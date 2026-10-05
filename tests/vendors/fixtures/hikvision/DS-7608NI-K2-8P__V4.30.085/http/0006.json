@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/ContentMgmt/InputProxy/channels",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InputProxyChannelList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\" size=\"4\">\n<InputProxyChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>1</id>\n<name>Canal 1</name>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.10</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n<userName>admin</userName>\n<streamType>auto</streamType>\n<deviceID></deviceID>\n</sourceInputPortDescriptor>\n<enableAnr>false</enableAnr>\n<enableTiming>true</enableTiming>\n</InputProxyChannel>\n<InputProxyChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>2</id>\n<name>Canal 2</name>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.11</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n<userName>admin</userName>\n<streamType>auto</streamType>\n<deviceID></deviceID>\n</sourceInputPortDescriptor>\n<enableAnr>false</enableAnr>\n<enableTiming>true</enableTiming>\n</InputProxyChannel>\n<InputProxyChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>3</id>\n<name>Canal 3</name>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.12</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n<userName>admin</userName>\n<streamType>auto</streamType>\n<deviceID></deviceID>\n</sourceInputPortDescriptor>\n<enableAnr>false</enableAnr>\n<enableTiming>true</enableTiming>\n</InputProxyChannel>\n<InputProxyChannel version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<id>4</id>\n<name>Canal 4</name>\n<sourceInputPortDescriptor>\n<proxyProtocol>HIKVISION</proxyProtocol>\n<addressingFormatType>ipaddress</addressingFormatType>\n<ipAddress>192.0.2.13</ipAddress>\n<managePortNo>8000</managePortNo>\n<srcInputPort>1</srcInputPort>\n<userName>admin</userName>\n<streamType>auto</streamType>\n<deviceID></deviceID>\n</sourceInputPortDescriptor>\n<enableAnr>false</enableAnr>\n<enableTiming>true</enableTiming>\n</InputProxyChannel>\n</InputProxyChannelList>\n",
+    "binary": false
+  }
+}

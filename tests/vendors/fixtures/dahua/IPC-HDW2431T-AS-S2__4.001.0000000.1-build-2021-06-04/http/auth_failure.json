@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/magicBox.cgi",
+    "query": [
+      [
+        "action",
+        "getDeviceType"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ],
+      "www-authenticate": [
+        "Digest qop=\"auth\", realm=\"dahua-realm\", nonce=\"nonce-anon-1\", algorithm=MD5, stale=\"FALSE\""
+      ]
+    },
+    "body": "Error\r\nInvalid Authority!\r\n",
+    "binary": false
+  }
+}

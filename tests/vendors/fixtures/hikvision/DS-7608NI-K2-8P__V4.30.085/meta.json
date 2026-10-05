@@ -1,0 +1,23 @@
+{
+  "driver": "hikvision",
+  "model": "DS-7608NI-K2/8P",
+  "firmware": "V4.30.085",
+  "firmware_date": "2021-08-12",
+  "kind": "nvr",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "DS-7608NI-K2/8PSNBFFF9520C2",
+  "channels": 4,
+  "channel_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/Streaming/Channels/101",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "NVR de 4 canales: canal 3 sin vídeo, canal 4 H.265"
+}

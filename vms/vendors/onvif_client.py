@@ -375,7 +375,8 @@ class OnvifClient:
                 main_path=rtsp_path_of(main_uri), sub_path=rtsp_path_of(sub_uri) if sub_uri else None))
         return out
 
-    async def snapshot(self, channel: int, stream: Literal["main", "sub"] = "main") -> bytes:
+    async def snapshot_uri(self, channel: int, stream: Literal["main", "sub"] = "main") -> str:
+        """URI HTTP de la imagen del canal (GetSnapshotUri); no descarga nada."""
         groups = await self._grouped_profiles()
         if not 1 <= channel <= len(groups):
             raise DeviceProtocolError(f"El canal {channel} no existe en {self.label}")
@@ -384,12 +385,14 @@ class OnvifClient:
         if self.media2_xaddr:
             resp = await self._soap(self.media2_xaddr, NS_MEDIA2, "GetSnapshotUri",
                                     f"<m:ProfileToken>{escape(profile.token)}</m:ProfileToken>")
-            uri = _t(resp, "Uri")
-        else:
-            assert self.media_xaddr is not None
-            resp = await self._soap(self.media_xaddr, NS_MEDIA, "GetSnapshotUri",
-                                    f"<m:ProfileToken>{escape(profile.token)}</m:ProfileToken>")
-            uri = _t(resp, "MediaUri/Uri")
+            return _t(resp, "Uri")
+        assert self.media_xaddr is not None
+        resp = await self._soap(self.media_xaddr, NS_MEDIA, "GetSnapshotUri",
+                                f"<m:ProfileToken>{escape(profile.token)}</m:ProfileToken>")
+        return _t(resp, "MediaUri/Uri")
+
+    async def snapshot(self, channel: int, stream: Literal["main", "sub"] = "main") -> bytes:
+        uri = await self.snapshot_uri(channel, stream)
         if not uri.lower().startswith("http"):
             raise DeviceUnsupported(f"{self.label} no ofrece snapshot por ONVIF")
         parts = urlsplit(self._fix_xaddr(uri))
