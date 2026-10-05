@@ -70,7 +70,8 @@ pub mod fake {
             let line = std::iter::once(name)
                 .chain(args.iter().map(|a| a.to_string_lossy().into_owned()))
                 .collect::<Vec<_>>()
-                .join(" ");
+                .join(" ")
+                .replace('\\', "/"); // misma forma en Windows y en POSIX
             let code = self.codes.iter().find(|(k, _)| line.contains(k.as_str())).map(|(_, c)| *c).unwrap_or(0);
             self.calls.push(line);
             Ok(Exec { code, stderr_tail: String::new() })

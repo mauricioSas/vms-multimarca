@@ -205,7 +205,8 @@ mod tests {
     use vms_common::services::{by_name, Role};
 
     fn joined(steps: &[AclStep]) -> Vec<String> {
-        steps.iter().map(|s| format!("{} {}", s.path.display(), s.args.join(" "))).collect()
+        // Rutas con «/» también en Windows (las pruebas comparan texto)
+        steps.iter().map(|s| format!("{} {}", s.path.display(), s.args.join(" ")).replace('\\', "/")).collect()
     }
 
     #[test]

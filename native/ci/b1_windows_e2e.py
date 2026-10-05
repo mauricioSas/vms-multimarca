@@ -172,7 +172,9 @@ def main() -> int:
         (vdir / "engine").mkdir()
         shutil.copy2(a.mediamtx, vdir / "engine" / "mediamtx.exe")
         r = run([str(vdir / "runtime" / "python.exe"), "-c", "import vms, fastapi, cryptography, sys; print(vms.__file__)"])
-        assert r.returncode == 0 and str(vdir / "app") in r.stdout, f"runtime embebible: {r.stdout} {r.stderr}"
+        got = os.path.normcase(os.path.normpath(r.stdout.strip()))
+        want = os.path.normcase(os.path.normpath(vdir / "app"))
+        assert r.returncode == 0 and got.startswith(want), f"runtime embebible: {r.stdout} {r.stderr}"
         return f"payload en {vdir}; el runtime embebible importa vms desde app\\"
 
     def versions() -> str:
