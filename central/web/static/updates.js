@@ -43,7 +43,13 @@
         "cambios de configuración hechos desde la última actualización.";
       if (confirm(msg)) act(() => api(path + "/rollback", { method: "POST", json: { to: null } }));
     });
-    return el("div", { class: "upd-actions" }, channel, hold, check, back);
+    const extra = [];
+    if (r.skipped && r.skipped.length && !r.unskip_requested_at) {
+      const unskip = el("button", { class: "btn", type: "button" }, `Permitir de nuevo la ${r.skipped.join(", ")}`);
+      unskip.addEventListener("click", () => act(() => api(path + "/unskip", { method: "POST" })));
+      extra.push(unskip);
+    }
+    return el("div", { class: "upd-actions" }, channel, hold, check, back, ...extra);
   }
 
   function render() {
@@ -68,7 +74,9 @@
           r.reboot_pending ? el("div", { class: "upd-pending" }, "Windows tiene un reinicio pendiente") : null),
         el("td", {}, r.channel, r.hold ? el("div", { class: "upd-pending" }, "Retenida") : null,
           r.pending ? el("div", { class: "upd-pending" }, "Pendiente de aplicar en la tienda") : null,
-          r.rollback_to ? el("div", { class: "upd-pending" }, "Vuelta atrás pedida") : null),
+          r.rollback_to ? el("div", { class: "upd-pending" }, "Vuelta atrás pedida") : null,
+          r.skipped && r.skipped.length ? el("div", { class: "upd-pending" },
+            `Omitida tras volver atrás: ${r.skipped.join(", ")}`) : null),
         el("td", {}, r.window),
         el("td", {}, fmtDate(r.last_seen)),
         el("td", {}, actions(r)))))));

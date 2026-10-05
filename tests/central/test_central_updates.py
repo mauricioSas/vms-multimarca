@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -59,7 +60,7 @@ async def test_rollback_and_check_requests(admin_client: httpx.AsyncClient, seed
         assert row == {"installed": "2.1.0", "last_result": "update_ok"}
         # una petición de vuelta atrás caduca a las 24 h
         d3 = await directive_for(c, "site-mad-002", NOW + timedelta(hours=25))
-        assert d3 is not None and d3["update"]["rollback_to"] is None
+        assert d3 is None or d3["update"]["rollback_to"] is None             # nada más pedido: sin directiva
         assert await directive_for(c, "site-can-003", NOW) is None             # sin nada pedido
     r = await admin_client.delete("/api/updates/sites/site-mad-002/rollback", headers=CSRF)
     assert r.status_code == 200 and r.json()["rollback_to"] is None
@@ -156,3 +157,53 @@ def test_versions_page_in_browser(central_settings: Any, seeded_dsn: str) -> Non
         server.should_exit = True
         th.join(10)
     assert errors == []
+
+
+async def test_first_heartbeat_never_turns_reported_values_into_requests(admin_client: httpx.AsyncClient,
+                                                                         seeded_dsn: str) -> None:
+    """Regresión: una sede instalada en pilot con ventana 02:00-04:00 manda su primer latido. El panel no
+    pide nada, así que la respuesta no trae canal, retención ni ventana (antes salía «stable» y 01:00-03:00)."""
+    async with await psycopg.AsyncConnection.connect(seeded_dsn, autocommit=True, row_factory=dict_row) as c:
+        assert await directive_for(c, "site-can-003", NOW) is None
+        rep = {"installed": "2.0.0", "channel": "pilot", "hold": False, "window": "02:00-04:00", "state": "good",
+               "skipped": ["2.1.0", "no-vale"]}
+        assert await directive_for(c, "site-can-003", NOW, rep) is None
+        assert await directive_for(c, "site-can-003", NOW + timedelta(minutes=5), rep) is None
+    r = await admin_client.get("/api/updates/sites")
+    row = {s["site_id"]: s for s in r.json()}["site-can-003"]
+    # lo que se ve es lo que informa la tienda; nada pendiente
+    assert row["channel"] == "pilot" and row["window"] == "02:00-04:00" and row["hold"] is False
+    assert row["requested"] == {"channel": None, "hold": None, "window": None} and row["pending"] is False
+    assert row["skipped"] == ["2.1.0"]
+    # el administrador retiene la sede: solo viaja «hold», el canal y la ventana siguen siendo los de la tienda
+    r = await admin_client.put("/api/updates/sites/site-can-003", json={"hold": True}, headers=CSRF)
+    assert r.status_code == 200 and r.json()["channel"] == "pilot" and r.json()["pending"] is True
+    async with await psycopg.AsyncConnection.connect(seeded_dsn, autocommit=True, row_factory=dict_row) as c:
+        d = await directive_for(c, "site-can-003", NOW + timedelta(minutes=6))
+        assert d is not None and d["update"]["hold"] is True
+        assert "channel" not in d["update"] and "window" not in d["update"]
+    # «Permitir de nuevo» la versión omitida
+    r = await admin_client.post("/api/updates/sites/site-can-003/unskip", headers=CSRF)
+    assert r.status_code == 200 and r.json()["unskip_requested_at"]
+    async with await psycopg.AsyncConnection.connect(seeded_dsn, autocommit=True, row_factory=dict_row) as c:
+        d = await directive_for(c, "site-can-003", NOW + timedelta(minutes=7))
+        assert d is not None and d["update"]["unskip_at"]
+
+
+async def test_directive_round_trip_with_the_updater(seeded_dsn: str) -> None:
+    """La directiva que genera el panel la entiende el actualizador sin cambiar lo que no se pidió."""
+    import json
+    import sys
+
+    root = Path(__file__).resolve().parents[2] / "updater"
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from vms_updater.models import CentralDirective
+
+    async with await psycopg.AsyncConnection.connect(seeded_dsn, autocommit=True, row_factory=dict_row) as c:
+        await directive_for(c, "site-can-003", NOW, {"installed": "2.0.0", "channel": "pilot"})
+        await c.execute("UPDATE site_versions SET check_requested_at = %s WHERE site_id = 'site-can-003'", (NOW,))
+        d = await directive_for(c, "site-can-003", NOW + timedelta(minutes=1))
+    assert d is not None
+    cd = CentralDirective.model_validate(json.loads(json.dumps(d["update"])))
+    assert cd.check is True and cd.channel is None and cd.hold is None and cd.window is None

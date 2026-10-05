@@ -17,14 +17,21 @@ CREATE TABLE site_versions (
     message_es             text NOT NULL DEFAULT '',
     available              text,
     reported_at            timestamptz,
-    -- lo que pide el panel
-    channel                text NOT NULL DEFAULT 'stable' CHECK (channel ~ '^[a-z][a-z0-9-]{1,31}$'),
-    hold                   boolean NOT NULL DEFAULT false,
-    window_local           text NOT NULL DEFAULT '01:00-03:00'
-                           CHECK (window_local ~ '^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$'),
+    reported_channel       text,
+    reported_hold          boolean,
+    reported_window        text,
+    skipped                text[] NOT NULL DEFAULT '{}',
+    -- lo que pide el panel. NULL = el panel no pide nada y manda lo que configuró el instalador en la
+    -- tienda: lo que informa la sede NUNCA se convierte en una petición (una sede piloto sigue en pilot).
+    channel                text CHECK (channel IS NULL OR channel ~ '^[a-z][a-z0-9-]{1,31}$'),
+    hold                   boolean,
+    window_local           text
+                           CHECK (window_local IS NULL OR
+                                  window_local ~ '^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$'),
     rollback_to            text CHECK (rollback_to IS NULL OR rollback_to ~ '^(previous|[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$'),
     rollback_requested_at  timestamptz,
     check_requested_at     timestamptz,
+    unskip_requested_at    timestamptz,
     updated_at             timestamptz NOT NULL DEFAULT now(),
     updated_by             text NOT NULL DEFAULT ''
 );
