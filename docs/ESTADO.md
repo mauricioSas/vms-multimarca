@@ -1,5 +1,25 @@
 # Estado del proyecto
 
+## v2 · fase 0 (5 de octubre de 2026, rama `v2`)
+
+Plan: [`PLAN-V2.md`](PLAN-V2.md) 1.2 · Contrato: [`CONTRATO.md`](CONTRATO.md) 2.0 (§13-§18) · Pruebas de
+concepto: [`investigacion-v2/spikes.md`](investigacion-v2/spikes.md).
+
+- **Hecho:** contrato v2.0; bloque B6 y decisiones de la noche del 5/10 en el plan (§9); esqueletos
+  compartidos (modelos con `CONFIG_VERSION` 2 y migración, registro de drivers, eventos SSE, routers vacíos,
+  permisos por cámara, `devices.js`, contenedores y módulos en las páginas, extensión del panel central);
+  `native/` en Rust con `vms-common`; infraestructura de pruebas (prueba de la hora arreglada, ruff, mypy
+  estricto en `vms/core`, cobertura, orden aleatorio, detector de voseo, vectores de redacción compartidos
+  con Rust); CI en GitHub (`ci.yml` con un job por bloque y `s1-kit.yml`); S2 y S3 aprobadas; S4 en CI.
+- **Pendiente del usuario:** ejecutar S1 en el PC del laboratorio (`spikes/s1-webview2/GUIA.md`).
+  Decisiones con dinero o cuentas (D1, D3-D6, D12) sin cambios: la v2 avanza sin firma, sin YubiKey y sin
+  Cloudflare (PLAN-V2 §9).
+- **Siguiente:** arrancar B1, B3, B4, B5 y B6 en paralelo (B2 tras S1), cada uno con su job de CI.
+
+---
+
+## v1 (4 de octubre de 2026)
+
 **Fecha:** 4 de octubre de 2026 · **Fase:** 1 (VMS) y 2 (analítica) construidas; piezas de software
 de la fase 3 (panel central, latido, instaladores) también. **Pendiente: validación con hardware
 real.**

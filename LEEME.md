@@ -1,5 +1,9 @@
 # VMS Multimarca
 
+> **v2 en desarrollo** (rama `v2`): app de Windows con instalador, actualizaciones firmadas y
+> compatibilidad multimarca verificada. Plan en [`docs/PLAN-V2.md`](docs/PLAN-V2.md), contrato en
+> [`docs/CONTRATO.md`](docs/CONTRATO.md) (§13-§18) y estado en [`docs/ESTADO.md`](docs/ESTADO.md).
+
 Programa de videovigilancia para cámaras y grabadores (NVR) **Hikvision, Dahua y ONVIF**
 mezclados, sin licencia por cámara:
 

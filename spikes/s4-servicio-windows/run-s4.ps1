@@ -134,10 +134,12 @@ Step 'version_rota_vuelve_atras' {
 
 Step 'puntero_corrupto_se_reconstruye' {
     Stop-Service -Name $ServiceName
+    Remove-Item -LiteralPath (Join-Path $Root 'state\heartbeat.json') -ErrorAction SilentlyContinue
     Set-Content -LiteralPath (Join-Path $Root 'state\active.json') -Value '{basura' -Encoding ascii
     Start-Service -Name $ServiceName
-    Wait-Heartbeat '1.0.0'
-    if ((Pointer).active -ne '1.0.0') { throw 'el puntero no se reconstruyó' }
+    # Wait-Until ignora las excepciones: mientras el puntero siga siendo basura, ConvertFrom-Json falla
+    Wait-Until { (Pointer).active -eq '1.0.0' } 30 'puntero reconstruido desde el diario'
+    Wait-Heartbeat '1.0.0' 
     'active.json corrupto → reconstruido con last_good del diario (1.0.0)'
 }
 
@@ -174,6 +176,9 @@ Step 'parar_y_desinstalar' {
 }
 
 $results['all_ok'] = -not $failed
+$copy = Join-Path $PWD 's4-files'
+New-Item -ItemType Directory -Force -Path $copy | Out-Null
+Copy-Item -Path (Join-Path $Root 'logs\*'), (Join-Path $Root 'state\*.json') -Destination $copy -ErrorAction SilentlyContinue
 $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Out -Encoding utf8
 Write-Host '--- vmshost.log ---'
 Get-Content -LiteralPath (Join-Path $Root 'logs\vmshost.log') -ErrorAction SilentlyContinue | Select-Object -Last 40

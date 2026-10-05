@@ -298,5 +298,4 @@ jobs:
           name: spike-s4
           path: |
             s4-result.json
-            C:/vms-s4/logs/*.log
-            C:/vms-s4/state/*.json
+            s4-files/

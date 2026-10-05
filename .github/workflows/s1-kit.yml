@@ -46,9 +46,10 @@ jobs:
           Get-FileHash -Algorithm SHA256 "$kit/*" | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } |
             Set-Content "$kit/SHA256SUMS.txt" -Encoding ascii
           Get-ChildItem $kit | Format-Table Name, Length
-      - name: Comprobación rápida (el exe arranca y el script es PowerShell válido)
+      - name: Comprobación rápida (los scripts son PowerShell válido)
         shell: pwsh
         run: |
+          $errs = $null; $errs2 = $null
           $null = [System.Management.Automation.Language.Parser]::ParseFile("$PWD/s1-kit/s1.ps1", [ref]$null, [ref]$errs)
           if ($errs) { $errs | Format-List; throw 's1.ps1 tiene errores de sintaxis' }
           $null = [System.Management.Automation.Language.Parser]::ParseFile("$PWD/spikes/s4-servicio-windows/run-s4.ps1", [ref]$null, [ref]$errs2)

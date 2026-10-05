@@ -205,6 +205,8 @@ def run(mode: str, lib: str, token_label: str, pin: str) -> dict[str, Any]:
         keys = Keyring(mode, lib=lib, token_label=token_label, pin=pin)
         results["key_types"] = {r: sorted({keys.key(r, i).keytype + "/" + keys.key(r, i).scheme
                                             for i in range(len(keys.signers[r]))}) for r in keys.signers}
+        # Prueba de que las firmas de root/targets salen del token: clase del firmante de cada clave
+        results["signer_classes"] = {r: [type(s).__name__ for s in keys.signers[r]] for r in keys.signers}
         repo = Repo(work / "repo", keys)
         repo.write_root()
         trusted_root = (repo.meta_dir / "1.root.json").read_bytes()
