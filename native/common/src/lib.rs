@@ -20,6 +20,8 @@ pub mod services;
 pub mod sid;
 pub mod state;
 pub mod supervise;
+#[cfg(windows)]
+pub mod winjob;
 
 /// Códigos de salida estables de `vmsctl` (PLAN-V2 §1.3). No se reutilizan ni se cambian.
 pub mod exit_codes {
