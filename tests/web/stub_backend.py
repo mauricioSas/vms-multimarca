@@ -725,6 +725,18 @@ class StubBackend:
             return {"engine": dump(st), "disk": dump(disk), "cameras": cams, "analytics": analytics,
                     "credential_backend": b.creds.backend_name, "config_warning": b.repo.load_warning}
 
+        # v2 · B4 (CONTRATO §15.6): /status carga updates.js, que pide esto. Mismo cuerpo que la ruta real.
+        @app.get("/api/updates/status")
+        async def updates_status(request: Request) -> dict[str, Any]:
+            b._session(request, "operator")
+            from vms.api.routes.updates import read_public_status, release_version
+            st = read_public_status(b.paths.base)
+            running = release_version()
+            if st is None:
+                return {"available_status": False, "running": running, "installed": running, "state": "unknown",
+                        "last_result": "none", "message_es": "El actualizador todavía no ha informado en este equipo"}
+            return {"available_status": True, "running": running, **st}
+
         @app.get("/api/settings")
         async def get_settings(request: Request) -> dict[str, Any]:
             b._session(request, "operator")
