@@ -11,6 +11,10 @@ from typing import Any
 import pytest
 
 from tests.api.conftest import ADMIN_PW, HEADERS, Harness, api, live_server, new_device  # noqa: F401 - fixtures
+from tests.ops.stub_plugin import install as _install_stub_routes
+
+# Las páginas de la v2 piden rutas de B6: el backend de pruebas de tests/web las necesita (ver stub_plugin.py).
+_install_stub_routes()
 
 __all__ = ["ADMIN_PW", "HEADERS", "Harness", "api", "live_server", "new_device", "write_segments", "wait_for"]
 
