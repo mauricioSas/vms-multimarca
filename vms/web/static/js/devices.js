@@ -32,8 +32,9 @@ export function vendorLabel(id) {
   return (vendors.byId[id] && vendors.byId[id].name) || VENDOR_LABELS[id] || id || "";
 }
 
-export function loadVendors() {
+export function loadVendors({ retry = false } = {}) {
   if (vendors.loaded) return Promise.resolve(vendors.list);
+  if (vendors.failed && !retry) return Promise.resolve([]);
   if (vendors.pending) return vendors.pending;
   vendors.pending = get("/api/vendors").then((list) => {
     vendors.list = list;
@@ -42,10 +43,9 @@ export function loadVendors() {
     fillVendorSelect();
     if (deviceDialog.open) onVendorChange({ keepPorts: true });
     return list;
-  }).catch((err) => {
-    vendors.failed = true;
+  }).catch(() => {
+    vendors.failed = true;    // sin reintentos en bucle: se vuelve a pedir al abrir el diálogo de alta
     vendors.pending = null;
-    console.warn("No se pudo leer la lista de marcas", err);
     return [];
   });
   return vendors.pending;
@@ -83,7 +83,10 @@ function deviceStatus(d) {
 export function renderDevices() {
   const tbody = $("#devices-table tbody");
   $("#devices-count").textContent = ctx.state.devices.length ? `(${ctx.state.devices.length})` : "";
-  if (ctx.state.me && ctx.state.me.role === "admin" && !vendors.loaded && !vendors.pending) loadVendors().then(() => renderDevices());
+  // una sola carga del registro; si falla (servidor antiguo), el formulario sigue con las marcas básicas
+  if (ctx.state.me && ctx.state.me.role === "admin" && !vendors.loaded && !vendors.pending && !vendors.failed) {
+    loadVendors().then(() => { if (vendors.loaded) renderDevices(); });
+  }
   if (!ctx.state.devices.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty"><strong>Todavía no hay equipos</strong>
       Añade un grabador o una cámara con «Añadir equipo», o usa «Buscar en la red».</td></tr>`;
@@ -299,7 +302,7 @@ export function openDeviceDialog(dev = null, prefill = {}) {
   onVendorChange({ keepPorts: !!(dev || src.http_port || src.rtsp_port) });
   deviceDialog.showModal();
   f.name.focus();
-  if (!vendors.loaded) loadVendors();
+  if (!vendors.loaded && !vendors.pending) loadVendors({ retry: true });
 }
 
 deviceForm.vendor.addEventListener("change", () => onVendorChange());
@@ -559,6 +562,15 @@ $("#btn-discover-run").after(ipCheckBtn);
 
 const SOURCE_LABELS = { wsd: "ONVIF", sadp: "SADP", dhip: "DHIP" };
 
+// Tipo probable a partir del modelo («XVR…», «…DVR…», «NVR…»); el instalador puede cambiarlo.
+function guessKind(d) {
+  const text = `${d.model || ""} ${d.name || ""}`;
+  if (/xvr/i.test(text)) return "xvr";
+  if (/dvr|hvr/i.test(text)) return "dvr";
+  if (/nvr/i.test(text)) return "nvr";
+  return "camera";
+}
+
 $("#btn-discover-run").addEventListener("click", async (ev) => {
   const tbody = $("#discover-table tbody");
   const timeout = Number($("#discover-timeout").value) || 3;
@@ -584,7 +596,7 @@ $("#btn-discover-run").addEventListener("click", async (ev) => {
         discoverDialog.close();
         openDeviceDialog(null, {
           name: d.name || d.model || d.host, vendor: d.vendor_guess, host: d.host, http_port: d.http_port,
-          kind: /xvr/i.test(`${d.model}`) ? "xvr" : /nvr|dvr|hvr/i.test(`${d.model} ${d.name}`) ? "nvr" : "camera",
+          kind: guessKind(d),
         });
       }));
     } catch (err) {
