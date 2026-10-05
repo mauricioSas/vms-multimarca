@@ -12,6 +12,17 @@ concepto: [`investigacion-v2/spikes.md`](investigacion-v2/spikes.md).
   estricto en `vms/core`, cobertura, orden aleatorio, detector de voseo, vectores de redacción compartidos
   con Rust); CI en GitHub verde (`ci.yml` con un job por bloque y `s1-kit.yml`, run 37245939158: pytest
   750 en Ubuntu con 83,3 % de cobertura y 748 en macOS); S2, S3 y S4 aprobadas.
+- **Revisión de la fase 0 corregida** (PLAN-V2 1.3, CONTRATO §12 del 5/10): dueño único para cada archivo
+  compartido (`settings.py` con `VMS_ENGINE_MODE` y `VMS_UPDATE_SOURCE` ya declarados; latido con proveedores
+  por bloque en `vms/core/heartbeat_extras.py`; `events.py` del arquitecto hasta que B2 arranque); rutas
+  `distribution/` en el plan; una sola regla para la tabla de avisos; ganchos de ámbito por cámara también en
+  muros, analítica y `/api/status` (un operador con ámbito ya no podrá ver una cámara ajena por el kiosco);
+  CI con pytest para `updater/`, `distribution/` e `infra/`, clippy para Windows y `cargo deny`; S2 mide
+  `recordSegmentDuration`; S3 7/7 (rollback de `snapshot` y clave sustituida rechazada) con software y con
+  SoftHSM2; S4 9/9 en Windows con los nombres de §13.4, espera creciente y `host-status.json` al día; S1 con
+  ffmpeg 9.0.2 fijado por SHA-256. Resultados: `pytest` local 810 passed, 5 skipped (macOS); CI run
+  37248523630 verde (Ubuntu 761 passed + 4 skipped, cobertura 83,6 %; macOS 759 + 6) y kit S1 37248523634
+  verde.
 - **Pendiente del usuario:** ejecutar S1 en el PC del laboratorio (`spikes/s1-webview2/GUIA.md`).
   Decisiones con dinero o cuentas (D1, D3-D6, D12) sin cambios: la v2 avanza sin firma, sin YubiKey y sin
   Cloudflare (PLAN-V2 §9).
