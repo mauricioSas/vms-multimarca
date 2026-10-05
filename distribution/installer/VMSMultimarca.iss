@@ -21,6 +21,14 @@
 #ifndef PayloadDir
   #error Falta /DPayloadDir (carpeta payload de python -m distribution.layout)
 #endif
+; Root de confianza de las actualizaciones (CONTRATO §15.1) que trae el payload: sin él, el instalador no acepta
+; UpdateSource (el actualizador no podría verificar nada). Lo pone distribution.layout (--trusted-roots).
+#if FileExists(PayloadDir + "\updater\trusted\online\1.root.json")
+  #define HasOnlineRoot
+#endif
+#if FileExists(PayloadDir + "\updater\trusted\offline\1.root.json")
+  #define HasOfflineRoot
+#endif
 #ifndef OutputDir
   #define OutputDir "..\..\dist"
 #endif
@@ -110,8 +118,10 @@ Name: "walls"; Description: "{cm:TaskWalls}"; Components: video and not analytic
 Source: "{#PayloadDir}\bin\vmshost.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 ; La versión, inmutable (§13.1); la escribe el instalador y después solo el actualizador.
 Source: "{#PayloadDir}\versions\{#AppVersion}\*"; DestDir: "{app}\versions\{#AppVersion}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Ranura A del actualizador (la B la crea el propio actualizador).
+; Ranura A del actualizador: vmsctl.exe, runtime\ mínimo y app\vms_updater (la B la crea el propio actualizador).
 Source: "{#PayloadDir}\updater\slot-a\*"; DestDir: "{app}\updater\slot-a"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Roots de confianza de las actualizaciones (online y offline), si la build los trae.
+Source: "{#PayloadDir}\updater\trusted\*"; DestDir: "{app}\updater\trusted"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 ; Copia temporal de vmsctl para comprobar puertos antes de instalar (no se instala aparte).
 Source: "{#PayloadDir}\versions\{#AppVersion}\bin\vmsctl.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "assets\vms.ico"; DestDir: "{app}"; Flags: ignoreversion

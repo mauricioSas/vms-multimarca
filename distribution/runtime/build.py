@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import os
 import re
 import shutil
@@ -41,8 +42,10 @@ PYTHON_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{PYTHON_ZIP}"
 PYTHON_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 PTH_NAME = "python312._pth"
 PTH_LINES = ["python312.zip", ".", r"Lib\site-packages", r"..\app", "import site"]
+# requirements-updater.txt: tuf y securesystemslib de VMSUpdater. La ranura del actualizador
+# (updater\slot-a\runtime) es un subconjunto de este runtime (distribution.layout.updater_runtime).
 DEFAULT_REQUIREMENTS = ["requirements-vms.txt", "requirements-analytics.txt", "requirements-central.txt",
-                        "distribution/runtime/requirements-windows-extra.txt"]
+                        "requirements-updater.txt", "distribution/runtime/requirements-windows-extra.txt"]
 MANIFEST = "MANIFEST.sha256"
 # Entorno de destino para evaluar marcadores (el mismo que tools.lock_requirements usa para «win32»).
 WIN_ENV = {"sys_platform": "win32", "platform_system": "Windows", "os_name": "nt", "platform_machine": "AMD64",
@@ -64,11 +67,13 @@ def sha256_file(path: Path) -> str:
 
 
 def _marker_ok(marker: str) -> bool:
+    # Por nombre: con «packaging» instalado, mypy ve dos clases Marker distintas (la suya y la de pip) y un
+    # «type: ignore» para un caso sobra en el otro. Así pasa igual con y sin «packaging» (job de B3 y local).
     try:
-        from packaging.markers import Marker
+        markers = importlib.import_module("packaging.markers")
     except ImportError:  # pragma: no cover - en un Python sin «packaging» se usa el que trae pip
-        from pip._vendor.packaging.markers import Marker  # type: ignore[no-redef]
-    return bool(Marker(marker).evaluate(WIN_ENV))
+        markers = importlib.import_module("pip._vendor.packaging.markers")
+    return bool(markers.Marker(marker).evaluate(WIN_ENV))
 
 
 @dataclass(frozen=True)

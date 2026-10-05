@@ -2,7 +2,8 @@
 //!
 //! Entra: `logs\` (de cada registro, el actual y el `.1`, como mucho sus últimos 10 MB cada uno y 100 MB en
 //! total; más `status-*.json`), `state\*.json`, `updater\public-status.json`,
-//! `config\config.json` (no guarda contraseñas), `analytics\status.json`, el `.env` con los valores
+//! `config\config.json` (no guarda contraseñas; sí la URL del webhook, que lleva su token en la ruta, y el
+//! usuario SMTP: se tapan, `mask_config`), `analytics\status.json`, el `.env` con los valores
 //! sensibles tapados y el estado de los servicios y versiones. No entra: `secrets\`, `mediamtx\` (el YAML
 //! lleva las URL de las cámaras con contraseña), grabaciones ni respaldos. Todo el texto pasa además por
 //! la ocultación de credenciales.
@@ -159,6 +160,44 @@ pub fn mask_env(text: &str) -> String {
         .join("\n")
 }
 
+/// ¿Es secreto el valor de esta clave de `config.json`? En los avisos (`notifications`), además, cualquier URL
+/// (un webhook lleva su token en la ruta: `https://discord.com/api/webhooks/<id>/<token>`) y el usuario SMTP.
+fn config_key_is_secret(key: &str, in_notifications: bool) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["password", "secret", "token", "dsn", "api_key"].iter().any(|s| k.contains(s))
+        || (in_notifications && (k.ends_with("_url") || k == "url" || k.contains("username")))
+}
+
+fn mask_json(v: &mut Value, in_notifications: bool) {
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map.iter_mut() {
+                let inside = in_notifications || k == "notifications";
+                match child {
+                    Value::String(s) if config_key_is_secret(k, in_notifications) && !s.is_empty() => {
+                        *s = "***".into();
+                    }
+                    _ => mask_json(child, inside),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|i| mask_json(i, in_notifications)),
+        _ => {}
+    }
+}
+
+/// `config.json` con los valores secretos tapados (y el resto por la ocultación de credenciales). Si no es JSON
+/// válido no se incluye su contenido: sin estructura no se sabe qué tapar.
+pub fn mask_config(data: &[u8]) -> Vec<u8> {
+    match serde_json::from_slice::<Value>(data) {
+        Ok(mut v) => {
+            mask_json(&mut v, false);
+            redact_text(serde_json::to_string_pretty(&v).unwrap_or_default().as_bytes())
+        }
+        Err(e) => format!("config.json no es JSON válido ({e}): no se incluye su contenido.\n").into_bytes(),
+    }
+}
+
 fn read_tail(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
@@ -239,7 +278,8 @@ fn bundle_with_limits(
             ("analytics/status.json", d.analytics_dir().join("status.json")),
         ] {
             if let Ok(data) = read_tail(&path, max_file) {
-                zip.add(name, &redact_text(&data))?;
+                let clean = if name == "config/config.json" { mask_config(&data) } else { redact_text(&data) };
+                zip.add(name, &clean)?;
                 names.push(name.to_string());
             }
         }
@@ -369,6 +409,14 @@ mod tests {
         std::fs::write(data.mediamtx_yml(), "paths:\n  cam/main:\n    source: rtsp://admin:Cl4ve%21@10.0.0.1/x\n")
             .unwrap();
         std::fs::write(data.env_file(), "VMS_KIOSK_TOKEN=NO-DEBE-SALIR\nVMS_HTTP_PORT=8600\n").unwrap();
+        // Seguridad B2: la URL del webhook lleva el token en la ruta y redact() solo tapa usuario:contraseña@.
+        std::fs::write(
+            data.config_dir().join("config.json"),
+            r#"{"settings": {"site": {"name": "Tienda"}, "notifications": {"webhook_enabled": true,
+               "webhook_url": "https://discord.com/api/webhooks/1234567890/NO-DEBE-SALIR-webhook",
+               "smtp_username": "NO-DEBE-SALIR@correo.es", "smtp_host": "smtp.correo.es", "rules": []}}}"#,
+        )
+        .unwrap();
         let out = d.path().join("diag.zip");
         let res = bundle(&ctx, &out, json!([])).unwrap();
         let files = read_zip(&std::fs::read(&out).unwrap());
@@ -382,5 +430,19 @@ mod tests {
             assert!(!text.contains("NO-DEBE-SALIR") && !text.contains("Cl4ve"), "{name} deja ver un secreto");
         }
         assert_eq!(res.data["files"].as_array().unwrap().len(), files.len());
+        let cfg = &files.iter().find(|(n, _)| n == "config/config.json").unwrap().1;
+        let cfg: Value = serde_json::from_slice(cfg).unwrap();
+        assert_eq!(cfg["settings"]["notifications"]["webhook_url"], "***");
+        assert_eq!(cfg["settings"]["notifications"]["smtp_host"], "smtp.correo.es", "lo que no es secreto, intacto");
+        assert_eq!(cfg["settings"]["site"]["name"], "Tienda");
+    }
+
+    #[test]
+    fn config_that_is_not_json_is_left_out() {
+        let out = String::from_utf8(mask_config(b"{\"webhook_url\": \"https://x/SECRETO")).unwrap();
+        assert!(!out.contains("SECRETO") && out.contains("no es JSON"), "{out}");
+        let out =
+            String::from_utf8(mask_config(br#"{"a": {"password": "p", "url": "https://h/SECRETO", "n": 1}}"#)).unwrap();
+        assert!(out.contains("\"password\": \"***\"") && out.contains("SECRETO"), "fuera de notifications: {out}");
     }
 }

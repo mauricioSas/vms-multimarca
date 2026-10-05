@@ -87,6 +87,11 @@ impl NetSettings {
         Self { vars }
     }
 
+    /// Fija un valor solo para esta comprobación (p. ej. el puerto que el instalador aún no ha escrito).
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.vars.insert(key.to_string(), value.to_string());
+    }
+
     fn get(&self, key: &str) -> Option<&str> {
         self.vars.get(key).map(String::as_str).filter(|v| !v.is_empty())
     }

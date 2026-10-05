@@ -1,5 +1,7 @@
-//! `vmsctl update check|status|rollback`: habla con `VMSUpdater` por su tubería de control
+//! `vmsctl update check|status|rollback|lock|unlock`: habla con `VMSUpdater` por su tubería de control
 //! `\\.\pipe\VMSMultimarca.updater` (CONTRATO §15.2). Una línea JSON de petición y una de respuesta.
+//! Si el actualizador responde `{"ok": false, "error": "busy"}`, el error de `vmsctl` lleva `error.code = "busy"`
+//! (lo mira el instalador: «hay una actualización en curso»).
 //!
 //! La tubería solo admite SYSTEM y Administradores con el token elevado: desde una consola normal (o la
 //! bandeja sin UAC) la respuesta es «acceso denegado» → código 11. En desarrollo (macOS/Linux) la tubería
@@ -73,10 +75,28 @@ pub fn request(ctx: &Ctx, msg: &Value) -> Result<Value, CtlError> {
     }
 }
 
+/// Código de error del actualizador que se conserva tal cual en `error.code` (el resto: `windows_error`).
+fn updater_error_code(resp: &Value) -> &'static str {
+    match resp.get("error").and_then(Value::as_str) {
+        Some("busy") => "busy",
+        Some("bad_request") => "bad_request",
+        Some("rollback_failed") => "rollback_failed",
+        Some("unknown_command") => "unknown_command",
+        Some("internal") => "internal",
+        _ => "windows_error",
+    }
+}
+
 fn answer(resp: Value, text: impl Fn(&Value) -> String) -> Result<Outcome, CtlError> {
     if resp.get("ok").and_then(Value::as_bool) == Some(false) {
-        let why = resp.get("error").map(|e| e.to_string()).unwrap_or_else(|| "sin detalle".into());
-        return Err(CtlError::windows(format!("el actualizador respondió con un error: {why}")).with_data(resp));
+        let code = updater_error_code(&resp);
+        let why = match resp.get("message_es").and_then(Value::as_str) {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => resp.get("error").map(|e| e.to_string()).unwrap_or_else(|| "sin detalle".into()),
+        };
+        let mut err = CtlError::windows(format!("el actualizador respondió con un error: {why}")).with_data(resp);
+        err.code = code;
+        return Err(err);
     }
     let t = text(&resp);
     Ok(Outcome::new(resp, t))
@@ -111,6 +131,35 @@ pub fn rollback(ctx: &Ctx, to: Option<&str>, reason: Option<&str>) -> Result<Out
     answer(resp, |r| format!("Vuelta atrás pedida ({}).", r["update_id"].as_str().unwrap_or("sin id")))
 }
 
+/// Cerrojo del instalador (CONTRATO §15.2): mientras lo tenga `owner`, el actualizador no aplica nada.
+pub fn lock(ctx: &Ctx, owner: &str, ttl: Option<&str>) -> Result<Outcome, CtlError> {
+    let owner = check_owner(owner)?;
+    let ttl_s = match ttl {
+        None => 3600,
+        Some(t) => t
+            .parse::<u64>()
+            .ok()
+            .filter(|t| (1..=86_400).contains(t))
+            .ok_or_else(|| CtlError::usage(format!("--ttl necesita segundos entre 1 y 86400, no «{t}»")))?,
+    };
+    let resp = request(ctx, &json!({"cmd": "lock", "owner": owner, "ttl_s": ttl_s}))?;
+    answer(resp, |_| format!("Cerrojo del actualizador para «{owner}» ({ttl_s} s)."))
+}
+
+pub fn unlock(ctx: &Ctx, owner: &str) -> Result<Outcome, CtlError> {
+    let owner = check_owner(owner)?;
+    let resp = request(ctx, &json!({"cmd": "unlock", "owner": owner}))?;
+    answer(resp, |_| format!("Cerrojo del actualizador de «{owner}» suelto."))
+}
+
+fn check_owner(owner: &str) -> Result<&str, CtlError> {
+    let owner = owner.trim();
+    if owner.is_empty() || owner.len() > 64 || !owner.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err(CtlError::usage(format!("--owner no válido «{owner}» (letras, números, «-», «_» o «.»; máx. 64)")));
+    }
+    Ok(owner)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -137,6 +186,46 @@ mod tests {
         assert_eq!(out.data["update_id"], "u-1");
         h.join().unwrap();
         assert!(rollback(&ctx, Some("../x"), None).is_err());
+    }
+
+    /// Servidor de una sola petición: devuelve la petición recibida y responde `reply`.
+    fn one_shot(ctx: &Ctx, reply: &'static str) -> std::thread::JoinHandle<Value> {
+        std::fs::create_dir_all(ctx.data.updater_dir()).unwrap();
+        let l = UnixListener::bind(ctx.data.updater_dir().join("control.sock")).unwrap();
+        std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            (&s).write_all(reply.as_bytes()).unwrap();
+            serde_json::from_str(&line).unwrap()
+        })
+    }
+
+    #[test]
+    fn lock_and_unlock_speak_the_pipe_protocol_and_keep_busy() {
+        // Hallazgo M1: «update lock|unlock» no existían y «busy» llegaba como «windows_error».
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(d.path(), None, None);
+        let h = one_shot(&ctx, "{\"ok\": true}\n");
+        lock(&ctx, "installer", Some("3600")).unwrap();
+        assert_eq!(h.join().unwrap(), json!({"cmd": "lock", "owner": "installer", "ttl_s": 3600}));
+        std::fs::remove_file(ctx.data.updater_dir().join("control.sock")).unwrap();
+        let h = one_shot(
+            &ctx,
+            "{\"ok\": false, \"error\": \"busy\", \"message_es\": \"Hay una actualización aplicándose\"}\n",
+        );
+        let e = lock(&ctx, "installer", None).unwrap_err();
+        assert_eq!(h.join().unwrap()["ttl_s"], 3600);
+        assert_eq!((e.exit, e.code), (vms_common::exit_codes::WINDOWS_ERROR, "busy"));
+        assert!(e.message.contains("aplicándose"), "{}", e.message);
+        std::fs::remove_file(ctx.data.updater_dir().join("control.sock")).unwrap();
+        let h = one_shot(&ctx, "{\"ok\": true}\n");
+        unlock(&ctx, "installer").unwrap();
+        assert_eq!(h.join().unwrap(), json!({"cmd": "unlock", "owner": "installer"}));
+        assert_eq!(lock(&ctx, "", None).unwrap_err().exit, vms_common::exit_codes::USAGE);
+        assert_eq!(lock(&ctx, "x", Some("0")).unwrap_err().exit, vms_common::exit_codes::USAGE);
+        assert_eq!(unlock(&ctx, "a b").unwrap_err().exit, vms_common::exit_codes::USAGE);
     }
 
     #[test]

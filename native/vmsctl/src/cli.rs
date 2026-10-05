@@ -11,26 +11,6 @@ use std::io;
 use vms_common::exit_codes;
 use vms_common::state::StateError;
 
-/// Opciones que llevan valor (el resto son interruptores).
-const VALUE_FLAGS: &[&str] = &[
-    "--service",
-    "--role",
-    "--data-dir",
-    "--install-dir",
-    "--only",
-    "--profiles",
-    "--timeout",
-    "--to",
-    "--reason",
-    "--hostname",
-    "--ip",
-    "--out",
-    "--python",
-    "--mediamtx",
-    "--recordings-dir",
-    "--ports",
-];
-
 #[derive(Debug, Default)]
 pub struct Args {
     pub words: Vec<String>,
@@ -49,7 +29,7 @@ impl Args {
             }
             if let Some((k, v)) = tok.split_once('=').filter(|(k, _)| k.starts_with("--")) {
                 a.values.entry(k.to_string()).or_default().push(v.to_string());
-            } else if VALUE_FLAGS.contains(&tok.as_str()) {
+            } else if crate::clispec::takes_value(tok) {
                 let v = it.next().ok_or_else(|| CtlError::usage(format!("falta el valor de {tok}")))?;
                 a.values.entry(tok.clone()).or_default().push(v.clone());
             } else if tok.starts_with("--") {
@@ -77,9 +57,14 @@ impl Args {
         self.words.get(i).map(String::as_str)
     }
 
-    /// Interruptores que nadie ha consultado (para avisar de errores de tecleo).
-    pub fn unknown_switches(&self, known: &[&str]) -> Vec<String> {
-        self.switches.iter().filter(|s| !known.contains(&s.as_str())).cloned().collect()
+    /// Interruptores recibidos (sin valor), para comprobarlos contra `cli_spec.json`.
+    pub fn switch_names(&self) -> impl Iterator<Item = &str> {
+        self.switches.iter().map(String::as_str)
+    }
+
+    /// Opciones con valor recibidas.
+    pub fn value_names(&self) -> impl Iterator<Item = &str> {
+        self.values.keys().map(String::as_str)
     }
 }
 
@@ -206,7 +191,7 @@ mod tests {
         assert_eq!(a.value("--data-dir"), Some("D:\\datos"));
         assert_eq!(a.value("--only"), Some("VMSEngine,VMSBackend"));
         assert!(a.has("--json") && !a.has("--purge"));
-        assert_eq!(a.unknown_switches(&["--json"]), Vec::<String>::new());
+        assert_eq!(a.switch_names().collect::<Vec<_>>(), ["--json"]);
         assert!(Args::parse(&["--role".to_string()]).is_err());
         let a = args("tls setup --ip 10.0.0.2 --ip 192.168.1.2");
         assert_eq!(a.values("--ip"), ["10.0.0.2", "192.168.1.2"]);

@@ -15,6 +15,10 @@
 //! - `VMSHeartbeat` sin `VMS_CENTRAL_URL` (sede sin panel central) no se lanza: queda «en espera» (sano) y
 //!   arranca en cuanto se configure, en vez de caer y relanzarse sin fin.
 //! - Para cuando `vmshost` cierra su entrada estándar (`--stop-on-stdin-eof`).
+//! - `VMSUpdater` no lee el `.env` (solo su entorno): `vmsctl` le pasa las variables `VMS_*` del `.env`
+//!   (`VMS_UPDATE_SOURCE`, `VMS_HTTP_PORT`…). Las del entorno del proceso ganan. Los servicios que leen el
+//!   `.env` por su cuenta (backend, analítica, latido, central) no las reciben: así un `.env` que cambia con el
+//!   servicio en marcha no queda tapado por un valor viejo del entorno.
 
 use crate::cli::{Args, CtlError};
 use crate::ctx::Ctx;
@@ -29,7 +33,7 @@ use std::time::{Duration, Instant};
 use vms_common::exit_codes;
 use vms_common::layout::exe_name;
 use vms_common::logfile::RotatingLog;
-use vms_common::services::{Kind, ServiceDef, BACKEND, HEARTBEAT};
+use vms_common::services::{Kind, ServiceDef, BACKEND, HEARTBEAT, UPDATER};
 use vms_common::supervise::Backoff;
 
 pub struct RunSpec {
@@ -67,19 +71,38 @@ pub fn setting_present(key: &str, env_file: &std::path::Path) -> bool {
         || crate::envfile::read(env_file).get(key).is_some_and(|v| !v.trim().is_empty())
 }
 
+/// ¿Recibe el servicio las variables del `.env` en su entorno? Solo el que no lo lee por su cuenta.
+pub fn passes_env_file(def: &ServiceDef) -> bool {
+    def.name == UPDATER
+}
+
+/// Variables `VMS_*` con valor del `.env`, en orden, salvo las que ya trae el entorno del proceso.
+pub fn env_file_vars(env_file: &std::path::Path) -> Vec<(String, OsString)> {
+    let mut vars: Vec<(String, OsString)> = crate::envfile::read(env_file)
+        .into_iter()
+        .filter(|(k, v)| k.starts_with("VMS_") && !v.trim().is_empty() && std::env::var_os(k).is_none())
+        .map(|(k, v)| (k, OsString::from(v)))
+        .collect();
+    vars.sort();
+    vars
+}
+
 /// Variables de Python que nunca deben llegar al runtime embebido desde fuera.
 const PYTHON_ENV_REMOVE: &[&str] = &["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE"];
 
 pub fn build_spec(def: &ServiceDef, ctx: &Ctx, a: &Args) -> Result<RunSpec, CtlError> {
     let data = &ctx.data;
-    let mut env_set: Vec<(String, OsString)> = vec![
+    // Primero las del .env: las fijas de abajo van después y ganan (Command::env: la última manda).
+    let mut env_set: Vec<(String, OsString)> =
+        if passes_env_file(def) { env_file_vars(&data.env_file()) } else { Vec::new() };
+    env_set.extend([
         ("VMS_DATA_DIR".into(), data.root.clone().into_os_string()),
         ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
         ("PYTHONUNBUFFERED".into(), "1".into()),
         ("PYTHONUTF8".into(), "1".into()),
         ("PYTHONIOENCODING".into(), "utf-8".into()),
         ("PYTHONNOUSERSITE".into(), "1".into()),
-    ];
+    ]);
     if let Some(v) = ctx.own_version() {
         env_set.push(("VMS_ACTIVE_VERSION".into(), v.into()));
     }
@@ -568,6 +591,35 @@ mod tests {
         assert!(marks.exists(), "arranca en cuanto aparece");
         tx.send(()).unwrap();
         assert_eq!(h.join().unwrap(), exit_codes::OK);
+    }
+
+    #[test]
+    fn the_updater_gets_the_env_file_and_the_backend_reads_it_itself() {
+        // Hallazgo A3: el instalador escribe VMS_UPDATE_SOURCE (y los puertos) en el .env, y vms_updater solo
+        // mira su entorno. Antes no le llegaba nada: el actualizador corría sin fuente de actualizaciones.
+        use vms_common::layout::Component;
+        let d = tempfile::tempdir().unwrap();
+        let slot = d.path().join("pf").join("updater").join("slot-a");
+        std::fs::create_dir_all(slot.join("app")).unwrap();
+        let comp = Component::UpdaterSlot { slot: "a".into(), root: slot.clone() };
+        let ctx = Ctx::for_tests(&d.path().join("pd"), Some(&d.path().join("pf")), Some(comp));
+        std::fs::create_dir_all(&ctx.data.root).unwrap();
+        std::fs::write(
+            ctx.data.env_file(),
+            "VMS_UPDATE_SOURCE=http://127.0.0.1:8765/\nVMS_HTTP_PORT=8601\nVMS_DATA_DIR=C:\\otra\nVMS_VACIA=\nOTRA=1\n",
+        )
+        .unwrap();
+        let a = Args::parse(&["run".into(), "--service".into(), "VMSUpdater".into()]).unwrap();
+        let s = build_spec(vms_common::services::by_name("VMSUpdater").unwrap(), &ctx, &a).unwrap();
+        let last = |k: &str| s.env_set.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(last("VMS_UPDATE_SOURCE"), Some("http://127.0.0.1:8765/".into()));
+        assert_eq!(last("VMS_HTTP_PORT"), Some("8601".into()));
+        assert_eq!(last("VMS_DATA_DIR"), Some(ctx.data.root.clone().into_os_string()), "la carpeta real manda");
+        assert_eq!(last("VMS_VACIA"), None);
+        assert_eq!(last("OTRA"), None, "solo variables VMS_*");
+        assert_eq!(s.cwd, slot.join("app"));
+        let b = build_spec(vms_common::services::by_name("VMSBackend").unwrap(), &ctx, &a).unwrap();
+        assert!(!b.env_set.iter().any(|(n, _)| n == "VMS_UPDATE_SOURCE"), "el backend lee el .env él mismo");
     }
 
     #[test]

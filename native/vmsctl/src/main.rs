@@ -6,19 +6,21 @@
 //! vmsctl services uninstall [--purge] | start|stop|restart [--only VMSBackend,...] | status
 //! vmsctl firewall apply --profiles private[,domain] | firewall remove
 //! vmsctl acl apply [--recordings-dir <ruta>]
-//! vmsctl ports check
+//! vmsctl ports check [--role <puesto>] [--http-port <n>] [--https-port <n>]
 //! vmsctl health wait [--timeout 120] [--deep]
 //! vmsctl version show | switch <X.Y.Z> | confirm | rollback | slot <a|b> | slot-confirm | slot-rollback
-//! vmsctl update check | status | rollback [--to <X.Y.Z>] [--reason <texto>]
+//! vmsctl update check | status | rollback [--to <X.Y.Z>] [--reason <texto>] | lock --owner <quién> [--ttl <s>] | unlock --owner <quién>
 //! vmsctl tls setup --hostname <nombre> [--ip <IP>]... [--import-root]
 //! vmsctl kiosk rotate
 //! vmsctl diag bundle --out <zip>
 //! vmsctl migrate-from-v1 [--dry-run] [--role <puesto>] [--remove-v1-files] [--profiles private]
 //! ```
 //! Todas aceptan `--json` (una línea) y `--data-dir`/`--install-dir`. Códigos de salida: CONTRATO §14.2.
+//! Las opciones de cada orden están en `cli_spec.json` (`clispec`): lo que no esté ahí es un error de uso (2).
 
 mod acl;
 mod cli;
+mod clispec;
 mod ctx;
 mod diag;
 mod envfile;
@@ -49,7 +51,7 @@ use sys::RealRunner;
 use vms_common::exit_codes;
 use vms_common::services::{by_name, Role};
 
-const HELP: &str = "vmsctl: configuración del equipo y anfitrión de los servicios de VMS Multimarca.
+pub(crate) const HELP: &str = "vmsctl: configuración del equipo y anfitrión de los servicios de VMS Multimarca.
 
   run --service <Servicio>                  anfitrión del proceso (lo usa vmshost)
   services install --role <puesto>          control | store | central | viewer
@@ -57,30 +59,17 @@ const HELP: &str = "vmsctl: configuración del equipo y anfitrión de los servic
   services start|stop|restart [--only A,B]  services status
   firewall apply --profiles private[,domain] | firewall remove
   acl apply                                 permisos de la carpeta de datos por SID
-  ports check                               puertos libres y fuera de rangos reservados
+  ports check [--role R] [--http-port N] [--https-port N]   puertos libres y fuera de rangos reservados
   health wait [--timeout 120] [--deep]      0 = sano, 12 = no
   version show | switch <X> | confirm | rollback | slot <a|b> | slot-confirm | slot-rollback
   update check | status | rollback [--to <X>]   (consola de Administrador)
+  update lock --owner <quién> [--ttl <s>] | update unlock --owner <quién>   cerrojo del instalador
   tls setup --hostname <nombre> [--ip <IP>] [--import-root]
   kiosk rotate                              nuevo token de los muros
   diag bundle --out <zip>                   registros y estado, sin secretos
   migrate-from-v1 [--dry-run]               de WinSW (v1) a vmshost, datos intactos
 
-Opciones comunes: --json, --data-dir <ruta>, --install-dir <ruta>.";
-
-/// Interruptores admitidos (una errata como «--purg» no se ignora en silencio).
-const KNOWN_SWITCHES: &[&str] = &[
-    "--json",
-    "--purge",
-    "--deep",
-    "--dry-run",
-    "--remove-v1-files",
-    "--import-root",
-    "--no-engine-config",
-    "--no-acl",
-    "--exit-on-crash",
-    "--stop-on-stdin-eof",
-];
+Opciones comunes: --json, --data-dir <ruta>, --install-dir <ruta>. Todas las opciones: vmsctl help --json.";
 
 fn real_scm(write: bool) -> Result<Box<dyn Scm>, CtlError> {
     #[cfg(windows)]
@@ -213,7 +202,17 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
         }
         ("ports", "check") => {
             let role = role_of(a)?;
-            ports::check(role, &envfile::NetSettings::load(&ctx.data.env_file()))
+            let mut net = envfile::NetSettings::load(&ctx.data.env_file());
+            // Los puertos que el instalador aún no ha escrito en el .env (instalación nueva, página «Red»).
+            for (flag, key) in [("--http-port", "VMS_HTTP_PORT"), ("--https-port", "VMS_HTTPS_PORT")] {
+                if let Some(v) = a.value(flag) {
+                    let port = v.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| {
+                        CtlError::usage(format!("{flag} necesita un puerto entre 1 y 65535, no «{v}»"))
+                    })?;
+                    net.set(key, &port.to_string());
+                }
+            }
+            ports::check(role, &net)
         }
         ("health", "wait") => {
             let timeout = timeout_of(a, 120)?;
@@ -244,6 +243,8 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
         ("update", "check") => update::check(ctx),
         ("update", "status") => update::status(ctx),
         ("update", "rollback") => update::rollback(ctx, a.value("--to"), a.value("--reason")),
+        ("update", "lock") => update::lock(ctx, need(a, "--owner", "<quién>")?, a.value("--ttl")),
+        ("update", "unlock") => update::unlock(ctx, need(a, "--owner", "<quién>")?),
         ("tls", "setup") => {
             let python = ctx.python(a.value("--python"))?;
             tls::setup(
@@ -277,7 +278,10 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
             };
             migrate::migrate(ctx, Platform { scm: scm.as_mut(), runner: &mut RealRunner }, opts)
         }
-        ("help", _) | ("", _) => Ok(Outcome::new(json!({"help": HELP}), HELP)),
+        ("help", _) | ("", _) => {
+            let spec: serde_json::Value = serde_json::from_str(clispec::SPEC_JSON).unwrap_or(json!(null));
+            Ok(Outcome::new(json!({"help": HELP, "cli": spec}), HELP))
+        }
         (cmd, sub) => Err(CtlError::usage(format!("orden desconocida «{cmd} {sub}». Usa «vmsctl help»."))),
     }
 }
@@ -293,9 +297,7 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(e) => return ExitCode::from(cli::emit(json_mode, Err(e)) as u8),
     };
-    let unknown = args.unknown_switches(KNOWN_SWITCHES);
-    if !unknown.is_empty() {
-        let e = CtlError::usage(format!("opción desconocida: {}. Usa «vmsctl help».", unknown.join(", ")));
+    if let Err(e) = clispec::validate(&args) {
         return ExitCode::from(cli::emit(json_mode, Err(e)) as u8);
     }
     let ctx = Ctx::from_args(&args);
@@ -349,5 +351,44 @@ mod tests {
         assert_eq!(e.exit, exit_codes::USAGE);
         let a = Args::parse(&["ports".into(), "check".into(), "--role".into(), "tienda".into()]).unwrap();
         assert_eq!(dispatch(&a, &ctx).err().unwrap().exit, exit_codes::USAGE);
+    }
+
+    fn args(line: &str) -> Args {
+        let a = Args::parse(&line.split_whitespace().map(str::to_string).collect::<Vec<_>>()).unwrap();
+        clispec::validate(&a).unwrap_or_else(|e| panic!("«{line}»: {}", e.message));
+        a
+    }
+
+    #[test]
+    fn ports_check_takes_the_ports_the_installer_has_not_written_yet() {
+        // Hallazgo C1: el instalador pasa --http-port/--https-port (página «Red») y --role antes de escribir el
+        // .env y el registro. Antes era «opción desconocida» (código 2) y la instalación nueva no seguía.
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(d.path(), None, None);
+        let busy = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let a = args(&format!("ports check --role store --http-port {port} --https-port 1 --json"));
+        let e = dispatch(&a, &ctx).err().unwrap();
+        assert_eq!(e.exit, exit_codes::PORT_IN_USE, "{}", e.message);
+        assert!(e.message.contains(&format!("puerto {port}/tcp")), "{}", e.message);
+        let checked: Vec<u64> =
+            e.data.unwrap()["ports"].as_array().unwrap().iter().map(|p| p["port"].as_u64().unwrap()).collect();
+        assert!(checked.contains(&u64::from(port)) && checked.contains(&1), "{checked:?}");
+        assert!(!checked.contains(&8600), "con --http-port no se mira el 8600: {checked:?}");
+        let a = args("ports check --role store --http-port 0");
+        assert_eq!(dispatch(&a, &ctx).err().unwrap().exit, exit_codes::USAGE);
+        let a = args("ports check --role store --http-port 70000");
+        assert_eq!(dispatch(&a, &ctx).err().unwrap().exit, exit_codes::USAGE);
+    }
+
+    #[test]
+    fn help_json_lists_the_whole_cli() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(d.path(), None, None);
+        let out = dispatch(&args("help --json"), &ctx).unwrap();
+        let cmds = out.data["cli"]["commands"].as_array().unwrap();
+        assert!(cmds.iter().any(|c| c["path"] == json!(["update", "lock"])));
+        assert!(cmds.iter().any(|c| c["path"] == json!(["ports", "check"])
+            && c["values"].as_array().unwrap().contains(&json!("--http-port"))));
     }
 }

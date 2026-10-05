@@ -1,11 +1,11 @@
 //! Dobles de prueba del instalador (B3, PLAN-V2 §6.2).
 //!
-//! - `vmsctl.exe` acepta **exactamente** la CLI de CONTRATO §14 (más las órdenes que B3 pide a B1 en su
-//!   informe: `update lock|unlock`, `ports check --http-port/--https-port` y `--data-dir` global), registra
-//!   cada llamada en un JSONL y responde como el real (`--json`, códigos de §14.2). Fallos a petición con
-//!   `VMS_FAKE_VMSCTL_FAIL="health-wait=12,ports-check=10"`. Efectos reales mínimos para que el e2e sea
-//!   creíble: `version switch` escribe `state\active.json` (§13.4) de forma atómica, `diag bundle` crea un
-//!   zip válido y `migrate-from-v1` para y elimina los servicios WinSW de la v1.
+//! - `vmsctl.exe` acepta como mucho la CLI del `vmsctl` real: la toma de `native/vmsctl/src/cli_spec.json`
+//!   (`include_str!`), así que no puede aceptar nada que el real rechace. Registra cada llamada en un JSONL y
+//!   responde como el real (`--json`, códigos de §14.2). Solo sirve para lo que el real no puede simular
+//!   (fallos a petición con `VMS_FAKE_VMSCTL_FAIL="health-wait=12,ports-check=10"`); el e2e de instalación
+//!   usa el real. Efectos mínimos: `services install` y `version switch` escriben `state\active.json` (§13.4)
+//!   de forma atómica, `diag bundle` crea un zip válido y `migrate-from-v1` para y elimina los servicios WinSW.
 //! - `vmshost.exe` solo sabe `viewer [--walls]` (abre el visor de la versión activa) y `--version`.
 //! - `VMS.exe` abre una ventana y nada más.
 //!
@@ -65,56 +65,55 @@ pub fn now_unix() -> u64 {
 }
 
 // ================================================================================================ CLI
+/// La CLI del `vmsctl` REAL (`native/vmsctl/src/cli_spec.json`), incluida tal cual: el doble no puede aceptar
+/// ninguna orden ni opción que el real rechace. Encima, el doble es más estricto en lo que pide el contrato al
+/// instalador (`EXTRA_REQUIRED`) y en los valores (`validate`).
+pub const REAL_CLI_SPEC: &str = include_str!("../../../../native/vmsctl/src/cli_spec.json");
+
+/// Opciones que el instalador siempre pasa aunque el real no las exija (CONTRATO §14.1).
+const EXTRA_REQUIRED: &[(&str, &str)] =
+    &[("services install", "data-dir"), ("acl apply", "data-dir"), ("health wait", "timeout")];
+
 struct Spec {
-    path: &'static [&'static str],
-    flags: &'static [&'static str],
-    required: &'static [&'static str],
-    switches: &'static [&'static str],
+    path: Vec<String>,
+    values: Vec<String>,
+    switches: Vec<String>,
+    required: Vec<String>,
     positional: usize,
 }
 
-const SPECS: &[Spec] = &[
-    Spec { path: &["run"], flags: &["service"], required: &["service"], switches: &[], positional: 0 },
-    Spec {
-        path: &["services", "install"],
-        flags: &["role", "data-dir"],
-        required: &["role", "data-dir"],
-        switches: &[],
-        positional: 0,
-    },
-    Spec { path: &["services", "uninstall"], flags: &[], required: &[], switches: &["purge"], positional: 0 },
-    Spec { path: &["services", "start"], flags: &["only"], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["services", "stop"], flags: &["only"], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["services", "restart"], flags: &["only"], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["firewall", "apply"], flags: &["profiles"], required: &["profiles"], switches: &[], positional: 0 },
-    Spec { path: &["firewall", "remove"], flags: &[], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["acl", "apply"], flags: &["data-dir"], required: &["data-dir"], switches: &[], positional: 0 },
-    Spec {
-        path: &["ports", "check"],
-        flags: &["http-port", "https-port"],
-        required: &[],
-        switches: &[],
-        positional: 0,
-    },
-    Spec { path: &["health", "wait"], flags: &["timeout"], required: &["timeout"], switches: &["deep"], positional: 0 },
-    Spec { path: &["version", "switch"], flags: &[], required: &[], switches: &[], positional: 1 },
-    Spec { path: &["version", "show"], flags: &[], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["update", "check"], flags: &[], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["update", "status"], flags: &[], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["update", "rollback"], flags: &["to", "reason"], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["update", "lock"], flags: &["owner", "ttl"], required: &["owner"], switches: &[], positional: 0 },
-    Spec { path: &["update", "unlock"], flags: &["owner"], required: &["owner"], switches: &[], positional: 0 },
-    Spec {
-        path: &["tls", "setup"],
-        flags: &["hostname"],
-        required: &["hostname"],
-        switches: &["import-root"],
-        positional: 0,
-    },
-    Spec { path: &["kiosk", "rotate"], flags: &[], required: &[], switches: &[], positional: 0 },
-    Spec { path: &["diag", "bundle"], flags: &["out"], required: &["out"], switches: &[], positional: 0 },
-    Spec { path: &["migrate-from-v1"], flags: &[], required: &[], switches: &[], positional: 0 },
-];
+fn strs(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(|s| s.trim_start_matches("--").to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// (opciones globales con valor, interruptores globales, órdenes) de la tabla del real.
+fn real_cli() -> (Vec<String>, Vec<String>, Vec<Spec>) {
+    let v: Value = serde_json::from_str(REAL_CLI_SPEC).unwrap_or(Value::Null);
+    let global = v.get("global").cloned().unwrap_or(Value::Null);
+    let commands = v
+        .get("commands")
+        .and_then(Value::as_array)
+        .map(|cs| {
+            cs.iter()
+                .map(|c| Spec {
+                    path: c
+                        .get("path")
+                        .and_then(Value::as_array)
+                        .map(|p| p.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                        .unwrap_or_default(),
+                    values: strs(c, "values"),
+                    switches: strs(c, "switches"),
+                    required: strs(c, "required"),
+                    positional: c.get("positional").and_then(Value::as_u64).unwrap_or(0) as usize,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (strs(&global, "values"), strs(&global, "switches"), commands)
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
@@ -135,12 +134,13 @@ impl Parsed {
     }
 }
 
-/// Analiza la línea de órdenes con la gramática de CONTRATO §14.1. `--json` y `--data-dir` valen en todas.
+/// Analiza la línea de órdenes con la tabla del real. `--json`, `--data-dir` e `--install-dir` valen en todas.
 pub fn parse(args: &[String]) -> Result<Parsed, String> {
+    let (g_values, g_switches, specs) = real_cli();
     let words: Vec<&str> = args.iter().map(String::as_str).take_while(|a| !a.starts_with("--")).collect();
-    let spec = SPECS
+    let spec = specs
         .iter()
-        .filter(|s| s.path.len() <= words.len() && s.path.iter().zip(&words).all(|(a, b)| a == b))
+        .filter(|s| !s.path.is_empty() && s.path.len() <= words.len() && s.path.iter().zip(&words).all(|(a, b)| a == b))
         .max_by_key(|s| s.path.len())
         .ok_or_else(|| format!("orden desconocida: {}", args.join(" ")))?;
     let mut p = Parsed { command: spec.path.join(" "), ..Parsed::default() };
@@ -149,9 +149,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         if let Some(name) = a.strip_prefix("--") {
             if name == "json" {
                 p.json = true;
-            } else if spec.switches.contains(&name) {
+            } else if spec.switches.iter().chain(&g_switches).any(|s| s == name) {
                 p.switches.insert(name.to_string());
-            } else if spec.flags.contains(&name) || name == "data-dir" {
+            } else if spec.values.iter().chain(&g_values).any(|s| s == name) {
                 let v = rest.next().ok_or_else(|| format!("falta el valor de --{name}"))?;
                 p.flags.insert(name.to_string(), v.clone());
             } else {
@@ -169,8 +169,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             p.positional.len()
         ));
     }
-    for r in spec.required {
-        if !p.flags.contains_key(*r) {
+    let extra = EXTRA_REQUIRED.iter().filter(|(c, _)| *c == p.command).map(|(_, f)| f.to_string());
+    for r in spec.required.iter().cloned().chain(extra) {
+        if !p.flags.contains_key(&r) {
             return Err(format!("«{}» necesita --{r}", p.command));
         }
     }
@@ -307,6 +308,13 @@ pub fn run_vmsctl(args: &[String], env: Env, fx: &mut dyn Effects) -> Outcome {
                     return reply(p.json, exit_codes::WINDOWS_ERROR, data, Some(("windows_error", msg)));
                 }
             }
+            // Como el real (`point_to`): el puntero a la versión de este vmsctl (versions\<X>\bin).
+            if let Some(v) = std::env::current_exe().ok().as_deref().and_then(own_version) {
+                match write_active(&data_root, &v) {
+                    Ok(v) => data["active"] = v,
+                    Err(e) => return reply(p.json, exit_codes::WINDOWS_ERROR, data, Some(("windows_error", e))),
+                }
+            }
         }
         "diag bundle" => {
             let out = PathBuf::from(p.flag("out").unwrap_or_default());
@@ -348,6 +356,16 @@ pub fn record_call(log: &Path, args: &[String], code: i32, fx: &dyn Effects) -> 
         .open(log)
         .map_err(|e| format!("No se pudo abrir {}: {e}", log.display()))?;
     writeln!(f, "{line}").map_err(|e| format!("No se pudo escribir {}: {e}", log.display()))
+}
+
+/// Versión de un `vmsctl` instalado en `versions\<X>\bin\vmsctl.exe`.
+pub fn own_version(exe: &Path) -> Option<String> {
+    let bin = exe.parent()?;
+    let vdir = bin.parent()?;
+    let versions = vdir.parent()?;
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    (name(bin).eq_ignore_ascii_case("bin") && name(versions).eq_ignore_ascii_case("versions") && is_semver(&name(vdir)))
+        .then(|| name(vdir))
 }
 
 // ================================================================================================ active.json
@@ -500,6 +518,25 @@ mod tests {
         assert!(parse(&args("ports check --http-port 8601 --https-port 8644")).is_ok());
         assert!(parse(&args("update lock --owner installer --ttl 3600")).is_ok());
         assert!(parse(&args("migrate-from-v1 --json")).is_ok());
+    }
+
+    #[test]
+    fn the_cli_is_the_real_one() {
+        // El doble aceptaba «ports check --http-port» y «update lock» cuando el real no los tenía (hallazgos C1
+        // y M1): CI estaba verde con el flujo real roto. Ahora la tabla es la del real.
+        assert!(REAL_CLI_SPEC.contains("\"ports\", \"check\""));
+        assert!(parse(&args("acl apply --data-dir x --profiles private")).is_err(), "el real no lo admite");
+        assert!(parse(&args("ports check --role store --http-port 8600 --https-port 8643")).is_ok());
+        assert!(parse(&args("services install --role store --data-dir x --recordings-dir D:\\G")).is_ok());
+        assert!(parse(&args("update lock --ttl 3600")).is_err(), "--owner obligatoria en el real");
+        assert!(parse(&args("help")).is_ok());
+    }
+
+    #[test]
+    fn own_version_from_the_install_layout() {
+        let exe = Path::new("C:/pf/VMSMultimarca/versions/2.0.0-ci.4/bin/vmsctl.exe");
+        assert_eq!(own_version(exe).as_deref(), Some("2.0.0-ci.4"));
+        assert_eq!(own_version(Path::new("C:/tmp/vmsctl.exe")), None);
     }
 
     #[test]

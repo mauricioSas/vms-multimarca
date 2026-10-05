@@ -2,7 +2,8 @@
     InitializeSetup      secretos, Windows 10, negativa a bajar de versión, detección
     InitializeWizard     páginas propias con los valores de /LOADINF y /SECRETS
     PrepareToInstall     validación completa, cerrojo del actualizador, parada de servicios, puertos
-    ssPostInstall        .env, config.json, v1 → vmsctl (puntero, servicios, ACL, firewall, TLS) → arranque
+    ssPostInstall        .env, config.json, updater.json, v1 → vmsctl (servicios y puntero, ACL, firewall, TLS)
+                         → arranque
                          → «vmsctl health wait --timeout 120»
   Dueño: B3. }
 
@@ -124,7 +125,8 @@ begin
 end;
 
 { Comprobación de puertos antes de instalar (solo instalación nueva: si ya está instalado, los puertos los usan
-  nuestros propios servicios, que se paran justo antes de copiar). }
+  nuestros propios servicios, que se paran justo antes de copiar). El tipo de puesto y los puertos van en la orden:
+  en una instalación nueva aún no están en el registro ni en el .env. }
 function CheckPorts: String;
 var
   Code: Integer;
@@ -132,7 +134,8 @@ begin
   Result := '';
   if (gActiveVersion <> '') or gV1Detected or not IsVideoRole then
     Exit;
-  Code := RunVmsctl(TempVmsctl, 'ports check --http-port ' + HttpPort + ' --https-port ' + HttpsPort);
+  Code := RunVmsctl(TempVmsctl, 'ports check --role ' + Role + ' --http-port ' + HttpPort + ' --https-port ' +
+    HttpsPort + ' --data-dir ' + AddQuotes(gDataDir));
   if Code = VMSCTL_PORT_IN_USE then
     Result := FmtMessage(CustomMessage('ErrPortInUse'), [gLastVmsctlMessage])
   else if Code <> VMSCTL_OK then
@@ -235,6 +238,30 @@ end;
 
 { ------------------------------------------------------------------ PrepareToInstall }
 
+{ Modo del repositorio de actualizaciones según la fuente (CONTRATO §15.1): file:/// = offline; si no, online. }
+function UpdateMode(const Source: String): String;
+begin
+  if Pos('file:///', Lowercase(Source)) = 1 then
+    Result := 'offline'
+  else
+    Result := 'online';
+end;
+
+{ ¿Trae este instalador el root de confianza de ese modo (updater\trusted\<modo>\1.root.json)? Sin él, el
+  actualizador no puede verificar nada y se para al arrancar: una fuente sin su root no se acepta. }
+function PayloadHasRoot(const Mode: String): Boolean;
+begin
+  Result := False;
+#ifdef HasOnlineRoot
+  if Mode = 'online' then
+    Result := True;
+#endif
+#ifdef HasOfflineRoot
+  if Mode = 'offline' then
+    Result := True;
+#endif
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Old: String;
@@ -247,7 +274,9 @@ begin
     UpdateSource := InfGet('UpdateSource', '');
     if (UpdateSource <> '') and (Pos('https://', Lowercase(UpdateSource)) <> 1) and
       (Pos('http://', Lowercase(UpdateSource)) <> 1) and (Pos('file:///', Lowercase(UpdateSource)) <> 1) then
-      Result := CustomMessage('ErrUpdateSource');
+      Result := CustomMessage('ErrUpdateSource')
+    else if (UpdateSource <> '') and not PayloadHasRoot(UpdateMode(UpdateSource)) then
+      Result := FmtMessage(CustomMessage('ErrUpdateSourceNoRoot'), [UpdateMode(UpdateSource)]);
   end;
   if Result <> '' then
   begin
@@ -352,6 +381,60 @@ begin
         FmtMessage(CustomMessage('ErrWriteFile'), [AddBackslash(gDataDir) + 'config\config.json']), 20);
 end;
 
+{ updater\updater.json (carpeta de datos): el AppId de Inno, para que el actualizador ponga DisplayVersion en
+  «Aplicaciones» tras cada actualización (CONTRATO §13.7). Si el archivo ya existe se conserva todo lo demás. }
+procedure WriteUpdaterConfig;
+var
+  Path, S, Rest: String;
+  Raw: AnsiString;
+  Lines: TArrayOfString;
+  P: Integer;
+begin
+  Path := AddBackslash(gDataDir) + 'updater\updater.json';
+  S := '';
+  if FileExists(Path) and LoadStringFromFile(Path, Raw) then
+    S := Trim(Utf8Decode(Raw));
+  if Pos('"inno_app_id"', S) > 0 then
+    Exit;
+  P := Pos('{', S);
+  if S = '' then
+    S := '{"inno_app_id": "{#AppIdPlain}"}'
+  else if P = 0 then
+  begin
+    Log('AVISO: ' + Path + ' no es un objeto JSON: no se toca.');
+    Exit;
+  end
+  else
+  begin
+    Rest := Trim(Copy(S, P + 1, Length(S)));
+    if Copy(Rest, 1, 1) = '}' then
+      S := '{"inno_app_id": "{#AppIdPlain}"' + Rest
+    else
+      S := '{"inno_app_id": "{#AppIdPlain}", ' + Rest;
+  end;
+  SetArrayLength(Lines, 1);
+  Lines[0] := S;
+  if not (EnsureDir(AddBackslash(gDataDir) + 'updater') and SaveStringsToUTF8FileWithoutBOM(Path, Lines, False)) then
+    Log('AVISO: no se pudo escribir ' + Path + ': DisplayVersion no se actualizará con el actualizador.');
+end;
+
+{ --recordings-dir para services install y acl apply: la carpeta de grabaciones si está fuera de la carpeta de
+  datos (la de dentro ya la cubre la ACL de la carpeta de datos). En una actualización, la del registro. }
+function RecordingsArg: String;
+var
+  Dir: String;
+begin
+  Result := '';
+  if not IsVideoRole then
+    Exit;
+  Dir := RecordingsDir;
+  if Dir = '' then
+    RegQueryStringValue(HKLM, VMS_REG_KEY, 'RecordingsDir', Dir);
+  Dir := RemoveBackslash(Trim(Dir));
+  if (Dir <> '') and (CompareText(Dir, RemoveBackslash(DefaultRecordingsDir)) <> 0) and DirExists(Dir) then
+    Result := ' --recordings-dir ' + AddQuotes(Dir);
+end;
+
 procedure WriteRegistryState;
 begin
   RegWriteStringValue(HKLM, VMS_REG_KEY, 'InstallDir', ProgramDir);
@@ -383,21 +466,26 @@ begin
       Fail(CustomMessage('StatusSettings'), FmtMessage(CustomMessage('ErrCreateDir'), [RecordingsDir]), 20);
   if gFailedStep = '' then
     WriteEnvAndConfig;
+  if gFailedStep = '' then
+    WriteUpdaterConfig;
   WriteRegistryState;
 
   if gV1Detected then
     if VmsctlStep(CustomMessage('StatusMigrate'), 'migrate-from-v1') then
       RemoveV1Leftovers;
-  VmsctlStep(CustomMessage('StatusPointer'), 'version switch {#AppVersion}');
+  { services install crea los servicios y apunta state\active.json a esta versión (sin «a prueba»): en una
+    instalación nueva no hay puntero previo y «version switch» fallaría (CONTRATO §13.4). }
   VmsctlStep(CustomMessage('StatusServices'), 'services install --role ' + Role + ' --data-dir ' +
-    AddQuotes(gDataDir));
-  VmsctlStep(CustomMessage('StatusAcl'), 'acl apply --data-dir ' + AddQuotes(gDataDir));
+    AddQuotes(gDataDir) + RecordingsArg);
+  VmsctlStep(CustomMessage('StatusAcl'), 'acl apply --role ' + Role + ' --data-dir ' + AddQuotes(gDataDir) +
+    RecordingsArg);
   if gFailedStep = '' then
     EnsureOperatorsGroup;
   if IsVideoRole then
     VmsctlStep(CustomMessage('StatusKiosk'), 'kiosk rotate');
   if not IsViewerRole then
-    VmsctlStep(CustomMessage('StatusFirewall'), 'firewall apply --profiles ' + FirewallProfiles);
+    VmsctlStep(CustomMessage('StatusFirewall'), 'firewall apply --role ' + Role + ' --profiles ' +
+      FirewallProfiles);
   if HttpsEnabled then
     VmsctlStep(CustomMessage('StatusTls'), 'tls setup --hostname ' + AddQuotes(Lowercase(GetComputerNameString)));
   if (gFailedStep = '') and (gPublicNetworkCount > 0) and NetPrivateCheck.Checked then
