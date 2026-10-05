@@ -1,0 +1,41 @@
+# PLANTILLA (B4) para .github/workflows/timestamp.yml — la instala B3, dueño de .github/workflows/.
+# Vuelve a firmar el timestamp del repositorio ONLINE cada día (caduca a los 7 días). Si este flujo deja de
+# ejecutarse, las tiendas dejan de actualizar y lo avisan (`metadata_expired`), pero nunca instalan nada
+# que no haya autorizado `targets`. Pendiente de la cuenta de Cloudflare (D5).
+name: Timestamp diario
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuf-online-meta
+  cancel-in-progress: false
+
+jobs:
+  timestamp:
+    runs-on: ubuntu-latest
+    environment: tuf-online
+    timeout-minutes: 10
+    env:
+      VMS_TUF_SNAPSHOT_PEM: ${{ secrets.VMS_TUF_SNAPSHOT_PEM }}
+      VMS_TUF_TIMESTAMP_PEM: ${{ secrets.VMS_TUF_TIMESTAMP_PEM }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --require-hashes --no-deps -r requirements-updater.txt
+          python -m pip install --no-deps -e .
+      - run: aws s3 sync "s3://vms-updates/online/metadata/" repo/online/metadata/ --endpoint-url "$R2_ENDPOINT"
+      - run: python -m tools.release --keys tools/release/ci/keyring --repo repo sign-meta --mode online --timestamp-only
+      - run: python -m tools.release --keys tools/release/ci/keyring --repo repo verify --mode online
+      - run: aws s3 cp repo/online/metadata/timestamp.json "s3://vms-updates/online/metadata/timestamp.json" --endpoint-url "$R2_ENDPOINT"
