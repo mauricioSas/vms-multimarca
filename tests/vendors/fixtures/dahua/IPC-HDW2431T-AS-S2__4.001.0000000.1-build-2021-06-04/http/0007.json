@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/configManager.cgi",
+    "query": [
+      [
+        "action",
+        "getConfig"
+      ],
+      [
+        "name",
+        "Encode"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "table.Encode[0].MainFormat[0].VideoEnable=true\r\ntable.Encode[0].MainFormat[0].Video.Compression=H.264\r\ntable.Encode[0].MainFormat[0].Video.Width=2688\r\ntable.Encode[0].MainFormat[0].Video.Height=1520\r\ntable.Encode[0].MainFormat[0].Video.FPS=25\r\ntable.Encode[0].MainFormat[0].Video.GOP=50\r\ntable.Encode[0].MainFormat[0].Video.BitRate=4096\r\ntable.Encode[0].ExtraFormat[0].VideoEnable=true\r\ntable.Encode[0].ExtraFormat[0].Video.Compression=H.264\r\ntable.Encode[0].ExtraFormat[0].Video.Width=704\r\ntable.Encode[0].ExtraFormat[0].Video.Height=576\r\ntable.Encode[0].ExtraFormat[0].Video.FPS=15\r\ntable.Encode[0].ExtraFormat[0].Video.GOP=30\r\ntable.Encode[0].ExtraFormat[0].Video.BitRate=512\r\n",
+    "binary": false
+  }
+}

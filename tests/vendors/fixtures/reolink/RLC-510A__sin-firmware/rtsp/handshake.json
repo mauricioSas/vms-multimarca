@@ -1,0 +1,53 @@
+{
+  "path": "/Preview_01_main",
+  "steps": [
+    {
+      "method": "OPTIONS",
+      "url": "/Preview_01_main",
+      "authorized": false,
+      "status": 200,
+      "reason": "OK",
+      "headers": {
+        "server": [
+          "Chaos/1.0"
+        ],
+        "public": [
+          "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER"
+        ]
+      },
+      "body": ""
+    },
+    {
+      "method": "DESCRIBE",
+      "url": "/Preview_01_main",
+      "authorized": false,
+      "status": 401,
+      "reason": "Unauthorized",
+      "headers": {
+        "server": [
+          "Chaos/1.0"
+        ],
+        "www-authenticate": [
+          "Digest realm=\"reolink-realm\", nonce=\"nonce-anon-1\", algorithm=MD5, qop=\"auth\""
+        ]
+      },
+      "body": ""
+    },
+    {
+      "method": "DESCRIBE",
+      "url": "/Preview_01_main",
+      "authorized": true,
+      "status": 200,
+      "reason": "OK",
+      "headers": {
+        "server": [
+          "Chaos/1.0"
+        ],
+        "content-type": [
+          "application/sdp"
+        ]
+      },
+      "body": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Chaos\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;profile-level-id=42c00a;sprop-parameter-sets=Z0LACtkEJsBEAAADAAQAAAMAUDxImSA=,aMuDyyA=\r\na=control:trackID=1\r\n"
+    }
+  ]
+}

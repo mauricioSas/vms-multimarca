@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/configManager.cgi",
+    "query": [
+      [
+        "action",
+        "getConfig"
+      ],
+      [
+        "name",
+        "ChannelTitle"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "table.ChannelTitle[0].Name=Canal 1\r\ntable.ChannelTitle[1].Name=Canal 2\r\ntable.ChannelTitle[2].Name=Canal 3\r\ntable.ChannelTitle[3].Name=Canal 4\r\n",
+    "binary": false
+  }
+}

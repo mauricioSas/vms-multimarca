@@ -1,0 +1,17 @@
+{
+  "scopes": [
+    "onvif://www.onvif.org/location/country/china",
+    "onvif://www.onvif.org/name/Dahua",
+    "onvif://www.onvif.org/hardware/IPC-HDW2431T-AS-S2",
+    "onvif://www.onvif.org/Profile/Streaming",
+    "onvif://www.onvif.org/type/Network_Video_Transmitter",
+    "onvif://www.onvif.org/extension/unique_identifier"
+  ],
+  "model": "",
+  "name": "",
+  "manufacturer": "",
+  "http_server": "",
+  "sadp": false,
+  "dhip": false,
+  "mac": ""
+}

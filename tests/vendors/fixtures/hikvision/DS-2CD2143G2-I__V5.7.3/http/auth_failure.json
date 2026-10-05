@@ -1,0 +1,22 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/deviceInfo",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ],
+      "www-authenticate": [
+        "Digest qop=\"auth\", realm=\"hikvision-realm\", nonce=\"nonce-anon-1\", algorithm=MD5, stale=\"FALSE\""
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<userCheck version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<statusValue>401</statusValue>\n<statusString>Unauthorized</statusString>\n<lockStatus>unlock</lockStatus>\n<unlockTime>0</unlockTime>\n<retryLoginTime>4</retryLoginTime>\n</userCheck>\n",
+    "binary": false
+  }
+}

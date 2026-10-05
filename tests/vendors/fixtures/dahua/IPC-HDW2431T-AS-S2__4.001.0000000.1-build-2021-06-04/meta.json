@@ -1,0 +1,20 @@
+{
+  "driver": "dahua",
+  "model": "IPC-HDW2431T-AS-S2",
+  "firmware": "4.001.0000000.1,build:2021-06-04",
+  "firmware_date": "2021-06-04",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "SND1BDE1A139",
+  "channels": 1,
+  "channel_ids": [
+    1
+  ],
+  "main_codec": "H.265",
+  "rtsp_path": "/cam/realmonitor?channel=1&subtype=0",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": ""
+}

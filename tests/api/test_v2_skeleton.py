@@ -59,17 +59,17 @@ def test_migration_chain_and_newer_versions() -> None:
 
 def test_vendor_is_text_validated_against_the_registry() -> None:
     # una marca desconocida guardada (p. ej. tras un rollback) se conserva…
-    dev = Device(name="X", vendor="uniview", host="10.0.0.3")
-    assert dev.vendor == "uniview"
+    dev = Device(name="X", vendor="marca-ficticia", host="10.0.0.3")
+    assert dev.vendor == "marca-ficticia"
     # …pero no se puede dar de alta hasta que el registro la conozca
     with pytest.raises(ValueError):
-        DeviceCreate(name="X", vendor="uniview", host="10.0.0.3")
-    register_vendor_ids(["uniview"])
+        DeviceCreate(name="X", vendor="marca-ficticia", host="10.0.0.3")
+    register_vendor_ids(["marca-ficticia"])
     try:
-        assert DeviceCreate(name="X", vendor="uniview", host="10.0.0.3").vendor == "uniview"
+        assert DeviceCreate(name="X", vendor="marca-ficticia", host="10.0.0.3").vendor == "marca-ficticia"
     finally:
         from vms.core import models
-        models._KNOWN_VENDORS.discard("uniview")
+        models._KNOWN_VENDORS.discard("marca-ficticia")
     assert {"hikvision", "dahua", "onvif", "generic"} <= known_vendor_ids()
 
 

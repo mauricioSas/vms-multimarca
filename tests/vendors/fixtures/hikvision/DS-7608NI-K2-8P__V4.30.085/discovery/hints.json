@@ -1,0 +1,19 @@
+{
+  "scopes": [
+    "onvif://www.onvif.org/type/video_encoder",
+    "onvif://www.onvif.org/Profile/Streaming",
+    "onvif://www.onvif.org/Profile/G",
+    "onvif://www.onvif.org/Profile/T",
+    "onvif://www.onvif.org/MAC/02:00:5e:00:53:01",
+    "onvif://www.onvif.org/hardware/DS-7608NI-K2/8P",
+    "onvif://www.onvif.org/name/HIKVISION%20DS-7608NI-K2/8P",
+    "onvif://www.onvif.org/location/city/hangzhou"
+  ],
+  "model": "DS-7608NI-K2/8P",
+  "name": "",
+  "manufacturer": "",
+  "http_server": "",
+  "sadp": true,
+  "dhip": false,
+  "mac": ""
+}

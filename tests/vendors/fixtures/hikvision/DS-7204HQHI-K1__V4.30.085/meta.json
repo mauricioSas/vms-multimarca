@@ -1,0 +1,27 @@
+{
+  "driver": "hikvision",
+  "model": "DS-7204HQHI-K1",
+  "firmware": "V4.30.085",
+  "firmware_date": "2021-08-12",
+  "kind": "dvr",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "DS-7204HQHI-K1SNABFE6322D2",
+  "channels": 8,
+  "channel_ids": [
+    1,
+    2,
+    3,
+    4,
+    33,
+    34,
+    35,
+    36
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/Streaming/Channels/101",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "DVR híbrido: 4 analógicas (1-4) y canales IP desde el 33 (no verificado con hardware)"
+}

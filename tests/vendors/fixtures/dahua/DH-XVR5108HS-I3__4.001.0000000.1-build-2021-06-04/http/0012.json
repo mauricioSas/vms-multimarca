@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/LogicDeviceManager.cgi",
+    "query": [
+      [
+        "action",
+        "getCameraState"
+      ],
+      [
+        "uniqueChannels[0]",
+        "-1"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "states[0].channel=4\r\nstates[0].connectionState=Connected\r\nstates[1].channel=5\r\nstates[1].connectionState=Connected\r\nstates[2].channel=6\r\nstates[2].connectionState=Unconnect\r\nstates[3].channel=7\r\nstates[3].connectionState=Connected\r\n",
+    "binary": false
+  }
+}

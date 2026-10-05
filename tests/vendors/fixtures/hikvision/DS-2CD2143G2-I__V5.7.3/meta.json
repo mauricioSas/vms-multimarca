@@ -1,0 +1,20 @@
+{
+  "driver": "hikvision",
+  "model": "DS-2CD2143G2-I",
+  "firmware": "V5.7.3",
+  "firmware_date": "2022-01-12",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "DS-2CD2143G2-ISN3B1B2E80C9",
+  "channels": 1,
+  "channel_ids": [
+    1
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/Streaming/Channels/101",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": ""
+}

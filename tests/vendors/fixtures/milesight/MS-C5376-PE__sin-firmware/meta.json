@@ -1,0 +1,18 @@
+{
+  "driver": "milesight",
+  "model": "MS-C5376-PE",
+  "firmware": "",
+  "firmware_date": "",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "",
+  "channels": 1,
+  "channel_ids": [],
+  "main_codec": "H.264",
+  "rtsp_path": "//main",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "La ruta /main da 404 y responde //main (caso documentado de doble barra)"
+}

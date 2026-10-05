@@ -1,6 +1,7 @@
 """URLs RTSP, presets por fabricante y ocultación de credenciales en textos.
 
-Presets a partir del número de canal N (1..512):
+Los presets viven en el registro de drivers (`vms/vendors/registry.py`, un archivo por marca en
+`vms/vendors/drivers/`). `preset_paths()` queda como fachada compatible que delega en él:
   Hikvision: /Streaming/Channels/{N}01 (principal) y /Streaming/Channels/{N}02 (subflujo)
   Dahua:     /cam/realmonitor?channel={N}&subtype=0 (principal) y subtype=1 (subflujo)
   ONVIF:     sin preset fijo; la ruta se obtiene con GetStreamUri y se guarda en la cámara.
@@ -10,8 +11,11 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from .models import DeviceKind
 
 VENDOR_HIKVISION = "hikvision"
 VENDOR_DAHUA = "dahua"
@@ -30,19 +34,26 @@ STREAM_MAIN: StreamKind = "main"
 STREAM_SUB: StreamKind = "sub"
 
 
-def preset_paths(vendor: str, channel: int) -> tuple[str, str] | None:
-    """(ruta_principal, ruta_subflujo) del fabricante, o None si no hay preset."""
+def preset_paths(vendor: str, channel: int, kind: str = "camera") -> tuple[str, str | None] | None:
+    """(ruta_principal, ruta_subflujo o None) del driver, o None si no hay preset (ONVIF, genérico…).
+
+    Fachada compatible: delega en `vms.vendors.registry.preset_for` (PLAN-V2 §3.1)."""
     channel = int(channel)
     if not 1 <= channel <= 512:
         raise ValueError("El canal debe estar entre 1 y 512")
-    if vendor == VENDOR_HIKVISION:
-        return (f"/Streaming/Channels/{channel}01", f"/Streaming/Channels/{channel}02")
-    if vendor == VENDOR_DAHUA:
-        return (
-            f"/cam/realmonitor?channel={channel}&subtype=0",
-            f"/cam/realmonitor?channel={channel}&subtype=1",
-        )
-    return None
+    from vms.vendors.registry import preset_for  # import tardío: vms.vendors depende de vms.core
+
+    k = cast("DeviceKind", kind if kind in ("camera", "nvr", "dvr", "xvr") else "camera")
+    preset = preset_for(vendor, channel, k)
+    return None if preset is None else (preset.main, preset.sub)
+
+
+def vendor_name(vendor: str) -> str:
+    """Nombre para mostrar de un driver («Hikvision», «TP-Link VIGI»…); el id si no se conoce."""
+    from vms.vendors.registry import get_driver
+
+    spec = get_driver(vendor)
+    return spec.name if spec is not None else VENDORS.get(vendor, vendor)
 
 
 def normalize_path(path: str | None) -> str:

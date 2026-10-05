@@ -1,6 +1,9 @@
-"""Descubrimiento de cámaras y NVR en la red local con WS-Discovery (implementación propia).
+"""Descubrimiento de cámaras y NVR en la red local: WS-Discovery, SADP (Hikvision) y DHIP (Dahua).
 
-Envía un Probe SOAP (tipo dn:NetworkVideoTransmitter) por UDP multicast a
+`discover()` lanza las tres búsquedas a la vez y junta los resultados por IP; la marca la decide el
+registro (`best_match`) con todas las pistas: scopes WSD, que respondiera a SADP o a DHIP, modelo y MAC.
+
+WS-Discovery (implementación propia): envía un Probe SOAP (tipo dn:NetworkVideoTransmitter) por UDP multicast a
 239.255.255.250:3702 y recoge los ProbeMatches durante `timeout` segundos. El fabricante se
 deduce de los scopes (onvif://www.onvif.org/hardware/..., /name/...) y del modelo.
 
@@ -14,14 +17,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 import socket
 import struct
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote, urlsplit
 
-from vms.core.interfaces import DiscoveredDevice
+from vms.core.interfaces import DetectionHints, DiscoveredDevice
 from vms.core.models import Vendor
+
+from .netguard import reply_host
 
 log = logging.getLogger("vms.vendors.discovery")
 
@@ -47,17 +53,25 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
+def hints_for(scopes: list[str], model: str = "", name: str = "", *, mac: str = "", sadp: bool = False,
+              dhip: bool = False, manufacturer: str = "") -> DetectionHints:
+    return DetectionHints(scopes=scopes, model=model, name=name, mac=mac, sadp=sadp, dhip=dhip,
+                          manufacturer=manufacturer)
+
+
 def guess_vendor(scopes: list[str], model: str = "", name: str = "") -> Vendor:
-    text = " ".join([*scopes, model, name]).upper()
-    if "HIKVISION" in text or "/DS-" in text or model.upper().startswith(("DS-", "IDS-")):
-        return "hikvision"
-    if "DAHUA" in text or model.upper().startswith(("DH-", "DHI-", "IPC-", "NVR4", "NVR5", "XVR", "HCVR")):
-        return "dahua"
-    return "onvif"
+    """Marca más probable con el registro de drivers (PLAN-V2 §3.2 punto 4); «onvif» si no hay ninguna clara."""
+    from .registry import guess_vendor_id
+
+    return guess_vendor_id(hints_for(scopes, model, name))[0]
 
 
-def parse_probe_matches(data: bytes, expected_relates_to: str | None = None) -> list[DiscoveredDevice]:
-    """Convierte un ProbeMatches en dispositivos. Ignora respuestas a otros Probe."""
+def parse_probe_matches(data: bytes, expected_relates_to: str | None = None,
+                        source_ip: str = "") -> list[DiscoveredDevice]:
+    """Convierte un ProbeMatches en dispositivos. Ignora respuestas a otros Probe.
+
+    `source_ip`: IP de origen del datagrama. Se prefiere la XAddr con esa IP; si ninguna la tiene, el equipo
+    se registra con la IP de origen (la del paquete es falsificable, ver `netguard.reply_host`)."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
@@ -91,14 +105,18 @@ def parse_probe_matches(data: bytes, expected_relates_to: str | None = None) -> 
             elif "/mac/" in low:
                 mac = value
         # Preferimos una XAddr IPv4 (algunas cámaras anuncian también IPv6 link-local)
-        xaddrs.sort(key=lambda x: ":" in (urlsplit(x).hostname or ""))
+        xaddrs.sort(key=lambda x: ((urlsplit(x).hostname or "") != source_ip, ":" in (urlsplit(x).hostname or "")))
         parts = urlsplit(xaddrs[0])
-        host = parts.hostname or ""
+        host = reply_host(parts.hostname or "", source_ip)
         if not host:
             continue
         port = parts.port or (443 if parts.scheme == "https" else 80)
-        out.append(DiscoveredDevice(host=host, http_port=port, vendor_guess=guess_vendor(scopes, model, name),
-                                    model=model, name=name, mac=mac, xaddrs=xaddrs, scopes=scopes))
+        from .registry import guess_vendor_id
+
+        vendor, score = guess_vendor_id(hints_for(scopes, model, name, mac=mac))
+        out.append(DiscoveredDevice(host=host, http_port=port, vendor_guess=vendor, vendor_score=score,
+                                    model=model, name=name, mac=mac.lower(), xaddrs=xaddrs, scopes=scopes,
+                                    sources=["wsd"]))
     return out
 
 
@@ -107,9 +125,9 @@ class _Collector(asyncio.DatagramProtocol):
         self.message_id = message_id
         self.found: list[DiscoveredDevice] = []
 
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:  # type: ignore[override]
+    def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
         try:
-            devices = parse_probe_matches(data, self.message_id)
+            devices = parse_probe_matches(data, self.message_id, str(addr[0]))
         except Exception:  # noqa: BLE001 - un paquete raro no debe tumbar el escaneo
             log.exception("Error interpretando una respuesta WS-Discovery de %s", addr[0])
             return
@@ -132,7 +150,7 @@ def _make_socket(interface: str | None) -> socket.socket:
     return sock
 
 
-async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | None = None,
+async def discover_wsd(timeout: float = 3.0, *, targets: list[tuple[str, int]] | None = None,
                    interfaces: list[str] | None = None, multicast: bool | None = None) -> list[DiscoveredDevice]:
     """Busca equipos ONVIF. Con `targets` y sin `multicast=True` solo sondea esos destinos."""
     timeout = max(0.2, min(float(timeout), 30.0))
@@ -177,6 +195,80 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
             key = f"{d.host}:{d.http_port}"
             if key not in unique:
                 unique[key] = d
-    found = sorted(unique.values(), key=lambda d: tuple(int(p) if p.isdigit() else 0 for p in d.host.split(".")))
-    log.info("Descubrimiento terminado: %d equipos encontrados", len(found))
+    found = sorted(unique.values(), key=_host_key)
+    log.debug("WS-Discovery: %d equipos", len(found))
     return found
+
+
+def _host_key(d: DiscoveredDevice) -> tuple[int, ...]:
+    return tuple(int(p) if p.isdigit() else 0 for p in d.host.split("."))
+
+
+def _merge(found: dict[str, DiscoveredDevice], dev: DiscoveredDevice) -> None:
+    key = dev.host.lower()
+    cur = found.get(key)
+    if cur is None:
+        found[key] = dev
+        return
+    upd: dict[str, object] = {"sources": sorted(set(cur.sources) | set(dev.sources))}
+    for f in ("model", "name", "mac", "serial", "firmware"):
+        if not getattr(cur, f) and getattr(dev, f):
+            upd[f] = getattr(dev, f)
+    if not cur.xaddrs and dev.xaddrs:
+        upd["xaddrs"], upd["http_port"] = dev.xaddrs, dev.http_port
+    found[key] = cur.model_copy(update=upd)
+
+
+async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | None = None,
+                   interfaces: list[str] | None = None, multicast: bool | None = None,
+                   sadp_targets: list[tuple[str, int]] | None = None,
+                   dhip_targets: list[tuple[str, int]] | None = None) -> list[DiscoveredDevice]:
+    """WS-Discovery + SADP + DHIP a la vez; resultado por IP con la marca decidida por el registro.
+
+    Con `targets` (WSD) y sin `multicast=True` solo se sondean los destinos dados (pruebas, VPN): SADP y DHIP
+    solo se usan entonces si se les pasan sus propios destinos."""
+    from . import dhip, sadp
+    from .registry import guess_vendor_id
+
+    timeout = max(0.2, min(float(timeout), 30.0))
+    lan = multicast if multicast is not None else not (targets or sadp_targets or dhip_targets)
+    iface = interfaces[0] if interfaces else None
+
+    async def run_wsd() -> list[DiscoveredDevice]:
+        if not (lan or targets):
+            return []
+        return await discover_wsd(timeout, targets=targets, interfaces=interfaces, multicast=lan)
+
+    async def run_sadp() -> list[sadp.SadpDevice]:
+        if not (lan or sadp_targets):
+            return []
+        try:
+            return await sadp.search(timeout, targets=sadp_targets, multicast=lan, interface=iface)
+        except OSError as exc:
+            log.warning("No se pudo buscar por SADP: %s", exc)
+            return []
+
+    async def run_dhip() -> list[dhip.DhipDevice]:
+        if not (lan or dhip_targets):
+            return []
+        return await dhip.search(timeout, targets=dhip_targets, broadcast=lan, interface=iface)
+
+    wsd_found, sadp_found, dhip_found = await asyncio.gather(run_wsd(), run_sadp(), run_dhip())
+    found: dict[str, DiscoveredDevice] = {}
+    for d in wsd_found:
+        _merge(found, d)
+    for s in sadp_found:
+        _merge(found, DiscoveredDevice(host=s.host, http_port=s.http_port, model=s.model, serial=s.serial,
+                                       mac=s.mac, firmware=s.firmware, name=s.model, sources=["sadp"]))
+    for h in dhip_found:
+        _merge(found, DiscoveredDevice(host=h.host, http_port=h.http_port, model=h.model, serial=h.serial,
+                                       mac=h.mac, firmware=h.firmware, name=h.vendor or h.model, sources=["dhip"]))
+    out: list[DiscoveredDevice] = []
+    for d in sorted(found.values(), key=_host_key):
+        manufacturer = d.name if "dhip" in d.sources else ""
+        vendor, score = guess_vendor_id(hints_for(d.scopes, d.model, d.name, mac=d.mac, sadp="sadp" in d.sources,
+                                                  dhip="dhip" in d.sources, manufacturer=manufacturer))
+        out.append(d.model_copy(update={"vendor_guess": vendor, "vendor_score": score}))
+    log.info("Descubrimiento terminado: %d equipos (WSD %d, SADP %d, DHIP %d)", len(out), len(wsd_found),
+             len(sadp_found), len(dhip_found))
+    return out

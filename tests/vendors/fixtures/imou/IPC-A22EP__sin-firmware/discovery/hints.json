@@ -1,0 +1,15 @@
+{
+  "scopes": [
+    "onvif://www.onvif.org/type/video_encoder",
+    "onvif://www.onvif.org/Profile/Streaming",
+    "onvif://www.onvif.org/hardware/IPC-A22EP",
+    "onvif://www.onvif.org/name/Imou"
+  ],
+  "model": "IPC-A22EP",
+  "name": "",
+  "manufacturer": "Imou",
+  "http_server": "",
+  "sadp": false,
+  "dhip": true,
+  "mac": ""
+}

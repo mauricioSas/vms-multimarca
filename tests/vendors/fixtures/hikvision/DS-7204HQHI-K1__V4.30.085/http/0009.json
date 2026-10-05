@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/ISAPI/System/time",
+    "query": [],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "application/xml; charset=UTF-8"
+      ]
+    },
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Time version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">\n<timeMode>NTP</timeMode>\n<localTime>2026-10-05T03:40:42+02:00</localTime>\n<timeZone>CST-2:00:00</timeZone>\n</Time>\n",
+    "binary": false
+  }
+}

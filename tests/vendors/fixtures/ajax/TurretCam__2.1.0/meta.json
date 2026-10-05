@@ -1,0 +1,20 @@
+{
+  "driver": "ajax",
+  "model": "TurretCam",
+  "firmware": "2.1.0",
+  "firmware_date": "",
+  "kind": "camera",
+  "captured": "2026-10-05",
+  "source": "simulador",
+  "anonymized": true,
+  "synthetic": true,
+  "serial": "SNA3F8CDB9F0",
+  "channels": 1,
+  "channel_ids": [
+    1
+  ],
+  "main_codec": "H.264",
+  "rtsp_path": "/main_stream",
+  "snapshot": "sintético (la captura no guarda imágenes)",
+  "notes": "Ruta de vídeo leída por ONVIF (en el equipo real se copia de la app); RTSP en el 8554"
+}

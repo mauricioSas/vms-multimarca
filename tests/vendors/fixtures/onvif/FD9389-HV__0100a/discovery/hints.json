@@ -1,0 +1,15 @@
+{
+  "scopes": [
+    "onvif://www.onvif.org/type/video_encoder",
+    "onvif://www.onvif.org/Profile/Streaming",
+    "onvif://www.onvif.org/hardware/FD9389-HV",
+    "onvif://www.onvif.org/name/Equipo"
+  ],
+  "model": "",
+  "name": "",
+  "manufacturer": "",
+  "http_server": "",
+  "sadp": false,
+  "dhip": false,
+  "mac": ""
+}

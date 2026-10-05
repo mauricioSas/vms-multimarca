@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/cgi-bin/magicBox.cgi",
+    "query": [
+      [
+        "action",
+        "getSoftwareVersion"
+      ]
+    ],
+    "soap_op": "",
+    "authorized": true
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": [
+        "text/plain; charset=utf-8"
+      ]
+    },
+    "body": "version=4.001.0000000.1,build:2021-06-04\r\n",
+    "binary": false
+  }
+}
