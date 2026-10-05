@@ -5,7 +5,9 @@ Backends (VMS_CREDENTIAL_BACKEND):
     Secret Service en Linux con sesión gráfica).
   - file: archivo secrets/credentials.enc cifrado con Fernet (AES-128-CBC + HMAC-SHA256).
     La clave sale de VMS_SECRET_KEY o, si no existe, de secrets/secret.key (se genera una vez
-    con permisos solo del propietario). Pensado para mini PC Linux sin sesión gráfica.
+    con permisos solo del propietario). En Windows secret.key va protegida con DPAPI de máquina
+    (vms.core.winsec) y la de la v1, en claro, se protege sola al cargarla. Es el que usan los
+    servicios de Windows (cuentas virtuales sin sesión) y los mini PC Linux sin sesión gráfica.
   - auto (por defecto): keyring si hay un almacén real; si no, file.
 
 La clave de cada contraseña es el id del equipo (nunca su nombre ni su IP).
@@ -20,6 +22,7 @@ from typing import Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from . import winsec
 from .atomic import atomic_write_bytes, atomic_write_text
 from .paths import restrict_permissions
 
@@ -146,8 +149,18 @@ class EncryptedFileBackend:
         key_file = secrets_dir / "secret.key"
         store_file = secrets_dir / "credentials.enc"
         if key_file.is_file():
-            key = key_file.read_bytes().strip()
+            try:
+                key = winsec.read_secret(key_file).strip()
+            except winsec.SecretProtectionError as exc:
+                raise CredentialError(
+                    f"No se puede descifrar {key_file} con DPAPI: solo se puede leer en el equipo que lo creó "
+                    "(¿se restauró un respaldo de otro PC?). Vuelve a escribir la contraseña de cada equipo.") from exc
             if _valid_fernet_key(key):
+                try:
+                    winsec.migrate_plaintext(key_file)   # clave en claro de la v1 → DPAPI de máquina (solo Windows)
+                except (OSError, winsec.SecretProtectionError) as exc:
+                    log.warning("No se pudo proteger %s con DPAPI (sigue protegida solo por permisos): %s",
+                                key_file.name, exc)
                 return key
             if store_file.is_file() and store_file.stat().st_size > 0:
                 raise CredentialError(
@@ -158,8 +171,9 @@ class EncryptedFileBackend:
                         "se genera una nueva")
         key = Fernet.generate_key()
         # Escritura atómica con fsync (también de la carpeta): un corte de luz justo después del primer
-        # arranque no puede dejar una clave vacía con contraseñas ya cifradas con ella.
-        atomic_write_bytes(key_file, key)
+        # arranque no puede dejar una clave vacía con contraseñas ya cifradas con ella. En Windows se
+        # guarda protegida con DPAPI de máquina (CONTRATO §13.9).
+        atomic_write_bytes(key_file, winsec.dump(key))
         restrict_permissions(key_file)
         log.info("Se generó una clave nueva para el almacén cifrado de credenciales")
         return key
