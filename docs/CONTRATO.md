@@ -1143,12 +1143,23 @@ DeviceTime`; lo usa B6) y **`security_read`** (implementa `DeviceSecurityClient.
 admin_password) -> DeviceSecuritySettings`; lo usa B6 con credenciales temporales que no se guardan ni se
 registran); `rtsps` y `mjpeg_http` (v2.1); `events` y `ptz` (fuera de la v2).
 
+Las capacidades se cumplen en los dos sentidos (`tests/vendors/test_capabilities.py`): el driver que las
+declara tiene un cliente que las implementa, y el cliente que las implementa las declara (los perfiles «+ ONVIF»
+reciben `OnvifClient` y declaran `time_read` y `security_read`). B6 **pregunta al registro** (`vms/ops/drivers.py`:
+capacidad y `has_api`) antes de pedir un cliente: a un equipo sin API (Ezviz, Reolink, RTSP manual) no se le
+pide, porque `client_for()` lanza `DeviceUnsupported`.
+
 ### 16.3 Madurez e identidad
 
 `maturity`: `verified` (fila de 72 h en `docs/COMPATIBILIDAD.md`, lo comprueba
 `tests/vendors/test_maturity_matches_matrix.py`), `fixtures`, `community`, `experimental`.
 `Device.identity: DeviceIdentity | None` (`serial`, `mac`, `source`, `seen_at`), `Device.allow_basic`
 (por defecto `false`) y `Device.follow_ip` (por defecto `false`).
+`DeviceInfo.manufacturer` (aditivo; ONVIF `GetDeviceInformation.Manufacturer`). `Device.firmware_date` («AAAA-MM-DD»;
+Hikvision da la fecha del build aparte de la versión) y `Device.manufacturer`: los guardan el alta con importación,
+`POST /api/devices/{id}/identity` y «Probar conexión» de un equipo guardado (`POST /api/devices/{id}/test`, solo si
+la contraseña se aceptó); la fecha va siempre con el firmware (si cambia el firmware y el equipo no da fecha, se
+borra). Un config.json de la v1 los recibe vacíos (§13.8).
 
 ### 16.4 `GET /api/vendors` (rol A)
 
@@ -1367,6 +1378,10 @@ fábrica (análisis **local**), usuario `admin` en vez del de solo lectura, RTSP
 sin credenciales), Telnet/SSH/HTTP sin TLS/puertos SDK/UPnP/P2P (TCP con tiempo límite y, con credenciales
 de administrador, `security_read`), firmware con CVE y hora. Resultado: «Vulnerable (KEV)», «Probablemente
 vulnerable», «Sin CVE conocidos en la tabla» o «Desconocido». **Nunca «seguro».**
+Firmware: la marca con la que se busca en la tabla es la del driver; con «ONVIF (otras marcas)» o RTSP manual, la
+que dice el equipo (`Device.manufacturer`) o su modelo, con el detector de B5 (`best_match` ≥ 0,5). Sin marca
+segura, con una marca que la tabla no cubre, o sin modelo o firmware (versión o fecha de build): «Desconocido».
+«Sin CVE conocidos en la tabla» solo con marca, modelo y firmware conocidos.
 
 **Tabla de avisos propia** (`AdvisoryTable`, `schema` 1). Hay **dos copias** y una sola regla:
 - **la de la versión**: `vms/ops/security/advisories.json` (en disco, `versions\<X>\app\vms\ops\security\`;

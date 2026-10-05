@@ -2,6 +2,9 @@
 falla, un fotograma del RTSP local de MediaMTX (igual que `/api/cameras/{id}/snapshot`). Nunca se
 decodifica de forma continua y la imagen nunca toca el disco.
 
+Equipos sin API (Ezviz, Reolink, «Genérico (RTSP manual)»: `has_api` del registro de B5) van directos al
+fotograma del RTSP local: `client_for()` no tiene cliente para ellos.
+
 Contraseña rechazada (`DeviceAuthFailed`): la API de ese equipo no se vuelve a usar hasta que cambie la
 contraseña guardada o pasen 30 minutos (la ventana de bloqueo de Hikvision/Dahua tras 5 intentos); mientras
 tanto la imagen sale solo del RTSP local de MediaMTX. Así la tarea de salud (una petición por cámara cada
@@ -14,12 +17,13 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable
-from typing import Literal
+from typing import Any, Literal
 
 from vms.core.errors import DeviceAuthFailed, DeviceError
 from vms.core.models import Camera
 from vms.core.mtx_auth import with_reader_credentials
 
+from ..drivers import has_api
 from ..host import OpsHost
 from .imaging import Image, decode_image
 
@@ -85,10 +89,12 @@ async def grab(state: OpsHost, cam: Camera, backoff: AuthBackoff | None = None) 
     cfg = state.config()
     dev = cfg.device(cam.device_id)
     stream: Literal["sub", "main"] = "sub" if cam.has_sub else "main"
-    password = state.creds.get_device_password(dev.id) if dev is not None and dev.vendor != "generic" else ""
-    if dev is not None and dev.vendor != "generic" and not backoff.blocked(dev.id, password):
-        client = state.client_factory(dev, password)
+    use_api = dev is not None and has_api(dev.vendor)
+    password = state.creds.get_device_password(dev.id) if dev is not None and use_api else ""
+    if dev is not None and use_api and not backoff.blocked(dev.id, password):
+        client: Any = None
         try:
+            client = state.client_factory(dev, password)
             img = decode_image(await client.snapshot(cam.channel, stream))
             if img is not None:
                 return img
@@ -99,10 +105,11 @@ async def grab(state: OpsHost, cam: Camera, backoff: AuthBackoff | None = None) 
         except Exception:  # noqa: BLE001 - un driver roto no puede tumbar la comprobación
             log.exception("Error pidiendo la instantánea de %s", cam.id)
         finally:
-            try:
-                await client.aclose()
-            except Exception:  # noqa: BLE001
-                log.debug("Error cerrando el cliente del equipo", exc_info=True)
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001
+                    log.debug("Error cerrando el cliente del equipo", exc_info=True)
     try:
         url = state.engine.rtsp_read_url(cam.id, stream)
         creds = getattr(state.engine, "mtx_credentials", None)

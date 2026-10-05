@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from vms.core.errors import ConflictError, DeviceError, NotFoundError, ValidationFailed
-from vms.core.interfaces import ChannelInfo
+from vms.core.interfaces import ChannelInfo, DeviceInfo
 from vms.core.models import AppConfig, Camera, Device, DeviceCreate, DeviceTestRequest, DeviceUpdate
 
 from ..deps import Principal, get_state, require_admin, require_operator
@@ -77,16 +77,26 @@ def cameras_from_channels(dev: Device, channels: list[ChannelInfo], wanted: list
     return out
 
 
+def info_changes(info: DeviceInfo) -> dict[str, str]:
+    """Campos del equipo que se guardan tras leerlo: modelo, serie, firmware **con su fecha de build** (Hikvision la
+    da aparte: sin ella la auditoría no puede comparar con los avisos) y el fabricante que dice el equipo (ONVIF).
+
+    La fecha va siempre con el firmware: si cambia el firmware y el equipo no da fecha, se borra la anterior."""
+    out = {k: v for k, v in {"model": info.model, "serial": info.serial, "firmware": info.firmware,
+                             "manufacturer": info.manufacturer[:64]}.items() if v}
+    if info.firmware:
+        out["firmware_date"] = info.firmware_date[:32]
+    return out
+
+
 async def _fetch(state: AppState, dev: Device, password: str, *, probe: bool) -> tuple[dict[str, str], list[ChannelInfo]]:
     """(cambios de modelo/serie/firmware, canales) consultando el equipo."""
     client = state.client_factory(dev, password)
     try:
-        info_changes: dict[str, str] = {}
+        changes: dict[str, str] = {}
         if probe:
-            info = await client.probe()
-            info_changes = {k: v for k, v in {"model": info.model, "serial": info.serial,
-                                              "firmware": info.firmware}.items() if v}
-        return info_changes, await client.list_channels()
+            changes = info_changes(await client.probe())
+        return changes, await client.list_channels()
     finally:
         try:
             await client.aclose()
@@ -210,6 +220,24 @@ async def test_saved_device(device_id: str, _: Principal = Depends(require_admin
                             state: AppState = Depends(get_state)) -> Response:
     dev = _get_device(state.config(), device_id)
     result = await state.device_tester(dev, state.creds.get_device_password(device_id))
+    if result.info is not None and result.auth_ok:
+        # «Probar conexión» deja al día modelo, firmware (con su fecha de build) y fabricante: la auditoría de
+        # seguridad los necesita y el equipo puede haberse actualizado desde el alta.
+        changes = {k: v for k, v in info_changes(result.info).items() if getattr(dev, k, None) != v}
+        if changes:
+            def mutate(cfg: AppConfig) -> None:
+                cur = _get_device(cfg, device_id)
+                if (cur.host, cur.http_port) != (dev.host, dev.http_port):
+                    return   # se cambió la dirección mientras se probaba: no se mezclan datos de otro equipo
+                updated = Device.model_validate({**cur.model_dump(), **changes,
+                                                 "updated_at": datetime.now(timezone.utc)})
+                cfg.devices = [updated if d.id == device_id else d for d in cfg.devices]
+
+            try:
+                await state.update_config(mutate, "devices")
+                log.info("Datos del equipo «%s» actualizados al probarlo (%s)", dev.name, ", ".join(sorted(changes)))
+            except Exception:  # noqa: BLE001 - la prueba de conexión no falla por esto
+                log.warning("No se pudieron guardar los datos leídos del equipo «%s»", dev.name, exc_info=True)
     return json_response(result)
 
 

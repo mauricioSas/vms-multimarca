@@ -46,6 +46,8 @@ real**. Hikvision y Dahua tienen que llegar a `verified` (cámara, NVR y DVR/XVR
 | `reolink` | Reolink | perfil RTSP | `/Preview_{NN}_main` y `_sub`; RTSP desactivado de fábrica | `community` | sintética |
 | `bosch` | Bosch | perfil RTSP + ONVIF | `/?inst=1&line={N}` y `inst=2` | `community` | sintética |
 
+Los perfiles «+ ONVIF» declaran también `time_read` y `security_read`: con ONVIF activado leen la hora (`GetSystemDateAndTime`) y si ONVIF responde sin contraseña, igual que el driver `onvif`. Ezviz, Reolink y el RTSP manual no tienen API: la salud de imagen usa el fotograma del vídeo local, y la hora y los ajustes de seguridad salen como «Desconocido» (operación de la v2 consulta las capacidades al registro, nunca la marca).
+
 Para la v2.1 quedan UniFi (RTSPS por Protect) y MJPEG por HTTP (vía go2rtc, MIT). Fuera de la v2: eventos,
 PTZ, audio bidireccional y transcodificación.
 

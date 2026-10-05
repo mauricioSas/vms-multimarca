@@ -41,6 +41,7 @@ from vms.vendors.ipwatch import IpChangeProposal, apply_move, cannot_verify, fin
 from ..deps import Principal, get_state, require_admin
 from ..errors import json_response
 from ..security import client_ip
+from .devices import info_changes
 from ..state import AppState
 
 log = logging.getLogger("vms.api.vendors")
@@ -103,8 +104,7 @@ async def refresh_identity(device_id: str, p: Principal = Depends(require_admin)
     def mutate(cfg: AppConfig) -> Device:
         cur = _device(cfg, device_id)
         data = cur.model_dump()
-        data.update({k: v for k, v in {"model": info.model, "serial": info.serial, "firmware": info.firmware}.items()
-                     if v})
+        data.update(info_changes(info))
         data["identity"] = ident.model_dump()
         updated = Device.model_validate(data)
         cfg.devices = [updated if d.id == device_id else d for d in cfg.devices]

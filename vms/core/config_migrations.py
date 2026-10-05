@@ -46,7 +46,13 @@ class NewerConfigError(ConflictError):
 
 def v1_to_v2(doc: Doc) -> Doc:
     """v1 → v2: solo campos nuevos con valor por defecto (allow_basic, follow_ip, identity, salud,
-    avisos, ámbito por cámara). No hay que transformar nada: basta con subir la versión."""
+    avisos, ámbito por cámara, y en cada equipo `firmware_date` y `manufacturer`). No hay que transformar nada:
+    basta con subir la versión.
+
+    `firmware_date`: la v1 guardaba solo la versión del firmware (Hikvision «V5.5.0», sin el build) y no se puede
+    deducir; queda vacía hasta que el equipo se vuelva a leer («Probar conexión» o leer la identidad), y mientras
+    tanto la auditoría dice «Desconocido» (nunca «Sin CVE»). El firmware guardado por la v1 es la misma cadena que
+    da el driver de la v2, así que leerlo de nuevo no da un falso «el equipo se actualizó»."""
     out = dict(doc)
     out["version"] = 2
     return out

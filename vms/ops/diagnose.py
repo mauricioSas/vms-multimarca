@@ -32,6 +32,7 @@ from vms.core.models import Camera, Device, DeviceBase
 from vms.core.rtsp import preset_paths, redact
 from vms.core.sources import camera_paths
 
+from . import drivers
 from .health.clock import device_check
 from .host import dynamic
 from .models import DiagnosisResult, DiagnosisStep
@@ -161,16 +162,16 @@ class Diagnoser:
         # 5-6) credenciales: UN intento
         auth_ok: bool | None = None
         client: DeviceClient | None = None
-        if d.vendor == "generic":
-            add("auth", None, "Los equipos «Genérico (RTSP manual)» no tienen API: la contraseña se prueba con el "
-                              "vídeo RTSP.")
+        if not drivers.has_api(d.vendor):
+            add("auth", None, f"Los equipos «{drivers.driver_name(d.vendor)}» no tienen API: la contraseña se prueba "
+                              "con el vídeo RTSP.")
         elif not (http_ok or onvif_ok):
             add("auth", None, "Sin puerto web no se puede probar la contraseña por la API.")
         else:
             t0 = time.perf_counter()
             dev = d if isinstance(d, Device) else Device(**d.model_dump())
-            client = self.client_factory(dev, inp.password)
             try:
+                client = self.client_factory(dev, inp.password)
                 info = await client.probe()
                 auth_ok = True
                 model = f" ({info.model})" if info.model else ""
@@ -248,7 +249,8 @@ class Diagnoser:
             else:
                 add("codec", True, f"Códec compatible con los muros ({wall_codec or 'no informado'}).")
         # 9) hora
-        if auth_ok and client is not None and isinstance(client, DeviceClockClient):
+        if auth_ok and client is not None and drivers.TIME_READ in drivers.capabilities(d.vendor) \
+                and isinstance(client, DeviceClockClient):
             t0 = time.perf_counter()
             try:
                 dt = await client.device_time()

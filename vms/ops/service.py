@@ -28,10 +28,11 @@ from typing import Any, Literal
 
 from vms import __version__
 from vms.core.audit import audit
-from vms.core.errors import EngineUnavailable, NotFoundError, VmsError
+from vms.core.errors import DeviceAuthFailed, EngineUnavailable, NotFoundError, VmsError
 from vms.core.interfaces import DeviceClockClient
 from vms.core.models import Camera, Device
 
+from . import drivers
 from .diagnose import DiagnoseInput, Diagnoser, llm_rewriter_from_settings
 from .evidence.bookmarks import BookmarkManager
 from .evidence.export import CameraInfo, EvidenceBuilder, ExportContext, new_export_id
@@ -52,6 +53,7 @@ from .onboarding import OnboardingStore
 from .report import CameraInput, build, day_bounds, gaps, read_smart, site_tz, write_summary
 from .security.advisories import load_table
 from .security.audit import AuditDeps, run_audit
+from .drivers import TIME_READ
 from .store import OpsStore
 
 log = logging.getLogger("vms.ops")
@@ -366,26 +368,39 @@ class OpsService:
         return pc, out
 
     async def _device_clock(self, dev: Device, warn: float, critical: float) -> ClockCheck:
+        """Hora de un equipo. Nunca lanza: un equipo sin API, con otra marca o con la contraseña mala da un
+        resultado «Desconocido» y el bucle sigue con los demás."""
         cams = self.state.config().cameras_of(dev.id)
         cam_id = cams[0].id if len(cams) == 1 else None
-        if dev.vendor == "generic":
-            return clockmod.failed_check(dev.id, cam_id, "Los equipos genéricos (solo RTSP) no permiten leer la hora.")
-        client = self.state.client_factory(dev, self.state.creds.get_device_password(dev.id))
+        if TIME_READ not in drivers.capabilities(dev.vendor) or not drivers.has_api(dev.vendor):
+            return clockmod.failed_check(dev.id, cam_id, f"Los equipos «{drivers.driver_name(dev.vendor)}» no "
+                                                         "permiten leer la hora desde el programa.")
+        password = self.state.creds.get_device_password(dev.id)
+        if self.auth_backoff.blocked(dev.id, password):
+            return clockmod.failed_check(dev.id, cam_id, "El equipo rechazó la contraseña guardada: no se vuelve a "
+                                                         "probar hasta que la cambies (o en 30 minutos) para no "
+                                                         "bloquear el usuario.")
+        client: Any = None
         try:
+            client = self.state.client_factory(dev, password)
             if not isinstance(client, DeviceClockClient):
                 return clockmod.failed_check(dev.id, cam_id, "Esta versión aún no sabe leer la hora de esta marca.")
             dt = await client.device_time()
             return clockmod.device_check(dev.id, cam_id, dt, warn, critical)
+        except DeviceAuthFailed as exc:
+            self.auth_backoff.block(dev.id, password)
+            return clockmod.failed_check(dev.id, cam_id, f"No se pudo leer la hora: {exc.message}")
         except VmsError as exc:
             return clockmod.failed_check(dev.id, cam_id, f"No se pudo leer la hora: {exc.message}")
         except Exception:  # noqa: BLE001
             log.exception("Error leyendo la hora de %s", dev.id)
             return clockmod.failed_check(dev.id, cam_id, "No se pudo leer la hora del equipo.")
         finally:
-            try:
-                await client.aclose()
-            except Exception:  # noqa: BLE001
-                log.debug("Error cerrando el cliente", exc_info=True)
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001
+                    log.debug("Error cerrando el cliente", exc_info=True)
 
     async def _clock_loop(self) -> None:
         await asyncio.sleep(self.initial_delay + 15)

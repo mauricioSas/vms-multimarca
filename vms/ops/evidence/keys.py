@@ -66,7 +66,7 @@ def _winsec() -> Any:
     if sys.platform != "win32":
         return None
     try:
-        from vms.core import winsec  # type: ignore[attr-defined]  # entrega de B1
+        from vms.core import winsec  # entrega de B1
     except ImportError:
         return None
     if callable(getattr(winsec, "protect", None)) and callable(getattr(winsec, "unprotect", None)):

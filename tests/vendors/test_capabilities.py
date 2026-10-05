@@ -38,6 +38,25 @@ def test_capabilities_are_backed_by_the_client_protocols() -> None:
             assert isinstance(client, CodecFixClient), spec.id
 
 
+def test_clients_declare_what_they_implement() -> None:
+    """Regresión (revisión v2): el otro sentido. B6 pregunta la capacidad al registro: si el cliente que da
+    `client_for()` sabe leer la hora o los ajustes de seguridad, el driver tiene que declararlo (los perfiles
+    ONVIF —Axis, Uniview, VIGI…— reciben `OnvifClient` y no lo declaraban)."""
+    missing: list[str] = []
+    for spec in REGISTRY.values():
+        try:
+            client = client_for(make_device(spec.id), "x")
+        except DeviceUnsupported:
+            continue
+        if isinstance(client, DeviceClockClient) and Capability.TIME_READ not in spec.capabilities:
+            missing.append(f"{spec.id}: time_read")
+        if isinstance(client, DeviceSecurityClient) and Capability.SECURITY_READ not in spec.capabilities:
+            missing.append(f"{spec.id}: security_read")
+        if isinstance(client, CodecFixClient) and Capability.API_CODEC_FIX not in spec.capabilities:
+            missing.append(f"{spec.id}: api_codec_fix")
+    assert missing == []
+
+
 @pytest.mark.parametrize("offset", [0, 7200, -7200])
 async def test_device_time_hikvision(offset: int) -> None:
     mock = HikvisionMock(password=TEST_PASSWORD, kind="camera", clock_offset_s=offset)

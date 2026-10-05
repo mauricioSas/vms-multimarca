@@ -25,12 +25,12 @@ from typing import Literal
 
 import httpx
 
-from vms.core.errors import DeviceError, DeviceProtocolError
+from vms.core.errors import DeviceError, DeviceProtocolError, DeviceUnsupported
 from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings, DeviceTime
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import VendorHttp
-from .clock import Stopwatch, parse_device_datetime, posix_offset
+from .clock import Stopwatch, parse_naive_or_aware, posix_zone, round_offset
 from .codec import StreamConfigBackup, normalize_codec
 
 log = logging.getLogger("vms.vendors.hikvision")
@@ -38,6 +38,7 @@ log = logging.getLogger("vms.vendors.hikvision")
 NVR_TYPES = ("NVR", "IPDVR", "DVS")
 DVR_TYPES = ("DVR", "HVR", "XVR", "HYBIRD", "HYBRID")
 _BUILD_RE = re.compile(r"(?:build\s*)?(\d{2})(\d{2})(\d{2})\b", re.IGNORECASE)
+_BUILD8_RE = re.compile(r"(?:build\s*)?(20\d{2})-?(\d{2})-?(\d{2})\b", re.IGNORECASE)
 
 
 def _strip_ns(root: ET.Element) -> ET.Element:
@@ -67,14 +68,20 @@ def _int(value: str) -> int | None:
 
 
 def build_date(text: str) -> str:
-    """«build 210812» → «2021-08-12» (la auditoría compara Hikvision por fecha de build)."""
-    m = _BUILD_RE.search(text or "")
-    if not m:
-        return ""
-    yy, mm, dd = m.groups()
+    """«build 210812» → «2021-08-12» (la auditoría compara Hikvision por fecha de build). También admite
+    «build 20210812» y «2021-08-12». Si no se entiende, «» (la auditoría dirá «Desconocido»)."""
+    m8 = _BUILD8_RE.search(text or "")
+    if m8:
+        yyyy, mm, dd = m8.groups()
+    else:
+        m = _BUILD_RE.search(text or "")
+        if not m:
+            return ""
+        yy, mm, dd = m.groups()
+        yyyy = f"20{yy}"
     if not (1 <= int(mm) <= 12 and 1 <= int(dd) <= 31):
         return ""
-    return f"20{yy}-{mm}-{dd}"
+    return f"{yyyy}-{mm}-{dd}"
 
 
 @dataclass
@@ -292,13 +299,25 @@ class HikvisionClient:
         with Stopwatch() as sw:
             resp = await self.http.get("/ISAPI/System/time")
         root = parse_xml(resp.text, "System/time")
-        tz = posix_offset(_text(root, "timeZone")) or timezone.utc
-        dt = parse_device_datetime(_text(root, "localTime"), tz)
-        if dt is None:
+        local = parse_naive_or_aware(_text(root, "localTime"))
+        if local is None:
             raise DeviceProtocolError(f"{self.http.label} no devolvió su hora")
+        if local.tzinfo is None:
+            # sin offset en localTime: se resuelve con la zona POSIX del equipo, horario de verano incluido;
+            # si la regla no se entiende no se adivina (sería un desfase falso de una hora en verano)
+            zone = posix_zone(_text(root, "timeZone"))
+            offset = zone.offset_at_local(local) if zone is not None else None
+            if offset is None:
+                raise DeviceProtocolError(f"{self.http.label} dio su hora sin zona y su zona horaria "
+                                          f"({_text(root, 'timeZone')[:40] or 'vacía'}) no se entiende")
+            local = local.replace(tzinfo=timezone(offset))
+        dt = local
+        utc_offset = dt.utcoffset()
+        # «satellite» (GPS), «timecorrect» (la da el grabador), «SDK»/«ONVIF»/«platform» (la pone un programa):
+        # no es hora puesta a mano ni NTP del equipo → «unknown» (sin aviso de deriva)
         mode_raw = _text(root, "timeMode").lower()
         mode: Literal["ntp", "manual", "unknown"] = "ntp" if mode_raw == "ntp" else \
-            "manual" if mode_raw in ("manual", "timecorrect", "satellite") else "unknown"
+            "manual" if mode_raw == "manual" else "unknown"
         ntp = ""
         if mode == "ntp":
             try:
@@ -309,17 +328,24 @@ class HikvisionClient:
             except DeviceError as exc:
                 log.debug("ntpServers no disponible en %s: %s", self.http.label, exc)
         return DeviceTime(device_time=dt, measured_at=sw.midpoint, round_trip_ms=round(sw.round_trip_ms, 1),
-                          time_mode=mode, ntp_server=ntp, source="isapi")
+                          time_mode=mode, ntp_server=ntp, source="isapi",
+                          utc_offset_s=round_offset(utc_offset) if utc_offset is not None else None)
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:
-        """Lee ajustes con credenciales de administrador TEMPORALES (no se guardan ni se registran)."""
+        """Lee ajustes con credenciales de administrador TEMPORALES (no se guardan ni se registran).
+
+        Nunca con Basic, aunque el equipo lo tenga permitido: la contraseña de administrador no viaja en claro.
+        Un recurso que el firmware no tiene (404, o 403 con `notSupport`) queda en None sin abortar el resto."""
         dev = self.device.model_copy(update={"username": admin_username})
-        http = VendorHttp(dev, admin_password, timeout=self._timeout, transport=self._transport)
+        http = VendorHttp(dev, admin_password, timeout=self._timeout, transport=self._transport, allow_basic=False)
         out = DeviceSecuritySettings()
         try:
             async def flag(path: str, what: str) -> bool | None:
-                r = await http.get(path, ok_404=True)
+                try:
+                    r = await http.get(path, ok_404=True)
+                except DeviceUnsupported:
+                    return None
                 if r.status_code == 404:
                     return None
                 root = parse_xml(r.text, what)
@@ -331,8 +357,11 @@ class HikvisionClient:
             out.ssh_enabled = await flag("/ISAPI/System/Network/ssh", "ssh")
             out.upnp_enabled = await flag("/ISAPI/System/Network/UPnP", "UPnP")
             out.p2p_cloud_enabled = await flag("/ISAPI/System/Network/EZVIZ", "EZVIZ")
-            r = await http.get("/ISAPI/Security/adminAccesses", ok_404=True)
-            if r.status_code == 200:
+            try:
+                r = await http.get("/ISAPI/Security/adminAccesses", ok_404=True)
+            except DeviceUnsupported:
+                r = None
+            if r is not None and r.status_code == 200:
                 root = parse_xml(r.text, "adminAccesses")
                 for proto in root.iter("AdminAccessProtocol"):
                     name = _text(proto, "protocol").upper()

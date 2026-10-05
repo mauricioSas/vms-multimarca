@@ -68,6 +68,12 @@ def test_update_table_wins_only_if_valid_and_newer(tmp_path: Path, caplog: pytes
 
 def test_hikvision_by_build_date_and_dahua_by_version() -> None:
     t = adv.version_table().table
+    # forma real del driver ISAPI: versión y fecha del build por separado
+    old = adv.evaluate(t, "hikvision", "DS-2CD2143G2-I", "V5.5.0", "2020-01-01")
+    assert any(m.verdict == "probably_vulnerable" and "CVE-2021-36260" in m.advisory.cves for m in old)
+    new = adv.evaluate(t, "hikvision", "DS-2CD2143G2-I", "V5.7.3", "2022-01-12")
+    assert all(m.verdict == "ok" for m in new if "CVE-2021-36260" in m.advisory.cves)
+    # por ONVIF, Hikvision da «V5.5.0 build 200101» en FirmwareVersion: también se entiende
     old = adv.evaluate(t, "hikvision", "DS-2CD2143G2-I", "V5.5.0 build 200101")
     assert any(m.verdict == "probably_vulnerable" and "CVE-2021-36260" in m.advisory.cves for m in old)
     new = adv.evaluate(t, "hikvision", "DS-2CD2143G2-I", "V5.7.3 build 220112")
@@ -149,7 +155,8 @@ async def test_anonymous_rtsp_detected_and_findings(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(socket.socket, "connect", guarded)
     try:
         dev = Device(id="dev-00000001", name="Cámara", vendor="hikvision", kind="camera", host="127.0.0.1",
-                     rtsp_port=rtsp.port, username="admin", model="DS-2CD2143G2-I", firmware="V5.5.0 build 200101")
+                     rtsp_port=rtsp.port, username="admin", model="DS-2CD2143G2-I", firmware="V5.5.0",
+                     firmware_date="2020-01-01")   # forma real del driver ISAPI
         ports = _Ports({23, 80, 8000})
 
         async def ssdp(timeout: float) -> set[str]:

@@ -174,7 +174,10 @@ class DiagClient:
         self.b.attempts += 1
         if self.password != self.b.password:
             raise DeviceAuthFailed("Usuario o contraseña incorrectos")
-        return DeviceInfo(vendor=self.vendor, model="DS-2CD2143G2-I", firmware="V5.7.3 build 220112")  # type: ignore[arg-type]
+        # Forma real del driver ISAPI (tools/mocks/hikvision.py → vms/vendors/hikvision.py): la versión en
+        # `firmware` y la fecha del build aparte, en `firmware_date`.
+        return DeviceInfo(vendor=self.vendor, model="DS-2CD2143G2-I", firmware="V5.7.3",  # type: ignore[arg-type]
+                          firmware_date="2022-01-12")
 
     async def list_channels(self) -> list[ChannelInfo]:
         return []

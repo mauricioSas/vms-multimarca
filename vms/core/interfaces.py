@@ -29,6 +29,9 @@ class DeviceInfo(BaseModel):
     firmware_date: str = ""             # v2: «2021-06-28» si el equipo lo da (Hik «build 210628»); auditoría §18.7
     mac: str = ""
     name: str = ""
+    # v2 (aditivo): fabricante que dice el propio equipo (ONVIF `GetDeviceInformation.Manufacturer`); la auditoría
+    # lo usa para saber la marca real de un equipo dado de alta como «ONVIF (otras marcas)». Vacío si no lo dice.
+    manufacturer: str = ""
     channel_count: int = 0
 
 
@@ -91,14 +94,22 @@ class DeviceTestResult(BaseModel):
 
 
 class DeviceTime(BaseModel):
-    """Hora del equipo leída por API u ONVIF (CONTRATO §18.3). La implementa cada driver (B5)."""
+    """Hora del equipo leída por API u ONVIF (CONTRATO §18.3). La implementa cada driver (B5).
 
-    device_time: datetime                # con zona; si el equipo no la da, UTC
+    Misma semántica en todas las marcas: `device_time` es el INSTANTE del reloj del equipo (el desfase se mide en
+    UTC); `utc_offset_s` es la zona con la que el equipo sobreimprime la hora en la imagen (None si no se sabe)."""
+
+    device_time: datetime                # con zona; es el instante real del reloj del equipo
     measured_at: datetime                # hora del PC (UTC) a mitad del viaje de ida y vuelta
     round_trip_ms: float = 0.0
-    time_mode: Literal["ntp", "manual", "unknown"] = "unknown"
+    time_mode: Literal["ntp", "manual", "unknown"] = "unknown"   # «unknown» también = GPS, grabador o plataforma
     ntp_server: str = ""
     source: Literal["onvif", "isapi", "cgi", "unknown"] = "unknown"
+    # v2 (aditivo, revisión): zona del equipo en segundos respecto a UTC (UTC+2 = 7200), con su horario de verano.
+    utc_offset_s: int | None = None
+    # v2 (aditivo, revisión): la hora se leyó sin autenticar, pero el equipo rechazó la contraseña guardada en la
+    # parte autenticada (ONVIF `GetNTP`). B6 deja de usar esa contraseña un rato para no bloquear el usuario.
+    credentials_rejected: bool = False
 
     @property
     def skew_s(self) -> float:
