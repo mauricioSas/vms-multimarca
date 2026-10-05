@@ -726,16 +726,13 @@ class StubBackend:
                     "credential_backend": b.creds.backend_name, "config_warning": b.repo.load_warning}
 
         # v2 · B4 (CONTRATO §15.6): /status carga updates.js, que pide esto. Mismo cuerpo que la ruta real.
+        # Pendiente de aprobación del dueño de este archivo (petición de B4): sin esta ruta, el 404 rompe
+        # tests/web/test_ui.py::test_status_page por el error de consola.
         @app.get("/api/updates/status")
         async def updates_status(request: Request) -> dict[str, Any]:
             b._session(request, "operator")
-            from vms.api.routes.updates import read_public_status, release_version
-            st = read_public_status(b.paths.base)
-            running = release_version()
-            if st is None:
-                return {"available_status": False, "running": running, "installed": running, "state": "unknown",
-                        "last_result": "none", "message_es": "El actualizador todavía no ha informado en este equipo"}
-            return {"available_status": True, "running": running, **st}
+            from vms.api.routes.updates import status_body
+            return status_body(Path(b.paths.base))
 
         @app.get("/api/settings")
         async def get_settings(request: Request) -> dict[str, Any]:

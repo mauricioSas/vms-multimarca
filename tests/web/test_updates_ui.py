@@ -26,12 +26,13 @@ def test_status_page_shows_update_state(fake_stub: Any, make_context: Any, scree
     _write_status(backend, installed="2.0.0", channel="pilot", state="rolled_back", last_result="update_failed",
                   message_es="La 2.1.0 falló (el motor de vídeo no está en marcha): se volvió a la 2.0.0",
                   last_check="2026-11-20T01:10:00Z", available=None, metadata_expires="2026-11-27T00:00:00Z",
-                  clock_skew_s=0.4, hold=True, reboot_pending=True)
+                  clock_skew_s=0.4, hold=True, reboot_pending=True, window="02:00-04:00", skipped=["2.1.0"])
     page.evaluate("() => import('/static/js/updates.js').then((m) => m.refresh())")
     page.wait_for_selector("#updates-root .upd-msg.bad")
     text = page.inner_text("#updates-root")
     assert "se volvió a la 2.0.0" in text and "pilot" in text and "Retenida" in text
     assert "Reinicio pendiente" in text and "+0.4 s" in text
+    assert "02:00-04:00" in text and "Omitida tras volver atrás" in text
     assert page.locator("#updates-root .pill.bad").count() == 1
     page.screenshot(path=str(screenshots_dir / "estado-actualizaciones.png"), full_page=True)
     assert errors.unexpected(ALLOWED) == []

@@ -38,7 +38,7 @@ from packaging.version import InvalidVersion, Version
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = {"av", "opencv-python"}
 SELF = "vms-multimarca"
-HASHED = {"vms", "analytics", "central", "updater"}   # los que instalan los instaladores de sede (+ ranuras del actualizador)
+HASHED = {"vms", "analytics", "central"}   # los que instalan los instaladores de sede
 PYPI = "https://pypi.org/pypi"
 
 TARGETS = {
