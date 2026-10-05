@@ -95,7 +95,8 @@ def e2e() -> E2E:
         candidate = Path(str(info["payload"])).parent / "payload-manifest.json"
         manifest = candidate if candidate.is_file() else None
     version = str(info.get("version") or installer.stem.replace("VMSMultimarca-Setup-", ""))
-    env = Env(work, work / "vmsctl-calls.jsonl")
+    # Registros dentro de los artefactos: si el e2e se corta (timeout), lo ya escrito se sube igual.
+    env = Env(work, artifacts / "vmsctl-calls.jsonl", logs=artifacts / "registros")
     obj = E2E(installer, work, artifacts, mode, version, manifest, env,
               Results(installer=str(installer), mode=mode, version=version))
     _SESSION["e2e"] = obj
@@ -132,12 +133,20 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]) -> 
         else:
             s.ok = report.passed
             if report.failed:
-                s.note("FALLO: " + str(report.longrepr).splitlines()[-1][:500])
+                text = str(report.longrepr)
+                s.note("FALLO: " + text[-3000:])
+                # En el momento, no al final: si un paso posterior se cuelga, el motivo ya está en el registro de CI.
+                print(f"\n----- FALLO en {item.nodeid} -----\n{text[-6000:]}\n-----", file=sys.__stdout__, flush=True)
+    if report.when in ("call", "teardown"):
+        _save()
+
+
+def _save() -> None:
+    obj = _SESSION.get("e2e")
+    if obj is not None:
+        obj.results.save(obj.artifacts / "results-windows.json")
+        (obj.artifacts / "RESULTADOS-windows.md").write_text(obj.results.markdown(), encoding="utf-8")
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    obj = _SESSION.get("e2e")
-    if obj is None:
-        return
-    obj.results.save(obj.artifacts / "results-windows.json")
-    (obj.artifacts / "RESULTADOS-windows.md").write_text(obj.results.markdown(), encoding="utf-8")
+    _save()

@@ -15,10 +15,10 @@ pytestmark = [pytest.mark.e2e]
 
 @pytest.mark.paso("12", "Artefactos: registros de instalación, llamadas a vmsctl, informe de diagnóstico y capturas")
 def test_step12_artifacts(e2e: E2E, step: h.Step) -> None:
-    logs = e2e.artifacts / "registros"
-    if e2e.env.logs.is_dir():
-        shutil.copytree(e2e.env.logs, logs, dirs_exist_ok=True)
-    if e2e.env.calls_log.is_file():
+    logs = e2e.env.logs
+    if logs.resolve() != (e2e.artifacts / "registros").resolve() and logs.is_dir():
+        shutil.copytree(logs, e2e.artifacts / "registros", dirs_exist_ok=True)
+    if e2e.env.calls_log.is_file() and e2e.env.calls_log.parent != e2e.artifacts:
         shutil.copy2(e2e.env.calls_log, e2e.artifacts / "vmsctl-calls.jsonl")
     step.details["limpieza"] = h.force_clean(e2e.env)
     present = sorted(p.relative_to(e2e.artifacts).as_posix() for p in e2e.artifacts.rglob("*") if p.is_file())

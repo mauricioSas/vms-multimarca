@@ -141,7 +141,12 @@ jobs:
           WITH_V1: ${{ inputs.with_v1 }}
         run: |
           $a = @('--installer', "dist\VMSMultimarca-Setup-$env:VERSION.exe", '--yes', '--artifacts', 'e2e')
-          if ($env:WITH_V1 -eq 'true') { $a += '--with-v1' }
+          if ($env:WITH_V1 -eq 'true') {
+            # La v1 de verdad: el código publicado en main (install.ps1 + WinSW), extraído aparte.
+            git fetch --depth 1 origin main
+            git worktree add --detach v1src FETCH_HEAD
+            $a += @('--with-v1', '--v1-source', 'v1src')
+          }
           python -m tests.windows.run_e2e @a
       - name: Resumen del e2e
         if: always() && inputs.e2e

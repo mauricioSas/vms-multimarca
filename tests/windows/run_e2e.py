@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--artifacts", type=Path)
     p.add_argument("--mode", choices=["auto", "doubles", "real"], default="auto")
     p.add_argument("--with-v1", action="store_true", help="también v1 (install.ps1) → v2; descarga ~200 MB")
+    p.add_argument("--v1-source", type=Path, help="código de la v1 (p. ej. la rama main extraída); por defecto, este")
     p.add_argument("--yes", action="store_true", help="no preguntar (CI): este equipo es de pruebas")
     p.add_argument("pytest_args", nargs="*")
     args = p.parse_args(argv)
@@ -66,11 +67,12 @@ def main(argv: list[str] | None = None) -> int:
         "VMS_TEST_WIN_ARTIFACTS": str(artifacts),
         "VMS_TEST_WIN_MODE": args.mode,
         "VMS_TEST_WIN_V1": "1" if args.with_v1 else "0",
+        "VMS_TEST_WIN_V1_SOURCE": str(args.v1_source.resolve()) if args.v1_source else "",
         "PYTHONPATH": str(ROOT) + os.pathsep + env.get("PYTHONPATH", ""),
     })
     artifacts.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-m", "pytest", *[str(p) for p in ordered_files()], "-p", "no:randomly",
-           "-p", "no:cacheprovider", "-v", "-rs", "--timeout=2400", f"--junitxml={artifacts / 'junit-e2e.xml'}",
+           "-p", "no:cacheprovider", "-v", "-rs", "--timeout=1200", f"--junitxml={artifacts / 'junit-e2e.xml'}",
            *args.pytest_args]
     print("==> " + " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=ROOT, env=env, check=False).returncode

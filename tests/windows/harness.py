@@ -142,10 +142,10 @@ class RunResult:
 class Env:
     """Entorno común de las ejecuciones del e2e (variables de los dobles y carpeta de trabajo)."""
 
-    def __init__(self, work: Path, calls_log: Path) -> None:
+    def __init__(self, work: Path, calls_log: Path, logs: Path | None = None) -> None:
         self.work = work
         self.calls_log = calls_log
-        self.logs = work / "logs"
+        self.logs = logs or work / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
         self._counter = 0
 

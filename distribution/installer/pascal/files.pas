@@ -111,23 +111,33 @@ begin
   Result := FileExists(EnvPath) and LoadStringsFromFile(EnvPath, Lines);
 end;
 
-function SaveEnv(const Lines: TArrayOfString): Boolean;
+function SaveEnv(var Lines: TArrayOfString): Boolean;
 var
-  IsNew: Boolean;
-  HeaderLines: TArrayOfString;
+  I, N: Integer;
+  AllLines: TArrayOfString;
 begin
-  IsNew := not FileExists(EnvPath);
-  if IsNew then
+  N := GetArrayLength(Lines);
+  if not FileExists(EnvPath) then
   begin
-    { Se crea vacío y se protege ANTES de escribir secretos en él. }
-    SetArrayLength(HeaderLines, 1);
-    HeaderLines[0] := '# VMS Multimarca: ajustes de este equipo (lo crea el instalador; ver docs/INSTALACION-WINDOWS.md)';
-    SaveStringsToUTF8FileWithoutBOM(EnvPath, HeaderLines, False);
+    { Se crea con solo la cabecera y se protege ANTES de escribir secretos en él. }
+    SetArrayLength(AllLines, N + 1);
+    AllLines[0] := '# VMS Multimarca: ajustes de este equipo (lo crea el instalador; ver docs/INSTALACION-WINDOWS.md)';
+    SaveStringsToUTF8FileWithoutBOM(EnvPath, AllLines, False);
     ProtectForAdmins(EnvPath, False);
+    for I := 0 to N - 1 do
+      AllLines[I + 1] := Lines[I];
+  end
+  else
+  begin
+    SetArrayLength(AllLines, N);
+    for I := 0 to N - 1 do
+      AllLines[I] := Lines[I];
   end;
-  Result := SaveStringsToUTF8FileWithoutBOM(EnvPath, Lines, False);
+  Result := SaveStringsToUTF8FileWithoutBOM(EnvPath, AllLines, False);
   if not Result then
     Log('No se pudo escribir ' + EnvPath);
+  { Otra vez al final: si la escritura sustituyó el archivo, habría heredado los permisos de la carpeta. }
+  ProtectForAdmins(EnvPath, False);
 end;
 
 { ------------------------------------------------------------------ config.json inicial }

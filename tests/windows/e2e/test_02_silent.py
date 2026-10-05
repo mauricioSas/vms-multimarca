@@ -171,8 +171,10 @@ def test_step5_viewer(e2e: E2E, step: h.Step) -> None:
         pytest.skip("visor real: prueba por CDP (Playwright connect_over_cdp) pendiente de que B2 entregue VMS.exe")
     for hwnd in h.find_windows(h.VIEWER_DOUBLE_CLASS):
         h.close_window(hwnd)
-    proc = subprocess.run([target, args], capture_output=True, text=True, timeout=60, check=False)
-    assert proc.returncode == 0, proc.stderr
+    # Sin capturar la salida: el visor que lanza vmshost heredaría las tuberías y run() esperaría a que se cierre.
+    proc = subprocess.run([target, args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+                          check=False)
+    assert proc.returncode == 0, f"vmshost viewer terminó con {proc.returncode}"
     assert h.wait_until(lambda: bool(h.find_windows(h.VIEWER_DOUBLE_CLASS)), 30), "no se abrió el visor"
     hwnds = h.find_windows(h.VIEWER_DOUBLE_CLASS)
     step.details["ventana"] = h.window_title(hwnds[0])

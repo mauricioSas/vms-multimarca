@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 WIZARD_CLASS = "TWizardForm"
-NEXT_CAPTIONS = ("&Siguiente >", "&Instalar", "&Finalizar", "&Next >", "&Install", "&Finish")
+#: Botón que avanza, sin «&» ni «>» (el estilo moderno de Inno 7 muestra «Siguiente» sin la flecha).
+NEXT_CAPTIONS = ("siguiente", "instalar", "finalizar", "next", "install", "finish")
 WP_INSTALLING = 12
 WP_PREPARING = 11
 WM_COMMAND = 0x0111
@@ -48,6 +49,10 @@ def png_bytes(width: int, height: int, bgra: bytes) -> bytes:
 
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(bytes(rows), 6)) + chunk(b"IEND", b""))
+
+
+def normalize_caption(text: str) -> str:
+    return text.replace("&", "").replace(">", "").replace("<", "").strip().lower()
 
 
 def slug(text: str) -> str:
@@ -218,10 +223,12 @@ def run(installer: Path, out: Path, args: list[str], *, timeout: float = 900, en
             waiting_since = time.monotonic()
             if page_id in (WP_INSTALLING, WP_PREPARING):
                 continue                                     # esperar a la página siguiente
-            buttons = [c for c in w32.children(hwnd) if c[2] in NEXT_CAPTIONS
+            children = w32.children(hwnd)
+            buttons = [c for c in children if normalize_caption(c[2]) in NEXT_CAPTIONS
                        and w32.user32.IsWindowVisible(c[0]) and w32.user32.IsWindowEnabled(c[0])]
             if not buttons:
-                result.error = f"No hay botón Siguiente/Instalar/Finalizar en la página «{caption}»"
+                seen = sorted({f"{c[1]}:{c[2]}" for c in children if c[2]})[:40]
+                result.error = f"No hay botón Siguiente/Instalar/Finalizar en la página «{caption}». Controles: {seen}"
                 break
             w32.click(buttons[0][0])
         if result.error and proc.poll() is None:

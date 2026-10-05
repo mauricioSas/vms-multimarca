@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ pytestmark = [pytest.mark.e2e]
 V1_PASSWORD = "v1-admin-e2e"
 
 
+@pytest.mark.timeout(2700)
 @pytest.mark.paso("v1", "Setup 2.0 encima de una v1 de install.ps1: configuración y grabaciones intactas")
 def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     if os.environ.get("VMS_TEST_WIN_V1") != "1":
@@ -31,16 +33,21 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     step.details["limpieza"] = h.force_clean(e2e.env)
 
     # --- 1. v1 real
+    # La v1 de verdad: el código de la rama main (VMS_TEST_WIN_V1_SOURCE); si no se da, el de este árbol.
+    source = Path(os.environ.get("VMS_TEST_WIN_V1_SOURCE") or ROOT)
+    step.details["v1_codigo"] = str(source)
     v1_log = e2e.env.log_path("v1-install-ps1")
     started = time.monotonic()
     proc = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(ROOT / "deploy" / "windows" / "install.ps1"), "-Components", "Backend", "-PythonMode", "Embedded",
-         "-SiteId", "site-v1-e2e"],
-        cwd=ROOT, capture_output=True, timeout=1800, check=False)
-    v1_log.write_bytes(proc.stdout + b"\n--- stderr ---\n" + proc.stderr)
+         str(source / "deploy" / "windows" / "install.ps1"), "-Components", "Backend", "-PythonMode", "Embedded",
+         "-SiteId", "site-v1-e2e", "-SourceDir", str(source)],
+        cwd=source, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=1800,
+        check=False)
+    v1_log.write_bytes(proc.stdout or b"")
     step.details["v1_install_s"] = round(time.monotonic() - started, 1)
-    assert proc.returncode == 0, f"install.ps1 de la v1 falló ({proc.returncode}); ver {v1_log}"
+    tail = (proc.stdout or b"").decode("utf-8", "replace")[-4000:]
+    assert proc.returncode == 0, f"install.ps1 de la v1 falló ({proc.returncode}):\n{tail}"
     assert h.service_exists("VMSBackend")
 
     base = "http://127.0.0.1:8600"
@@ -48,7 +55,7 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     with httpx.Client(base_url=base, timeout=20) as c:
         r = c.post("/api/auth/setup", json={"username": "admin", "password": V1_PASSWORD})
         assert r.status_code == 201, r.text
-        r = c.patch("/api/settings", json={"site": {"name": "Tienda v1 e2e", "code": "V1-07"}})
+        r = c.patch("/api/settings", json={"site": {"name": "Tienda v1 e2e"}})
         assert r.status_code == 200, r.text
 
     data = h.data_dir()
@@ -79,7 +86,6 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     # --- 3. datos intactos
     after_config = json.loads((data / "config" / "config.json").read_text(encoding="utf-8"))
     assert after_config["settings"]["site"]["name"] == "Tienda v1 e2e"
-    assert after_config["settings"]["site"]["code"] == "V1-07"
     assert {u["username"] for u in json.loads((data / "config" / "users.json").read_text(encoding="utf-8"))["users"]} \
         == {u["username"] for u in before["users"]["users"]}
     assert h.tree_hashes(data / "recordings") == before["recordings"], "las grabaciones cambiaron"

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.windows import harness as h
-from tests.windows.wizard_capture import png_bytes, slug
+from tests.windows.wizard_capture import NEXT_CAPTIONS, normalize_caption, png_bytes, slug
 
 
 def test_command_of_and_flags() -> None:
@@ -93,3 +93,9 @@ def test_e2e_requirements_filter() -> None:
     names = {x.split("=")[0].split(">")[0].strip().lower() for x in found}
     assert names == KEEP
     assert not any("playwright" in x or "pgserver" in x for x in found)
+
+
+@pytest.mark.parametrize("caption", ["&Siguiente >", "Siguiente", "&Instalar", "&Finalizar", "&Next >"])
+def test_next_button_captions(caption: str) -> None:
+    assert normalize_caption(caption) in NEXT_CAPTIONS
+    assert normalize_caption("< &Atrás") not in NEXT_CAPTIONS and normalize_caption("Cancelar") not in NEXT_CAPTIONS
