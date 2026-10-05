@@ -23,6 +23,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .authenticode import system_verifier
@@ -96,7 +97,7 @@ def build_engine(layout: Layout | None = None) -> Engine:
     slot = current_slot()
     services = VmsctlServices.from_env(layout.slot_dir(slot) if slot else None)
     deps = EngineDeps(layout=layout, client_factory=client_factory, services=services, health=health,
-                      system=RealSystem(),
+                      system=_system(layout),
                       migrate=SubprocessMigrator(versions_dir=layout.versions_dir, data_dir=layout.data),
                       verifier=system_verifier(), dev_root=dev, require_authenticode=require_ac,
                       fault_hook=env_fault_hook(), slot=slot)
@@ -105,6 +106,33 @@ def build_engine(layout: Layout | None = None) -> Engine:
     if hook is not None:
         hook.announce = engine.announce_pause  # type: ignore[attr-defined]
     return engine
+
+
+def _system(layout: Layout) -> RealSystem:
+    """El sistema real. En las pruebas (VMS_UPDATER_TEST_HOOKS=1) se puede pedir que no mire el reinicio
+    pendiente de Windows ni escriba en HKLM (los runners de CI pueden tener un reinicio pendiente)."""
+    if os.environ.get("VMS_UPDATER_TEST_HOOKS") == "1" and os.environ.get("VMS_UPDATER_TEST_FAKE_SYSTEM") == "1":
+        return _TestSystem(layout.updater_data / "test-registry.json")
+    return RealSystem()
+
+
+class _TestSystem(RealSystem):
+    def __init__(self, registry_file: Path) -> None:
+        self.registry_file = registry_file
+
+    def reboot_pending(self) -> bool:
+        return False
+
+    def write_installed_version(self, version: str, app_id: str | None) -> None:
+        data = {"InstalledVersion": version, **({"DisplayVersion": version} if app_id else {})}
+        self.registry_file.write_text(json.dumps(data), encoding="utf-8")
+
+    def installed_version(self) -> str | None:
+        try:
+            v = json.loads(self.registry_file.read_text(encoding="utf-8")).get("InstalledVersion")
+        except (OSError, ValueError):
+            return None
+        return str(v) if v else None
 
 
 def next_check_delay(hours: float, rng: random.Random) -> float:

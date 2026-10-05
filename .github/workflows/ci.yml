@@ -226,14 +226,60 @@ jobs:
           echo "B3 añadirá aquí ISCC /Qp y el e2e de Windows (tests/windows)."
           test -f distribution/installer/LEEME.md
 
+  # B4: actualizador (tests/updater, también los fallos inyectados con procesos de verdad), firma TUF con
+  # PKCS#11 en SoftHSM2 (Ubuntu), Worker con Miniflare (Node) y, en Windows real, MoveFileExW, la tubería con
+  # nombre y su ACL, y WinVerifyTrust. mypy estricto en vms_updater (Ubuntu).
   b4-actualizaciones:
-    name: "B4 · actualizaciones"
-    runs-on: ubuntu-latest
+    name: "B4 · actualizaciones (${{ matrix.os }})"
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - run: |
-          echo "B4 añadirá aquí tests/updater y la prueba del Worker con Miniflare."
-          test -f updater/LEEME.md
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-updater.txt
+            requirements-test.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Dependencias (lock del actualizador con SHA-256 + lock de pruebas)
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-updater.txt
+          python -m pip install --no-deps -r requirements-test.txt
+          python -m pip install --no-deps -e .
+      - name: SoftHSM2 (token de DESARROLLO para la firma PKCS#11; se destruye con el runner)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q softhsm2
+      - name: Worker (Miniflare + workerd; sharp sustituido por un stub, sin libvips)
+        working-directory: infra/update-worker
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+      - name: mypy estricto (vms_updater)
+        if: runner.os == 'Linux'
+        env:
+          MYPYPATH: updater
+        run: mypy -p vms_updater
+      - name: pytest del actualizador (incluidos los procesos matados en cada estado del diario)
+        run: >
+          python -m pytest tests/updater tests/core/test_config_migrations.py -m "not e2e" -q -rs
+          --junitxml=junit-b4-${{ runner.os }}.xml
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: b4-${{ runner.os }}
+          path: junit-b4-*.xml
+          retention-days: 14
 
   b5-drivers:
     name: "B5 · drivers y compatibilidad"

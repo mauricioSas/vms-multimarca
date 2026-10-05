@@ -137,7 +137,7 @@ def _env(site: Site, backend_url: str, **extra: str) -> dict[str, str]:
         "VMS_UPDATE_SOURCE": site.url, "VMS_UPDATE_MODE": "online",
         "VMS_UPDATER_VMSCTL": f'"{sys.executable}" "{double}"', "VMS_BACKEND_URL": backend_url,
         "VMS_UPDATER_HEALTH_TIMEOUT": "4", "VMS_UPDATER_HEALTH_INTERVAL": "0.1",
-        "VMS_UPDATER_TEST_HOOKS": "1", "PYTHONDONTWRITEBYTECODE": "1",
+        "VMS_UPDATER_TEST_HOOKS": "1", "VMS_UPDATER_TEST_FAKE_SYSTEM": "1", "PYTHONDONTWRITEBYTECODE": "1",
     })
     env.pop("VMS_UPDATER_FAULT_AT", None)
     env.update(extra)

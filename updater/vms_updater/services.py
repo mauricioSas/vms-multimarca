@@ -52,6 +52,8 @@ class VmsctlServices:
         raw = os.environ.get("VMS_UPDATER_VMSCTL", "").strip()
         if raw:
             cmd = shlex.split(raw, posix=sys.platform != "win32")
+            # en Windows shlex (posix=False) conserva las comillas de cada palabra
+            cmd = [c[1:-1] if len(c) >= 2 and c[0] == c[-1] == '"' else c for c in cmd]
         else:
             exe = "vmsctl.exe" if sys.platform == "win32" else "vmsctl"
             base = slot_dir if slot_dir is not None else Path(sys.executable).resolve().parent.parent

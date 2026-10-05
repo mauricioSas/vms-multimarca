@@ -96,3 +96,39 @@ def test_public_status_never_contains_secrets(site: Site) -> None:
     site.engine(token="covert.SECRETO-DE-PRUEBA").check()
     text = site.layout.public_status_file.read_text()
     assert "SECRETO" not in text and "tok-interno" not in text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="tubería con nombre de Windows (job B4 de CI)")
+def test_windows_named_pipe_round_trip_and_acl(site: Site) -> None:  # pragma: no cover - Windows
+    import time
+    import uuid
+
+    from vms_updater.control_pipe import WindowsPipeServer, pipe_request
+
+    eng = site.engine()
+    name = r"\\.\pipe\VMSMultimarca.updater.prueba-" + uuid.uuid4().hex[:8]
+    srv = WindowsPipeServer(lambda req: handle_request(eng, req), name=name)
+    srv.start()
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                r = pipe_request({"cmd": "status"}, name=name)
+                break
+            except FileNotFoundError:
+                assert time.monotonic() < deadline, "la tubería no apareció"
+                time.sleep(0.05)
+        assert r["ok"] and "journal" in r
+        assert pipe_request({"cmd": "lock", "owner": "installer", "ttl_s": 30}, name=name) == {"ok": True}
+    finally:
+        srv.stop()
+    # con una ACL que solo deja entrar a SYSTEM, el administrador de la prueba no puede abrirla
+    closed = r"\\.\pipe\VMSMultimarca.updater.solo-system-" + uuid.uuid4().hex[:8]
+    srv2 = WindowsPipeServer(lambda req: {"ok": True}, name=closed, sddl="D:P(A;;GA;;;SY)")
+    srv2.start()
+    try:
+        time.sleep(0.5)
+        with pytest.raises(PermissionError):
+            pipe_request({"cmd": "status"}, name=closed)
+    finally:
+        srv2._stop.set()
