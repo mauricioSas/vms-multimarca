@@ -1,5 +1,6 @@
 // SharedWorker de los muros: UNA sola conexión a /api/events para todos los muros abiertos en el mismo
-// navegador (en el visor de escritorio, todas sus ventanas comparten el mismo perfil de WebView2).
+// navegador (en el visor de escritorio, las 4 ventanas de muro comparten su perfil de WebView2, aparte del
+// del panel). `?client=wall`: el backend usa la sesión de kiosco aunque el perfil tenga también la del panel.
 //
 // Por qué: con HTTP/1.1 el navegador abre como mucho 6 conexiones a la vez con el servidor. Cada SSE ocupa
 // una para siempre: con 4 muros y el panel quedaría una sola para todo lo demás, y tras una caída del motor
@@ -26,7 +27,7 @@ function broadcast(msg) {
 
 function open() {
   if (es) es.close();
-  es = new EventSource("/api/events");
+  es = new EventSource("/api/events?client=wall");
   lastSeen = Date.now();
   es.onopen = () => {
     lastSeen = Date.now();
