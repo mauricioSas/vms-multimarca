@@ -152,6 +152,16 @@ pub fn install(ctx: &Ctx, p: Platform<'_>, opts: &InstallOpts) -> Result<Outcome
     }
     let pointer = point_to(data, install, version)?;
     let needs_engine = opts.role.has(ENGINE) || opts.role.has(BACKEND);
+    // Los servicios corren con cuentas virtuales sin sesión: las contraseñas de los equipos van en el
+    // almacén cifrado en archivo (secret.key con DPAPI), el mismo que lee `engine-config` como administrador.
+    let env_file = data.env_file();
+    let mut env_defaults = vec![("VMS_CREDENTIAL_BACKEND", "file")];
+    if needs_engine {
+        env_defaults.push(("VMS_ENGINE_MODE", "attach"));
+    }
+    for (k, v) in env_defaults {
+        crate::envfile::set_default(&env_file, k, v).map_err(|e| CtlError::io(&e, &env_file.display().to_string()))?;
+    }
     if needs_engine && opts.engine_config {
         let python = match &opts.python {
             Some(p) => p.clone(),
@@ -340,6 +350,8 @@ mod tests {
         assert_eq!((p.active.as_str(), p.trial), ("2.0.0", false));
         assert_eq!(st.last_good().unwrap(), "2.0.0");
         assert!(f.ctx.data.secrets_dir().join("internal.token").is_file());
+        let env = crate::envfile::read(&f.ctx.data.env_file());
+        assert_eq!((env["VMS_CREDENTIAL_BACKEND"].as_str(), env["VMS_ENGINE_MODE"].as_str()), ("file", "attach"));
         // Idempotente: reinstalar no crea de nuevo
         let out = install(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, &opts(Role::Store)).unwrap();
         assert!(out.data["services"].as_array().unwrap().iter().all(|s| s["created"] == false));

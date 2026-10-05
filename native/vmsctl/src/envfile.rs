@@ -55,6 +55,15 @@ pub fn set(path: &Path, key: &str, value: &str) -> io::Result<()> {
     vms_common::atomic_write(path, out.as_bytes())
 }
 
+/// Fija `key=value` solo si la clave no está o está vacía. Devuelve `true` si la escribió.
+pub fn set_default(path: &Path, key: &str, value: &str) -> io::Result<bool> {
+    if read(path).get(key).is_some_and(|v| !v.is_empty()) {
+        return Ok(false);
+    }
+    set(path, key, value)?;
+    Ok(true)
+}
+
 /// Ajustes de red del `.env` con los mismos valores por defecto que `VmsSettings`.
 #[derive(Clone, Debug)]
 pub struct NetSettings {
