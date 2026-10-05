@@ -1,0 +1,21 @@
+# e2e de Windows completo (PLAN-V2 §4.6) en main y en etiquetas: instalación silenciosa, sistema, arranque,
+# visor, reinicio, desinstalación, v1 → v2 y capturas del asistente. Los pasos 6-9 (actualizaciones) los añade
+# B4 sobre el mismo arnés (tests/windows). Dueño: B3. Duración orientativa: 25-40 min (estimación).
+name: e2e Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    uses: ./.github/workflows/windows-installer.yml
+    with:
+      doubles: true   # false en la integración, con vmshost/vmsctl de B1 y VMS.exe de B2
+      e2e: true
+      with_v1: true

@@ -1,200 +1,230 @@
-# Instalación en Windows 10/11
+# Instalación en Windows
 
-Guía para instalar VMS Multimarca en el **PC de control** (4 monitores) o en un PC de tienda con
-Windows. Tiempo aproximado: 20–30 minutos (la mayor parte es la descarga de dependencias).
+Guía para instalar VMS Multimarca 2 en un PC con Windows: el **puesto de control** (grabación y muros en
+varios monitores), un **PC de tienda** con analítica, el **panel central** o un PC que **solo mira** las cámaras
+de otros equipos. Se instala con un asistente normal de Windows («Siguiente, Siguiente, Instalar»): no hace falta
+abrir PowerShell ni escribir órdenes.
 
-> Las «capturas» de esta guía están descritas con palabras: indican qué verás en pantalla en cada
-> paso para que sepas si vas bien.
+Tiempo aproximado: 5 minutos. No necesita Internet: todo lo necesario va dentro del instalador.
 
-## 0. Antes de empezar
+> Las capturas de cada página del asistente se generan solas en cada compilación del instalador (artefacto
+> `instalador-capturas` de la integración continua). Esta guía describe con palabras lo que verás en cada una.
+
+---
+
+## 1. Antes de empezar
 
 | Necesitas | Detalle |
 |---|---|
-| Windows 10 22H2 u 11, 64 bits | Pro recomendado (gestión de energía y directivas más sencillas) |
-| Usuario administrador | para instalar servicios y reglas de firewall |
-| Internet durante la instalación | o un paquete sin conexión (ver [EMPAQUETADO.md](EMPAQUETADO.md)) |
-| Microsoft Edge (ya viene con Windows) o Google Chrome | para los muros en modo kiosco |
-| La red de la tienda marcada como **privada** | el firewall solo se abre en redes privadas |
-| Disco para grabaciones | ver el cálculo en [REQUISITOS-HARDWARE.md](REQUISITOS-HARDWARE.md) |
+| **Windows 11** (23H2 o posterior), 64 bits | También Windows Server 2022 o 2025. Pro recomendado. |
+| Windows 10 22H2 | **Solo** si el equipo tiene las actualizaciones de seguridad ampliadas (ESU) de pago. El instalador avisa y deja continuar; las funciones nuevas pueden no estar garantizadas. |
+| Un usuario **administrador** | Windows pedirá permiso («¿Quieres permitir que esta aplicación haga cambios?»): responde **Sí**. |
+| Disco para grabaciones | Al menos **50 GB libres**. Lo ideal es un disco aparte del de Windows (por ejemplo `D:`). Cálculo de capacidad en [REQUISITOS-HARDWARE.md](REQUISITOS-HARDWARE.md). |
+| La red de la tienda como **privada** | El firewall solo deja entrar a otros equipos en redes privadas. Si está como pública, el asistente lo detecta y te ofrece cambiarla. |
+| El archivo `VMSMultimarca-Setup-2.x.y.exe` | Te lo da Unmanned Studio o soporte técnico. |
 
-Si vas a grabar en un disco distinto de `C:`, formatéalo antes en NTFS y asígnale letra (p. ej. `D:`).
+Si vas a grabar en un disco distinto de `C:`, formatéalo antes en NTFS y asígnale una letra.
 
-## 1. Copiar el programa
+## 2. Instalar con el asistente
 
-Copia la carpeta del programa al PC, por ejemplo a `C:\Instalacion\vms-multimarca`.
+Haz doble clic en `VMSMultimarca-Setup-2.x.y.exe` y responde **Sí** al aviso de permisos de Windows.
 
-*Captura: en el Explorador de archivos ves las carpetas `vms`, `analytics`, `central`, `deploy`,
-`docs` y los archivos `LEEME.md`, `.env.example` y `requirements-*.txt`.*
+> **Aviso de SmartScreen («Windows protegió tu PC»).** Mientras el instalador no esté firmado con un
+> certificado de empresa, Windows puede mostrar este aviso. Haz clic en **Más información** y después en
+> **Ejecutar de todas formas**. Comprueba antes que el archivo te lo dio soporte técnico.
 
-## 2. Ejecutar el instalador
+El asistente tiene estas páginas:
 
-1. Pulsa **Inicio**, escribe `PowerShell`, haz clic derecho en **Windows PowerShell** y elige
-   **Ejecutar como administrador**.
+1. **Bienvenida.** *Verás el logotipo (una cámara azul) y el texto «Te damos la bienvenida al instalador de VMS
+   Multimarca».* Haz clic en **Siguiente**.
+2. **Condiciones de uso.** Léelas, marca **Acepto las condiciones** y haz clic en **Siguiente**.
+3. **Tipo de puesto.** Elige en la lista desplegable qué papel tiene este PC. Debajo verás lo que se instala con
+   cada tipo:
 
-   *Captura: ventana azul con el título «Administrador: Windows PowerShell».*
+   | Tipo | Para qué | Servicios de Windows | Visor |
+   |---|---|---|---|
+   | **Puesto de control** | Graba las cámaras y las muestra en los muros | VMSEngine, VMSBackend, VMSUpdater | sí |
+   | **Tienda con analítica** | Graba, cuenta personas y avisa de colas; envía el estado al panel central | lo anterior + VMSAnalytics, VMSHeartbeat | opcional |
+   | **Panel central** | Ve el estado de todas las tiendas | VMSCentral, VMSUpdater | no |
+   | **Solo visor** | Central de vigilancia que mira las cámaras de otros PC | VMSUpdater | sí |
 
-2. Entra en la carpeta y permite ejecutar el script solo en esta ventana:
-   ```powershell
-   cd C:\Instalacion\vms-multimarca
-   Set-ExecutionPolicy -Scope Process Bypass
-   ```
-3. Lanza la instalación. Elige los componentes según el equipo:
-
-   | Equipo | Orden |
-   |---|---|
-   | PC de control, solo vídeo | `.\deploy\windows\install.ps1` |
-   | Tienda con analítica y latido a la central | `.\deploy\windows\install.ps1 -Components Backend,Analytics,Heartbeat -SiteId site-bcn-001 -CentralUrl https://central.vpn:8700` |
-   | Servidor central en Windows | `.\deploy\windows\install.ps1 -Components Central` |
-
-   Opciones útiles: `-InstallDir` (por defecto `C:\Program Files\VMSMultimarca`), `-DataDir`
-   (por defecto `C:\ProgramData\VMSMultimarca`), `-PythonMode Embedded` (no usar el Python del
-   equipo), `-AllowDomainProfile` (abrir también en red de dominio), `-NoStart`.
-
-   *Captura: el instalador muestra bloques que empiezan por `==>` (en azul) y líneas `OK` en verde:*
-   ```
-   ==> Comprobando el equipo
-       OK  Windows 10.0.22631 de 64 bits; componentes: Backend
-   ==> Preparando Python 3.12
-       OK  Python embebible 3.12.10 en C:\Program Files\VMSMultimarca\python
-   ==> Instalando dependencias ...
-   ==> MediaMTX v1.21.1 para Windows
-       OK  MediaMTX verificado en C:\Program Files\VMSMultimarca\bin
-   ==> Registrando servicios de Windows (WinSW, MIT)
-       OK  VMSBackend: VMS Multimarca - Backend y video
-   ==> Firewall de Windows (solo red privada)
-   ==> Arrancando servicios
-       OK  Backend: estado ok, versión 0.1.0
-   Instalación terminada.
-   ```
-   Las líneas `AVISO` en amarillo indican algo que debes revisar (por ejemplo, que la red está
-   marcada como pública). Si aparece un error en rojo, el instalador se detiene sin dejar nada a
-   medias que impida repetirlo: corrige el problema y vuelve a ejecutarlo.
+4. **Opciones de este equipo.** En una tienda: «Instalar también el visor de escritorio». En un puesto de
+   control: «Abrir los muros a pantalla completa al iniciar sesión» (márcalo en el PC de los monitores).
+5. **Grabaciones** (puesto de control y tienda). Elige la carpeta donde se guardan los vídeos, por ejemplo
+   `D:\Grabaciones CCTV`. Escribe cuántas cámaras vas a grabar y los Mbit/s aproximados de cada una. *Debajo
+   verás el espacio libre del disco y cuántos días de grabación caben.* Si eliges el disco de Windows, te lo
+   advierte. Si quedan menos de 50 GB libres, no deja continuar.
+6. **Sede** (puesto de control y tienda). Nombre de la tienda, código de tienda (opcional) e identificador.
+   *El identificador se rellena solo a partir del código o del nombre (minúsculas y guiones, por ejemplo
+   `tienda-centro`).* Si la tienda envía su estado a un panel central, escribe su dirección (empieza por
+   `https://`) y el token de la sede que te dieron.
+7. **Panel central** (solo ese tipo). La cadena de conexión de PostgreSQL que te dio el administrador de la base
+   de datos.
+8. **Seguridad.** La contraseña del usuario **admin** (mínimo 8 caracteres), dos veces. Guárdala bien: la
+   necesitas para dar de alta cámaras y usuarios.
+9. **Red.** *Verás estas opciones:*
+   - **Usar HTTPS en la red local** (marcada): cifra la conexión cuando otro PC abre el panel. Déjala marcada.
+   - **Abrir también en redes de dominio**: solo si el PC está en el dominio de la empresa.
+   - **Puertos** web (8600) y web seguro (8643): cámbialos solo si soporte te lo pide o si el asistente dice
+     que están ocupados.
+   - Si alguna red está marcada como **Pública**, aparece un aviso y la casilla «Cambiar esas redes a
+     Privadas». Márcala solo si es la red de la tienda o la VPN.
+10. **Todo listo para instalar.** Un resumen de lo elegido. Revisa la carpeta de grabaciones y la sede y haz clic
+    en **Instalar**.
+11. **Instalando.** *Una barra de progreso y mensajes como «Registrando los servicios de Windows…» y
+    «Comprobando que todo responde (hasta 2 minutos)…».*
+12. **Comprobación final.** «Todo listo: los servicios están en marcha y responden». Si algo falló, el texto dice
+    en qué paso y aparece el botón **Guardar informe…**: guarda el archivo `.zip` y envíalo a soporte técnico (no
+    contiene contraseñas).
+13. **Fin.** Deja marcada «Abrir VMS Multimarca» si quieres abrir el visor ahora y haz clic en **Finalizar**.
 
 ### Qué hace el instalador
 
-1. Comprueba Windows de 64 bits y permisos de administrador.
-2. Copia el programa a la carpeta de instalación.
-3. **Python 3.12:** si el equipo ya lo tiene (`py -3.12`), crea un entorno virtual; si no, descarga
-   el **Python embebible oficial 3.12.10** de python.org y comprueba su SHA-256.
-4. Instala las dependencias exactas de los archivos de bloqueo (`pip --no-deps --only-binary`): no
-   se instala nada que no esté revisado (licencias).
-5. Descarga **MediaMTX v1.21.1** para Windows y comprueba su SHA-256.
-6. Crea `C:\ProgramData\VMSMultimarca\.env` desde `.env.example` (nunca pisa uno existente),
-   genera el token del kiosco y deja `.env` y `secrets\` accesibles solo para SYSTEM y
-   Administradores.
-7. Registra los servicios con **WinSW** (licencia MIT, versión 2.12.0 con SHA-256 comprobado):
-   arranque automático (retrasado), reinicio a los 5 s, 30 s y 60 s si se caen, y registros
-   rotativos en `C:\ProgramData\VMSMultimarca\logs\service`.
-8. Abre en el firewall **solo en el perfil privado**: 8600/tcp (web) para el proceso de Python y
-   8189/udp+tcp (vídeo WebRTC) para MediaMTX. Con el componente Central, 8700/tcp.
-9. Arranca los servicios y espera a que `http://127.0.0.1:8600/api/health` responda.
-
-**¿Por qué WinSW y no NSSM?** Ambos sirven. WinSW tiene licencia MIT, se configura con un XML que
-queda junto al ejecutable (fácil de revisar y versionar), permite definir la política de
-reinicio, la rotación de registros y que la parada envíe Ctrl+C al proceso principal antes que a
-sus hijos (así el backend detiene MediaMTX con orden). NSSM es de dominio público pero su última
-versión estable es de 2014 y la recomendada para Windows 10 es una versión preliminar.
-
-**¿Por qué no hay un servicio de MediaMTX?** El backend arranca MediaMTX como proceso hijo,
-genera su configuración, le registra las cámaras por su API (las contraseñas solo están en
-memoria) y lo relanza si se cae. Un segundo servicio ocuparía los mismos puertos y no tendría las
-cámaras.
+- Copia el programa a `C:\Program Files\VMSMultimarca` (cada versión en su propia carpeta, para poder volver
+  atrás si una actualización falla).
+- Guarda la configuración, los usuarios y los registros en `C:\ProgramData\VMSMultimarca`, y las grabaciones en
+  la carpeta que elegiste. Solo Windows, los administradores y los propios servicios pueden leerlas: los
+  usuarios normales del PC no ven grabaciones ni contraseñas.
+- Registra los servicios de Windows del tipo de puesto. Arrancan solos con el PC, aunque nadie inicie sesión.
+- Abre en el firewall solo los puertos necesarios y solo en redes privadas (y de dominio si lo marcaste).
+- Con HTTPS, crea un certificado para este PC.
+- Crea el grupo de Windows **VMS Operadores** y mete en él al usuario que instala. Los miembros de ese grupo
+  pueden abrir los muros sin escribir contraseña. Mete también la cuenta de muros (en **Administración de
+  equipos → Usuarios y grupos locales → Grupos**).
+- Crea el acceso **VMS Multimarca** en el menú Inicio.
 
 ## 3. Primer acceso
 
-1. En el propio PC abre `http://127.0.0.1:8600/`.
+1. Abre **VMS Multimarca** desde el menú Inicio.
+2. Entra con el usuario `admin` y la contraseña que pusiste en el asistente. Cámbiala desde el panel si quieres.
+3. Da de alta los equipos siguiendo [ALTA-EQUIPOS.md](ALTA-EQUIPOS.md).
 
-   *Captura: página «Primer arranque» con campos Usuario y Contraseña.*
+Desde otro PC de la red: abre el visor en modo puesto remoto, o el navegador en `https://NOMBRE-DEL-PC:8643/`.
 
-2. Crea el administrador (contraseña de al menos 8 caracteres). Por seguridad, esta página solo
-   funciona desde el propio PC.
-3. Entra y da de alta los equipos siguiendo [ALTA-EQUIPOS.md](ALTA-EQUIPOS.md).
+## 4. Muros en varios monitores (puesto de control)
 
-Desde otro PC de la misma red: `http://IP-DEL-PC:8600/`.
+1. Conecta los monitores y, en **Configuración → Sistema → Pantalla**, ponlos en modo **Extender**, en el orden
+   físico.
+2. Crea un usuario de Windows para los muros (por ejemplo `muros`, sin permisos de administrador) y añádelo al
+   grupo **VMS Operadores**.
+3. Si en el asistente marcaste «Abrir los muros a pantalla completa al iniciar sesión», al entrar con ese usuario
+   se abre un muro a pantalla completa en cada monitor, sin pedir contraseña.
 
-## 4. Muros en los 4 monitores (kiosco)
+## 5. Instalación silenciosa (muchas tiendas)
 
-1. Conecta los 4 monitores y, en **Configuración → Sistema → Pantalla**, ponlos en modo
-   **Extender** y colócalos en el orden físico (el monitor de la izquierda muestra el muro 1).
-   Pon la **escala al 100 %** en todos si es posible.
+Para instalar en muchas tiendas sin pasar por el asistente, prepara dos archivos y lanza el instalador desde una
+consola de administrador o desde la herramienta de despliegue de la empresa:
 
-   *Captura: cuatro rectángulos numerados 1–4 alineados en la configuración de pantalla.*
-
-2. Crea un usuario local de Windows para el kiosco (p. ej. `muros`, sin permisos de
-   administrador).
-3. En PowerShell como administrador:
-   ```powershell
-   cd "C:\Program Files\VMSMultimarca"
-   .\deploy\windows\install-kiosk.ps1 -KioskUser "$env:COMPUTERNAME\muros"
-   ```
-   Opciones: `-Browser Edge|Chrome`, `-Monitors 2` (usar solo 2), `-SkipEdgePolicies`.
-4. Cierra sesión y entra como `muros`. Unos segundos después se abre una ventana a pantalla
-   completa en cada monitor con `/wall/1`, `/wall/2`, `/wall/3` y `/wall/4`.
-
-   *Captura: cada monitor muestra una cuadrícula de cámaras sin barras del navegador.*
-
-Qué hace el kiosco:
-- Abre una ventana de Edge (o Chrome) en modo kiosco por monitor, cada una con su propio perfil y
-  en la posición de su pantalla; si el navegador la abre en otra pantalla, la mueve.
-- Si cierras una ventana (Alt+F4) o el navegador se cae, la vuelve a abrir.
-- Cada 6 horas reabre los muros de uno en uno para renovar la sesión del kiosco (caduca a las
-  `VMS_SESSION_HOURS`, 12 h por defecto).
-- Mientras está abierto, la pantalla no se apaga y el equipo no se suspende.
-- Registro en `%LOCALAPPDATA%\VMSMultimarca\kiosk.log` del usuario del kiosco.
-
-Para hacer mantenimiento: abre PowerShell con el usuario del kiosco y ejecuta
-`& "C:\Program Files\VMSMultimarca\deploy\kiosk\start-kiosk.ps1" -Stop`.
-
-**Inicio de sesión automático (opcional):** si quieres que el PC muestre los muros tras un corte de
-luz sin que nadie escriba la contraseña, configura el inicio automático del usuario `muros` con
-`netplwiz` o con la herramienta Autologon de Microsoft Sysinternals (guarda la contraseña cifrada
-en LSA). Valóralo con el responsable de seguridad: cualquiera con acceso físico verá los muros.
-
-## 5. Comprobaciones
-
-```powershell
-Get-Service VMS*                                   # deben estar «Running»
-Invoke-RestMethod http://127.0.0.1:8600/api/health # status: ok
-Get-NetFirewallRule -Group "VMS Multimarca" | Format-Table DisplayName, Profile, Enabled
-Get-NetConnectionProfile                           # la red de la tienda debe ser «Private»
+```
+VMSMultimarca-Setup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="C:\vms-install.log" ^
+    /TYPE=store /LOADINF="tienda.inf" /SECRETS="secrets.json"
 ```
 
-Registros: `C:\ProgramData\VMSMultimarca\logs\vms.log` (backend), `analytics.log`,
-`heartbeat.log` y `logs\service\*.log` (salida de los servicios).
+- `/TYPE=` es el tipo de puesto: `control`, `store` (tienda), `central` o `viewer` (solo visor).
+- `/LOADINF=` apunta a las respuestas del asistente (sin nada secreto). Ejemplo completo:
+  [`distribution/installer/ejemplos/tienda.inf`](../distribution/installer/ejemplos/tienda.inf). Guárdalo sin
+  tildes o en «Unicode»; si lo guardas en UTF-8 el instalador también lo entiende.
+- `/SECRETS=` apunta a un JSON con los secretos. **El instalador lo lee y lo borra.** Nunca pongas contraseñas
+  en el `.inf` ni en la línea de órdenes. Ejemplo:
+  [`distribution/installer/ejemplos/secrets.json`](../distribution/installer/ejemplos/secrets.json).
+- `/LOG=` guarda el registro de la instalación (no contiene contraseñas).
 
-## 6. Configuración (`C:\ProgramData\VMSMultimarca\.env`)
+Claves de la sección `[Setup]` del `.inf`:
 
-Edítalo con el Bloc de notas **como administrador** y reinicia el servicio afectado
-(`Restart-Service VMSBackend`). Variables más usadas:
+| Clave | Para qué | Por defecto |
+|---|---|---|
+| `SetupType`, `Tasks` | Las estándar del instalador: tipo de puesto y opciones (`storeviewer`, `walls`) | — |
+| `RecordingsDir` | Carpeta de grabaciones | `C:\ProgramData\VMSMultimarca\recordings` |
+| `Cameras` | Número de cámaras (para comprobar el disco) | 8 |
+| `MbpsPerCamera` | Mbit/s por cámara | 4 |
+| `SiteName` | Nombre de la sede | — (obligatorio en control y tienda) |
+| `SiteCode` | Código de tienda | vacío |
+| `SiteId` | Identificador (3-40 caracteres: minúsculas, números y guiones) | se sugiere del código o del nombre |
+| `CentralUrl` | Dirección del panel central | vacío |
+| `Https` | `1` para HTTPS en la red local | `1` |
+| `DomainProfile` | `1` para abrir también en redes de dominio | `0` |
+| `HttpPort` / `HttpsPort` | Puertos web | `8600` / `8643` |
+| `SetPrivateNetwork` | `1` para cambiar a privadas las redes públicas | `0` |
+| `UpdateSource` | Origen de actualizaciones (`https://…`, `http://…` o `file:///…`); vacío = sin actualizaciones automáticas | vacío |
 
-| Variable | Para qué |
+Claves del archivo de secretos (JSON):
+
+| Clave | Para qué |
 |---|---|
-| `VMS_SITE_ID` | identificador único de la tienda (`site-bcn-001`) |
-| `VMS_PG_DSN` | PostgreSQL central (conteos y latido directo) |
-| `VMS_CENTRAL_URL`, `VMS_SITE_TOKEN` | latido HTTP al panel central (servicio VMSHeartbeat) |
-| `VMS_AGENT_USERNAME`, `VMS_AGENT_PASSWORD` | usuario **operador** del backend para que el latido incluya el estado de cada cámara |
-| `VMS_TELEGRAM_BOT_TOKEN` | avisos de cola |
-| `VMS_MTX_WEBRTC_ADDITIONAL_HOSTS` | IP de la VPN para ver vídeo en remoto, p. ej. `["100.64.0.12"]` |
+| `admin_password` | Contraseña del usuario `admin` (mínimo 8 caracteres). Obligatoria en una instalación nueva de control, tienda o panel central |
+| `site_token` | Token de la sede para el panel central (tienda) |
+| `pg_dsn` | Cadena de conexión de PostgreSQL (panel central) |
 
-## 7. Actualizar
+Códigos de salida del instalador:
 
-Copia la nueva versión en otra carpeta y vuelve a ejecutar `install.ps1` con los mismos
-componentes. Para los servicios, sustituye el programa y conserva `.env`, la configuración, las
-contraseñas y las grabaciones.
+| Código | Significado |
+|---|---|
+| 0 | Instalado y comprobado |
+| 1 | No arrancó: versión más nueva ya instalada (ver §6), archivo de secretos que no existe o no es JSON, o aviso de Windows 10 cancelado |
+| 2 | Cancelado antes de instalar |
+| 7 | Algún dato no es válido o no se pudo preparar la instalación (puerto ocupado, actualización en curso…). El motivo está en el registro (`/LOG`) |
+| 12 | Instalado, pero el sistema no respondió en 2 minutos. Revisa el registro y, si sigue así, envía el informe de diagnóstico |
+| 20 | Falló un paso de la instalación (servicios, permisos, firewall…). El paso y el motivo están en el registro |
+| 3, 4, 5, 8 | Errores propios del instalador (archivos dañados, cancelación, reinicio necesario) |
 
-## 8. Desinstalar
+## 6. Actualizar
 
-```powershell
-& "C:\Program Files\VMSMultimarca\deploy\windows\uninstall.ps1"             # conserva datos y grabaciones
-& "C:\Program Files\VMSMultimarca\deploy\windows\uninstall.ps1" -RemoveData # borra también datos (pide confirmación)
-```
-Puedes lanzarlo desde la propia carpeta de instalación: PowerShell carga el script entero antes
-de empezar, así que borrar esa carpeta al final no lo interrumpe.
+### Desde la versión 1 (instalada con `install.ps1`)
 
-## Validación de estos scripts
+Si el PC tiene la versión 1 (la que se instalaba con PowerShell), **ejecuta el instalador nuevo encima**, con el
+asistente o en silencio. No desinstales antes la versión 1.
 
-Los scripts se han validado con el analizador sintáctico de PowerShell 7 y con PSScriptAnalyzer
-(sin avisos), y sus funciones auxiliares (lectura y escritura de `.env`, descarga con
-verificación SHA-256, token y URL del kiosco) se ejecutan en las pruebas automáticas. **Falta
-probarlos en un Windows real** (servicios, firewall, kiosco con 4 monitores): sigue
-[CHECKLIST-PRUEBAS.md](CHECKLIST-PRUEBAS.md) en la primera instalación.
+- El asistente lo detecta y lo dice en el resumen («Actualización desde la versión 1»).
+- **Se conservan** la configuración (cámaras, muros, sede, retención), los usuarios, las contraseñas guardadas
+  de las cámaras, el `.env` y **todas las grabaciones** de `C:\ProgramData\VMSMultimarca`. Si la versión 1
+  usaba otra carpeta de datos, se sigue usando esa.
+- Los servicios antiguos (WinSW) se sustituyen por los nuevos y se borran los restos del programa antiguo de
+  `C:\Program Files\VMSMultimarca` (Python, `services\`, código). Los datos no se tocan.
+- Como la configuración ya existe, el asistente no vuelve a pedir la carpeta de grabaciones, la sede ni la
+  contraseña del administrador.
+- Antes de actualizar, conviene hacer una copia de `C:\ProgramData\VMSMultimarca\config`.
+
+### Entre versiones 2
+
+Las actualizaciones llegan solas (servicio **VMSUpdater**, por la noche) y vuelven atrás solas si algo falla.
+También puedes ejecutar un instalador más nuevo encima: conserva todo igual.
+
+El instalador **se niega a bajar de versión**: si ya está instalada una versión más nueva, avisa («Ya está
+instalada la versión 2.1.3, más nueva que este instalador») y no toca nada. Solo soporte técnico puede forzarlo
+con `/ALLOWDOWNGRADE` (queda anotado en el registro de la instalación).
+
+## 7. Desinstalar
+
+**Configuración → Aplicaciones → VMS Multimarca → Desinstalar.** El desinstalador pregunta:
+
+> ¿Quieres conservar las grabaciones y la configuración?
+
+- **Sí** (recomendado): quita el programa, los servicios y las reglas del firewall, y **conserva** las
+  grabaciones, los usuarios y los ajustes. Si vuelves a instalar, todo sigue como estaba.
+- **No**: lo borra **todo**, también las grabaciones. No se puede deshacer. La carpeta de grabaciones solo se
+  borra si la creó el instalador (nunca una carpeta que ya existía ni la raíz de un disco).
+
+En silencio (`unins000.exe /VERYSILENT`, en `C:\Program Files\VMSMultimarca\uninstall`) se conserva todo, salvo
+que añadas `/PURGE`.
+
+## 8. Problemas frecuentes
+
+| Problema | Qué hacer |
+|---|---|
+| «Hay un puerto ocupado por otro programa» | Otro programa usa el puerto web. En la página **Red**, cambia el puerto (por ejemplo 8601) o cierra ese programa |
+| «Hacen falta al menos 50 GB libres» | Elige otra carpeta en un disco con más espacio o libera espacio |
+| Desde otro PC no se abre el panel | Comprueba que la red es **Privada** (Configuración → Red e Internet → Propiedades) y que usas `https://NOMBRE-DEL-PC:8643/` |
+| «Hay una actualización en curso» | Espera unos minutos y vuelve a ejecutar el instalador |
+| La comprobación final falla | Pulsa **Guardar informe…** y envía el `.zip` a soporte técnico. El registro de la instalación está en la carpeta temporal de Windows (`Setup Log …txt`) o donde indicaste con `/LOG` |
+| Aviso de Windows 10 | El equipo necesita las actualizaciones ESU de pago; lo recomendable es Windows 11 |
+
+## 9. Nota técnica
+
+- Diseño: [PLAN-V2.md](PLAN-V2.md) §1.4 (instalador), §2.3-§2.6 (visor, disco, actualizaciones y red) y
+  [CONTRATO.md](CONTRATO.md) §13-§15.
+- Compilar el instalador: [EMPAQUETADO.md](EMPAQUETADO.md).
+- El instalador no configura el equipo por su cuenta: servicios, permisos, firewall, HTTPS y versión activa los
+  hace la herramienta `vmsctl.exe` de cada versión. El instalador solo copia archivos, guarda los ajustes del
+  asistente (`.env` y, en una instalación nueva, `config.json`) y crea el grupo **VMS Operadores**.
+- La versión 1 (`deploy\windows\install.ps1`) se mantiene solo para equipos que todavía la tienen; su guía está
+  en el historial de este archivo.

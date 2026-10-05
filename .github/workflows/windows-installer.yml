@@ -1,0 +1,165 @@
+# Instalador de Windows: build reproducible, ISCC, capturas del asistente y e2e (PLAN-V2 §1.8 y §4.6). Dueño: B3.
+#
+# Flujo reutilizable: lo llaman ci.yml (job b3-windows, en ramas de B3 y cuando cambia algo del instalador),
+# build.yml (PR a main, etiquetas y a mano) y e2e-windows.yml (main y etiquetas). Solo llama a scripts del
+# repositorio, así que lo mismo funciona a mano en un Windows sin GitHub (docs/EMPAQUETADO.md):
+#   python -m tools.build inno --install
+#   python -m tools.build all --version X.Y.Z [--doubles] --out dist
+#   python -m tools.build repro --version X.Y.Z [--doubles] --out dist\repro
+#   python -m tests.windows.run_e2e --installer dist\VMSMultimarca-Setup-X.Y.Z.exe [--with-v1]
+#
+# «doubles»: mientras B1 (vmshost/vmsctl) y B2 (visor) no entregan, el payload lleva los dobles de
+# tests/windows/doubles y el instalador sale como build de prueba. En la integración se cambia a false.
+name: Instalador de Windows
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Versión (por defecto 2.0.0-ci.<número de ejecución>)"
+        type: string
+        default: ""
+      doubles:
+        description: "Usar los dobles de prueba de B1/B2"
+        type: boolean
+        default: true
+      e2e:
+        description: "Ejecutar el e2e de Windows después de compilar"
+        type: boolean
+        default: true
+      with_v1:
+        description: "Incluir la actualización desde una v1 de install.ps1 (descarga ~200 MB)"
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión (por defecto 2.0.0-ci.<número de ejecución>)"
+        type: string
+        default: ""
+      doubles:
+        description: "Usar los dobles de prueba de B1/B2"
+        type: boolean
+        default: true
+      e2e:
+        description: "Ejecutar el e2e de Windows después de compilar"
+        type: boolean
+        default: true
+      with_v1:
+        description: "Incluir la actualización desde una v1 de install.ps1"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: "Instalador: build reproducible, ISCC, capturas y e2e (windows-latest)"
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      VERSION: ${{ inputs.version != '' && inputs.version || format('2.0.0-ci.{0}', github.run_number) }}
+      DOUBLES: ${{ inputs.doubles && '--doubles' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Versión sin la «v» de la etiqueta
+        shell: pwsh
+        run: |
+          $v = $env:VERSION -replace '^v', ''
+          "VERSION=$v" >> $env:GITHUB_ENV
+          "Versión del instalador: **$v**" >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-vms.txt
+            requirements-test.txt
+      - name: Dependencias (lock de sede con SHA-256 + pytest del lock de pruebas)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true   # un programa que falla corta el paso
+          python -m pip install --require-hashes --no-deps -r requirements-vms.txt
+          python tests/windows/e2e_requirements.py > "$env:RUNNER_TEMP\e2e-req.txt"
+          python -m pip install --no-deps -r "$env:RUNNER_TEMP\e2e-req.txt"
+          python -m pip install --no-deps -e .
+      - name: Inno Setup que trae la imagen del runner (solo se informa; se usa la 7.1.0 fijada)
+        shell: pwsh
+        run: |
+          $found = $false
+          foreach ($p in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+                           "$env:ProgramFiles\Inno Setup 7\ISCC.exe")) {
+            if (Test-Path -LiteralPath $p) { $found = $true; "$p -> $((Get-Item -LiteralPath $p).VersionInfo.ProductVersion)" }
+          }
+          if (-not $found) { "La imagen no trae Inno Setup en las rutas habituales." }
+          "| Inno Setup en la imagen | $found |" >> $env:GITHUB_STEP_SUMMARY
+      - name: Rust fijado (tests/windows/doubles/rust-toolchain.toml)
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tests/windows/doubles/target
+          key: cargo-dobles-windows-${{ hashFiles('tests/windows/doubles/Cargo.lock', 'tests/windows/doubles/src/**') }}
+      - name: Inno Setup 7.1.0 (descarga verificada con SHA-256)
+        run: python -m tools.build inno --install
+      - name: Build completa → instalador
+        shell: pwsh
+        run: |
+          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' }
+          python -m tools.build all --version $env:VERSION @extra --out dist
+      - name: Reproducibilidad del payload Python/web (dos builds limpias, PLAN-V2 §4.1)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $extra = @(); if ($env:DOUBLES) { $extra += '--doubles' }
+          python -m tools.build repro --version $env:VERSION @extra --out dist\repro
+          Get-Content dist\repro\repro.json
+      - name: Artefacto del instalador
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: instalador
+          path: |
+            dist/*.exe
+            dist/build-info.json
+            dist/sbom-*.cdx.json
+            dist/iscc.log
+            dist/layout/components.json
+            dist/layout/payload-manifest.json
+            dist/repro/repro.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: e2e de Windows (v1 → v2, asistente con capturas, pasos 1-5 y 10-12)
+        if: inputs.e2e
+        shell: pwsh
+        env:
+          WITH_V1: ${{ inputs.with_v1 }}
+        run: |
+          $a = @('--installer', "dist\VMSMultimarca-Setup-$env:VERSION.exe", '--yes', '--artifacts', 'e2e')
+          if ($env:WITH_V1 -eq 'true') { $a += '--with-v1' }
+          python -m tests.windows.run_e2e @a
+      - name: Resumen del e2e
+        if: always() && inputs.e2e
+        shell: pwsh
+        run: if (Test-Path e2e\RESULTADOS-windows.md) { Get-Content e2e\RESULTADOS-windows.md >> $env:GITHUB_STEP_SUMMARY }
+      - name: Capturas de cada página del asistente
+        if: always() && inputs.e2e
+        uses: actions/upload-artifact@v7
+        with:
+          name: instalador-capturas
+          path: e2e/capturas-asistente
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Artefactos del e2e (results-windows.json, registros, llamadas a vmsctl)
+        if: always() && inputs.e2e
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-windows
+          path: e2e
+          retention-days: 14
+          if-no-files-found: warn

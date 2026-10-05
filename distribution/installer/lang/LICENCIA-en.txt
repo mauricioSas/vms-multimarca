@@ -1,0 +1,21 @@
+﻿VMS MULTIMARCA TERMS OF USE
+
+The Spanish version of these terms (LICENCIA-es.txt) is the binding one. This is a translation for convenience.
+
+Unmanned Studio ("the provider") grants the client company installing this program ("the client") a non-exclusive, non-transferable licence to use VMS Multimarca ("the program") on the computers and sites agreed in its contract, under these terms:
+
+1. Permitted use. The client may install and use the program to view, record and manage the cameras of its own premises. It may not sell, rent, sublicense or distribute it to third parties.
+
+2. Ownership. The program is owned by the provider. Decompiling, modifying it or removing its notices is not allowed, except where the law expressly permits it.
+
+3. Data and recordings. Recordings, site data and camera credentials are stored on the client's computers and belong to the client. The client is the controller of the images under the GDPR and Spanish data protection law. The program does not send images to third parties.
+
+4. Updates. The program may download and install updates signed by the provider. The client may hold them or choose the channel from the central panel, as per its contract.
+
+5. Third-party components. The program includes open-source components under their own licences (MIT, BSD, Apache 2.0 and other compatible licences). Their full notices are in THIRD_PARTY_NOTICES.txt in the installation folder of each version.
+
+6. Warranty and liability. The program comes with the support and warranties set in the client's contract. Beyond that contract and what the law requires, the provider is not liable for indirect damages or for the loss of recordings due to causes outside the program (disk failures, power cuts, the client's cameras or networks).
+
+7. Governing law. These terms are governed by Spanish law.
+
+If you do not accept these terms, do not install the program.

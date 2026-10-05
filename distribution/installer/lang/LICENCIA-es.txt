@@ -1,0 +1,19 @@
+﻿CONDICIONES DE USO DE VMS MULTIMARCA
+
+Unmanned Studio («el proveedor») concede a la empresa cliente que instala este programa («el cliente») una licencia de uso no exclusiva e intransferible de VMS Multimarca («el programa») en los equipos y sedes acordados en su contrato, con estas condiciones:
+
+1. Uso permitido. El cliente puede instalar y usar el programa para ver, grabar y gestionar las cámaras de sus propias instalaciones. No puede venderlo, alquilarlo, sublicenciarlo ni distribuirlo a terceros.
+
+2. Propiedad. El programa es propiedad del proveedor. No se permite descompilarlo, modificarlo ni eliminar sus avisos, salvo en lo que la ley lo permita expresamente.
+
+3. Datos y grabaciones. Las grabaciones, los datos de las sedes y las credenciales de las cámaras se guardan en los equipos del cliente y son del cliente. El cliente es el responsable del tratamiento de las imágenes conforme al RGPD y a la LOPDGDD (información a las personas, plazos de conservación y acceso). El programa no envía imágenes a terceros.
+
+4. Actualizaciones. El programa puede descargar e instalar actualizaciones firmadas por el proveedor. El cliente puede retenerlas o elegir el canal desde el panel central, según su contrato.
+
+5. Componentes de terceros. El programa incluye componentes de código abierto con sus propias licencias (MIT, BSD, Apache 2.0 y otras compatibles). Sus avisos completos están en el archivo THIRD_PARTY_NOTICES.txt de la carpeta de instalación de cada versión.
+
+6. Garantía y responsabilidad. El programa se entrega con el soporte y las garantías que fije el contrato del cliente. Fuera de lo que diga ese contrato y de lo que exija la ley, el proveedor no responde de daños indirectos ni de la pérdida de grabaciones por causas ajenas al programa (averías de disco, cortes de luz, cámaras o redes del cliente).
+
+7. Ley aplicable. Estas condiciones se rigen por la ley española.
+
+Si no aceptas estas condiciones, no instales el programa.

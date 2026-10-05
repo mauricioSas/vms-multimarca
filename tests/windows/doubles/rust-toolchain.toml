@@ -1,0 +1,5 @@
+# Mismo toolchain que native/ (PLAN-V2 §4.1).
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
