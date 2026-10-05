@@ -142,6 +142,15 @@ async def now_jpg(camera_id: str, request: Request, p: Principal = Depends(requi
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
+@router.get("/camera-health/{camera_id}/config")
+async def get_health_config(camera_id: str, p: Principal = Depends(require_admin),
+                            state: AppState = Depends(get_state)) -> Response:
+    _camera_or_404(state, p, camera_id)
+    cam = state.config().camera(camera_id)
+    assert cam is not None
+    return json_response(cam.health)
+
+
 @router.put("/camera-health/{camera_id}/config")
 async def put_health_config(camera_id: str, body: dict[str, Any] = Body(...), p: Principal = Depends(require_admin),
                             state: AppState = Depends(get_state)) -> Response:

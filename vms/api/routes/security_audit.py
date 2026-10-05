@@ -13,7 +13,6 @@ from fastapi import APIRouter, Body, Depends, Request
 from pydantic import BaseModel, Field, SecretStr
 from starlette.responses import Response
 
-from vms.core.errors import NotFoundError
 from vms.ops.security.advisories import load_table
 
 from ..deps import Principal, get_state, require_admin
@@ -54,10 +53,8 @@ async def run(request: Request, body: RunBody = Body(default=RunBody()), p: Prin
 
 @router.get("/latest")
 async def latest(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
-    report = ops.latest_audit()
-    if report is None:
-        raise NotFoundError("Todavía no se ha hecho ninguna auditoría")
-    return json_response(report)
+    """Última auditoría, o `null` si todavía no se ha hecho ninguna (no es un error: la interfaz lo explica)."""
+    return json_response(ops.latest_audit())
 
 
 @router.get("/advisories")

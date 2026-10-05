@@ -1,0 +1,597 @@
+{
+  "schema": 1,
+  "lang": "es",
+  "ui": {
+    "help": "Ayuda",
+    "help_button": "Ayuda sobre esta sección",
+    "close": "Cerrar",
+    "buttons": "Para qué sirve cada botón",
+    "steps": "Cómo hacerlo",
+    "tasks": "Cómo hacer…",
+    "tour": "Ver recorrido de 1 minuto",
+    "guide": "Ver todas las guías",
+    "back": "Volver"
+  },
+  "sections": {
+    "panel.page": {
+      "page": "/",
+      "anchor": ".page-head h1",
+      "title": "Panel de control",
+      "intro": [
+        "Aquí das de alta las cámaras y los grabadores (NVR/DVR) y decides qué cámara sale en cada monitor.",
+        "Un «equipo» es el aparato que conectas por red: una cámara IP o un grabador con varias cámaras. Cada cámara que ves en pantalla es un «canal» de ese equipo.",
+        "Los cambios se aplican solos: no hace falta reiniciar nada."
+      ],
+      "buttons": [
+        {"label": "Buscar en la red", "text": "Busca cámaras y grabadores conectados a la misma red que este PC. Te ahorra escribir las IP a mano."},
+        {"label": "Añadir equipo", "text": "Abre el formulario para dar de alta un equipo escribiendo su IP, su usuario y su contraseña."},
+        {"label": "Ayuda", "text": "Abre esta guía. En cada sección hay un botón «?» con su explicación."}
+      ],
+      "tasks": ["anadir-camara", "buscar-red", "asignar-monitor"],
+      "tour": "panel"
+    },
+    "panel.wizard": {
+      "page": "/",
+      "anchor": "#onboarding-root .ob-head h2",
+      "title": "Primeros pasos",
+      "intro": [
+        "Este asistente te lleva de la mano la primera vez: buscar las cámaras, probar la conexión, elegir canales, fijar la imagen de referencia, montar el muro y revisar cuántos días se graban.",
+        "Puedes cerrarlo cuando quieras y retomarlo desde «Ayuda» > «Primeros pasos»."
+      ],
+      "buttons": [
+        {"label": "Siguiente / Anterior", "text": "Avanza o retrocede un paso. Lo que hagas en el panel mientras tanto se guarda igual."},
+        {"label": "Cerrar", "text": "Oculta el asistente. Se queda en el paso en el que estabas."},
+        {"label": "No volver a mostrar", "text": "Lo da por terminado. Puedes abrirlo otra vez desde la Ayuda."}
+      ]
+    },
+    "panel.devices": {
+      "page": "/",
+      "anchor": "#h-devices",
+      "title": "Equipos",
+      "intro": [
+        "Lista de cámaras IP y grabadores dados de alta, con su dirección y si responden.",
+        "El estado se indica con un icono y un texto, no solo con el color: «En línea», «Sin respuesta»…"
+      ],
+      "buttons": [
+        {"label": "Probar", "text": "Comprueba ahora mismo que el equipo responde y que el usuario y la contraseña son correctos."},
+        {"label": "Importar canales", "text": "En un grabador, elige qué cámaras (canales) quieres ver y grabar."},
+        {"label": "Editar", "text": "Cambia el nombre, la IP, los puertos, el usuario o la contraseña del equipo."},
+        {"label": "¿Por qué no conecta?", "text": "Hace una revisión paso a paso (red, puertos, contraseña, vídeo, hora) y te dice la causa más probable y qué hacer. Solo prueba la contraseña una vez para no bloquear el usuario."},
+        {"label": "Borrar", "text": "Quita el equipo y sus cámaras del VMS. Las grabaciones ya hechas se borran al cumplir los días de retención."}
+      ],
+      "tasks": ["anadir-camara", "por-que-no-conecta"]
+    },
+    "panel.cameras": {
+      "page": "/",
+      "anchor": "#h-cameras",
+      "title": "Cámaras",
+      "intro": [
+        "Cada fila es una cámara (un canal de un equipo): si llega vídeo y si se está grabando.",
+        "«Vídeo» en verde con «En vivo» significa que la imagen llega al VMS; «Grabando» significa que se guarda en el disco."
+      ],
+      "buttons": [
+        {"label": "Añadir cámara manual", "text": "Para cámaras sin API conocida: escribes la ruta RTSP que indica el fabricante."},
+        {"label": "Grabaciones", "text": "Abre «Reproducción» con esa cámara elegida."},
+        {"label": "Editar", "text": "Cambia el nombre, el canal o si se graba de forma continua."},
+        {"label": "Borrar", "text": "Quita la cámara del VMS (el equipo sigue dado de alta)."}
+      ],
+      "tasks": ["anadir-camara", "leer-salud"]
+    },
+    "panel.monitors": {
+      "page": "/",
+      "anchor": "#h-monitors",
+      "title": "Monitores",
+      "intro": [
+        "Aquí decides qué cámaras salen en cada monitor de la tienda (hasta 4 monitores, con 1, 4, 9 o 16 cámaras cada uno).",
+        "Arrastra una cámara de la lista a una celda o elígela en la lista de la celda. Después pulsa «Guardar monitor»: el muro cambia solo, sin recargar."
+      ],
+      "buttons": [
+        {"label": "Monitor 1-4", "text": "Elige qué monitor estás editando."},
+        {"label": "1 / 4 / 9 / 16", "text": "Cuántas cámaras caben a la vez en ese monitor."},
+        {"label": "Vaciar", "text": "Quita todas las cámaras de este monitor (no se guarda hasta pulsar «Guardar monitor»)."},
+        {"label": "Abrir muro", "text": "Abre el muro de ese monitor en una ventana para colocarla en la pantalla correspondiente."},
+        {"label": "Guardar monitor", "text": "Aplica los cambios en el muro."}
+      ],
+      "tasks": ["asignar-monitor"],
+      "tour": "monitores"
+    },
+    "panel.device_dialog": {
+      "page": "/",
+      "anchor": "#device-dialog-title",
+      "title": "Añadir o editar un equipo",
+      "intro": [
+        "Escribe la IP del equipo, el fabricante y el usuario y contraseña con los que entrará el VMS.",
+        "Recomendación: crea en la cámara o el grabador un usuario de SOLO LECTURA para el VMS (vista en directo y reproducción) y no uses «admin»."
+      ],
+      "buttons": [
+        {"label": "Fabricante", "text": "Hikvision y Dahua se configuran solos. «ONVIF» sirve para casi todas las demás marcas. «Genérico» es para cámaras de las que solo conoces la ruta RTSP."},
+        {"label": "Puertos", "text": "Normalmente HTTP 80 y RTSP 554. Cámbialos solo si los cambiaste en el equipo."},
+        {"label": "Usar HTTPS", "text": "Márcalo si el equipo solo acepta conexiones cifradas."},
+        {"label": "Probar conexión", "text": "Comprueba la conexión antes de guardar. Si algo falla, te dice qué y qué hacer."},
+        {"label": "Guardar equipo", "text": "Lo da de alta. En un grabador, después podrás elegir los canales."}
+      ],
+      "steps": [
+        "Escribe un nombre que reconozcas (por ejemplo «NVR cajas»).",
+        "Elige el fabricante y escribe la IP (por ejemplo 192.168.1.64).",
+        "Escribe el usuario y la contraseña del equipo.",
+        "Pulsa «Probar conexión»: si sale en verde, pulsa «Guardar equipo»."
+      ]
+    },
+    "panel.channels_dialog": {
+      "page": "/",
+      "anchor": "#channels-title",
+      "title": "Importar canales",
+      "intro": [
+        "Un grabador tiene varias cámaras conectadas: cada una es un canal. Marca las que quieres ver y grabar en el VMS.",
+        "Si un canal aparece «sin vídeo», esa cámara no está conectada al grabador o está apagada."
+      ],
+      "buttons": [
+        {"label": "Marcar todos / Ninguno", "text": "Selecciona o quita la selección de todos los canales."},
+        {"label": "Importar seleccionados", "text": "Da de alta los canales marcados como cámaras."}
+      ]
+    },
+    "panel.discover_dialog": {
+      "page": "/",
+      "anchor": "#discover-title",
+      "title": "Buscar equipos en la red",
+      "intro": [
+        "Busca cámaras y grabadores que anuncian su presencia en la red (ONVIF). Tarda unos segundos.",
+        "Algunos equipos traen ONVIF desactivado de fábrica: si no aparece, añádelo a mano con su IP."
+      ],
+      "buttons": [
+        {"label": "Tiempo de búsqueda", "text": "Más tiempo encuentra equipos más lentos en contestar."},
+        {"label": "Buscar", "text": "Empieza la búsqueda."},
+        {"label": "Añadir", "text": "Rellena el formulario de alta con los datos del equipo encontrado."}
+      ],
+      "tasks": ["buscar-red"]
+    },
+    "panel.camera_dialog": {
+      "page": "/",
+      "anchor": "#camera-dialog-title",
+      "title": "Cámara",
+      "intro": [
+        "Ajustes de una cámara concreta. Lo normal es no tocar las rutas RTSP: vacías, el VMS usa las del fabricante.",
+        "El «subflujo» es una versión de menos calidad que se usa en los muros para no cargar la red; la grabación usa siempre el flujo principal."
+      ],
+      "buttons": [
+        {"label": "Transporte RTSP", "text": "Déjalo en TCP salvo que el instalador te diga otra cosa."},
+        {"label": "Grabar 24/7", "text": "Si está marcado, la cámara se graba siempre."},
+        {"label": "Tiene subflujo", "text": "Desmárcalo si la cámara solo tiene un flujo de vídeo."}
+      ]
+    },
+    "playback.page": {
+      "page": "/playback",
+      "anchor": ".page-head h1",
+      "title": "Reproducción",
+      "intro": [
+        "Aquí ves lo grabado: eliges cámara y día, y pulsas en la línea de tiempo el momento que quieres ver.",
+        "Los tramos de color de la línea de tiempo son lo grabado; los huecos sin color son momentos sin grabación."
+      ],
+      "buttons": [
+        {"label": "Cámara y Día", "text": "Qué cámara y qué día quieres ver."},
+        {"label": "24 h / 6 h / 1 h", "text": "Acerca o aleja la línea de tiempo (también con la rueda del ratón)."},
+        {"label": "Actualizar", "text": "Vuelve a leer lo grabado (útil para el día de hoy)."}
+      ],
+      "tasks": ["ver-grabaciones", "exportar-evidencia", "proteger-tramo"],
+      "tour": "reproduccion"
+    },
+    "playback.stage": {
+      "page": "/playback",
+      "anchor": ".pb-transport",
+      "title": "Vídeo y línea de tiempo",
+      "intro": [
+        "Pulsa en la línea de tiempo para reproducir desde ese momento. La hora grande de la esquina es la hora de la grabación.",
+        "Con la línea de tiempo seleccionada, las flechas del teclado saltan 1 minuto (10 minutos con Mayúsculas) y la barra espaciadora pausa."
+      ],
+      "buttons": [
+        {"label": "−1 min / −10 s / +10 s / +1 min", "text": "Saltos rápidos hacia atrás o hacia delante."},
+        {"label": "Reproducir / Pausa", "text": "Arranca o detiene el vídeo."},
+        {"label": "Velocidad", "text": "Ver más rápido (2×, 4×, 8×) o más despacio (0,5×)."},
+        {"label": "◀ ▶", "text": "Mueven la ventana de la línea de tiempo hacia antes o después."}
+      ]
+    },
+    "playback.clip": {
+      "page": "/playback",
+      "anchor": "#h-export",
+      "title": "Descargar clip",
+      "intro": [
+        "Descarga un trozo de grabación en MP4 para verlo en otro equipo. Se genera desde la grabación original, sin recomprimir.",
+        "Para entregar vídeo a la policía o a un juzgado usa mejor «Exportar evidencia»: incluye huellas, firma y acta."
+      ],
+      "buttons": [
+        {"label": "Desde y Duración", "text": "Desde qué hora y cuánto tiempo."},
+        {"label": "Usar la posición actual", "text": "Pone en «Desde» la hora que estás viendo."},
+        {"label": "Descargar MP4", "text": "Descarga el clip. Queda anotado en el registro de accesos."}
+      ]
+    },
+    "playback.events": {
+      "page": "/playback",
+      "anchor": "#h-ops-events",
+      "title": "Eventos en la línea de tiempo",
+      "intro": [
+        "Sobre la línea de tiempo se pintan marcas de colores: huecos sin grabación, marcadores, tramos protegidos, problemas de imagen o de hora y avisos de colas.",
+        "Pulsa una marca para ir a ese momento. Cada marca lleva también un texto: no hace falta distinguir los colores."
+      ],
+      "buttons": [
+        {"label": "Capas", "text": "Enciende o apaga cada tipo de marca."}
+      ]
+    },
+    "playback.bookmarks": {
+      "page": "/playback",
+      "anchor": "#h-ops-bookmarks",
+      "title": "Marcadores y tramos protegidos",
+      "intro": [
+        "Un marcador es una nota en un momento de la grabación («discusión en caja 2»).",
+        "«Proteger» hace que ese tramo NO se borre cuando pasen los días de retención. Es lo que permite la ley para conservar más tiempo solo lo que acredita un hecho: hay que poner el motivo y una caducidad (90 días por defecto)."
+      ],
+      "buttons": [
+        {"label": "Añadir marcador aquí", "text": "Crea un marcador en el momento que estás viendo."},
+        {"label": "Ir", "text": "Reproduce desde ese marcador."},
+        {"label": "Proteger / Dejar de proteger", "text": "Solo administradores o usuarios con permiso de exportar. Pide el motivo y queda registrado."},
+        {"label": "Borrar", "text": "Solo administradores. Queda registrado."}
+      ],
+      "tasks": ["proteger-tramo"]
+    },
+    "playback.evidence": {
+      "page": "/playback",
+      "anchor": "#h-ops-evidence",
+      "title": "Exportar evidencia",
+      "intro": [
+        "Prepara un paquete para entregar a la policía o a un juzgado: los vídeos originales, un visor que funciona sin instalar nada, un acta de cadena de custodia para firmar y una firma digital que demuestra que nadie ha tocado los archivos.",
+        "El motivo es obligatorio y la exportación queda registrada con tu usuario."
+      ],
+      "buttons": [
+        {"label": "Cámaras", "text": "Puedes exportar varias cámaras a la vez (hasta 16)."},
+        {"label": "Desde / Hasta", "text": "El tramo que se exporta (máximo 12 horas por paquete)."},
+        {"label": "Motivo, N.º de caso y Destinatario", "text": "Salen en el acta. El motivo es obligatorio."},
+        {"label": "Crear paquete", "text": "Prepara el ZIP en el servidor. Verás el progreso; cuando termine, aparece «Descargar»."},
+        {"label": "Descargar", "text": "Baja el ZIP. Entrégalo tal cual: abrirlo y volver a guardar los archivos cambiaría su huella."}
+      ],
+      "tasks": ["exportar-evidencia"]
+    },
+    "analytics.page": {
+      "page": "/analytics",
+      "anchor": ".page-head h1",
+      "title": "Analítica de tienda",
+      "intro": [
+        "Aquí dibujas sobre la imagen de una cámara la línea de la puerta (para contar entradas y salidas) y las zonas de cola de cajas (para avisar cuando hay demasiada gente esperando).",
+        "Solo se guardan conteos anónimos por minuto. Nunca se dibujan zonas sobre el puesto de los trabajadores."
+      ],
+      "buttons": [
+        {"label": "Cámara", "text": "Elige la cámara sobre la que vas a dibujar."}
+      ],
+      "tasks": ["dibujar-zonas"],
+      "tour": "analitica"
+    },
+    "analytics.camera": {
+      "page": "/analytics",
+      "anchor": "label[for='an-camera']",
+      "title": "Ajustes de la cámara",
+      "intro": [
+        "Activa la analítica en la cámara y ajusta cuántas imágenes por segundo se analizan."
+      ],
+      "buttons": [
+        {"label": "Analítica activada", "text": "Enciende o apaga el conteo en esta cámara."},
+        {"label": "Imágenes por segundo", "text": "Puerta: 10-15 (la gente pasa rápido). Cajas: 1-2 (basta para medir la cola)."},
+        {"label": "Confianza mínima", "text": "Súbela si cuenta cosas que no son personas; bájala si se le escapan personas."},
+        {"label": "Modelo de detección", "text": "«nano» es el más rápido; «base», el más preciso pero necesita más PC."},
+        {"label": "Guardar ajustes de la cámara", "text": "Aplica los cambios."}
+      ]
+    },
+    "analytics.tools": {
+      "page": "/analytics",
+      "anchor": ".an-toolbar",
+      "title": "Dibujar reglas",
+      "intro": [
+        "«+ Línea de puerta»: haz clic en un extremo de la puerta y luego en el otro. La flecha ámbar indica hacia dónde se cuenta una ENTRADA.",
+        "«+ Zona de cola»: un clic en cada esquina de la zona; se cierra haciendo clic en el primer punto, con doble clic o con Intro. Retroceso borra el último punto y Escape cancela."
+      ],
+      "buttons": [
+        {"label": "+ Línea de puerta", "text": "Empieza a dibujar una línea para contar entradas y salidas."},
+        {"label": "+ Zona de cola", "text": "Empieza a dibujar una zona para medir la cola."},
+        {"label": "Actualizar imagen", "text": "Pide una imagen nueva a la cámara (no se guarda)."}
+      ],
+      "tasks": ["dibujar-zonas"]
+    },
+    "analytics.rules": {
+      "page": "/analytics",
+      "anchor": ".an-rules-head h2",
+      "title": "Reglas",
+      "intro": [
+        "Las líneas y zonas de la cámara elegida. Pulsa una para seleccionarla, moverla o editarla."
+      ]
+    },
+    "analytics.rule_form": {
+      "page": "/analytics",
+      "anchor": "#rule-title",
+      "title": "Editar una regla",
+      "intro": [
+        "Ponle un nombre que se entienda en los informes («Entrada principal», «Cola cajas 1-4»)."
+      ],
+      "buttons": [
+        {"label": "Invertir el sentido de entrada", "text": "Cambia qué lado de la línea cuenta como entrada."},
+        {"label": "Avisar con este número de personas", "text": "Cuántas personas en la zona hacen saltar el aviso de cola."},
+        {"label": "…durante (segundos seguidos)", "text": "Cuánto tiempo seguido tiene que haber esa cola para avisar."},
+        {"label": "Tiempo mínimo entre avisos", "text": "Evita avisos repetidos de la misma cola."},
+        {"label": "Volver a dibujar", "text": "Borra el dibujo de esta regla para hacerlo de nuevo."},
+        {"label": "Guardar regla / Borrar regla", "text": "Guarda los cambios o elimina la regla."}
+      ]
+    },
+    "analytics.counts": {
+      "page": "/analytics",
+      "anchor": "#h-ops-counts",
+      "title": "Descargar conteos para Excel",
+      "intro": [
+        "Descarga en un archivo CSV las entradas, salidas y la cola media y máxima por hora o por día. Se abre directamente con Excel en español.",
+        "Son datos agregados: no hay imágenes ni datos de personas."
+      ],
+      "buttons": [
+        {"label": "Desde / Hasta", "text": "Días que quieres descargar (incluidos)."},
+        {"label": "Por hora / Por día", "text": "Detalle de cada hora o un total por día."},
+        {"label": "Descargar CSV", "text": "Descarga el archivo."}
+      ]
+    },
+    "status.page": {
+      "page": "/status",
+      "anchor": ".page-head h1",
+      "title": "Estado del sistema",
+      "intro": [
+        "Resumen de cómo está todo: motor de vídeo, cámaras, disco, salud de la imagen, hora de los equipos, seguridad y avisos.",
+        "Si algo va mal verás un aviso arriba con el problema en palabras de tienda."
+      ],
+      "buttons": [
+        {"label": "Actualizar", "text": "Vuelve a leer el estado ahora mismo (se actualiza solo cada pocos segundos)."}
+      ],
+      "tasks": ["leer-salud", "configurar-avisos"],
+      "tour": "estado"
+    },
+    "status.summary": {
+      "page": "/status",
+      "anchor": "#card-engine .label",
+      "title": "Resumen",
+      "intro": [
+        "Motor de vídeo: el programa que recibe y graba el vídeo. Tiene que estar «En marcha».",
+        "Cámaras con vídeo y Grabando: cuántas cámaras envían imagen y cuántas se están guardando.",
+        "Disco de grabación: cuánto está lleno. Al llegar al límite se borra lo más antiguo."
+      ]
+    },
+    "status.cameras": {
+      "page": "/status",
+      "anchor": "#h-st-cams",
+      "title": "Cámaras",
+      "intro": [
+        "Estado técnico de cada cámara: si llega vídeo, si se graba, cuántas personas la están viendo y el último error."
+      ]
+    },
+    "status.system": {
+      "page": "/status",
+      "anchor": "#h-st-system",
+      "title": "Sistema",
+      "intro": [
+        "Versión del programa, tiempo encendido y dónde se guardan las contraseñas de los equipos. Útil para el servicio técnico."
+      ]
+    },
+    "status.updates": {
+      "page": "/status",
+      "anchor": "#updates-root h2",
+      "title": "Actualizaciones",
+      "intro": [
+        "Versión instalada y estado de las actualizaciones automáticas. Las actualizaciones se aplican de madrugada y, si algo falla, el sistema vuelve solo a la versión anterior."
+      ]
+    },
+    "status.health": {
+      "page": "/status",
+      "anchor": "#h-ops-health",
+      "title": "Salud de la imagen",
+      "intro": [
+        "Cada pocos minutos el VMS mira una imagen de cada cámara y la compara con su «imagen de referencia» para saber si está tapada, desenfocada, movida, en negro, congelada o si falla la visión nocturna. Mide la cámara, no a las personas.",
+        "La puntuación va de 0 a 100: 80 o más es correcto, de 50 a 79 es un aviso y menos de 50 es grave. Para no dar falsas alarmas, el estado solo cambia tras 3 comprobaciones seguidas iguales."
+      ],
+      "buttons": [
+        {"label": "Fijar referencia (día / noche)", "text": "Toma unas 15 imágenes durante unos 3 minutos y guarda la «media» como imagen de cómo debe verse la cámara. Hazlo con la cámara bien colocada y, mejor, con la tienda vacía. La de noche, con la luz infrarroja encendida."},
+        {"label": "Comprobar ahora", "text": "Hace una comprobación inmediata, por ejemplo después de limpiar o recolocar la cámara."},
+        {"label": "Antes / Ahora", "text": "Muestra la imagen de referencia junto a la imagen actual: es lo que convence al técnico de que hay que ir a la tienda."},
+        {"label": "Zonas excluidas", "text": "Marca rectángulos que no se comparan (pantallas de publicidad, puertas automáticas, el reloj sobreimpreso)."}
+      ],
+      "tasks": ["leer-salud"]
+    },
+    "status.clock": {
+      "page": "/status",
+      "anchor": "#h-ops-clock",
+      "title": "Hora de los equipos",
+      "intro": [
+        "Compara la hora de cada cámara o grabador con la de este PC. Una hora mal puesta puede invalidar una grabación como prueba.",
+        "Más de 2 segundos de diferencia es un aviso; más de 30 segundos, grave. También se avisa si el equipo tiene la hora puesta a mano en vez de sincronizarla (NTP)."
+      ],
+      "buttons": [
+        {"label": "Comprobar ahora", "text": "Mide de nuevo la hora de todos los equipos (se hace sola cada hora)."}
+      ]
+    },
+    "status.forecast": {
+      "page": "/status",
+      "anchor": "#h-ops-forecast",
+      "title": "Días de grabación",
+      "intro": [
+        "Calcula cuántos días de grabación caben en el disco con lo que están grabando de verdad las cámaras, y lo compara con los días que quieres conservar.",
+        "Ojo con la ley: conservar más de 30 días solo está permitido para acreditar un hecho concreto. Para eso están los tramos protegidos."
+      ],
+      "buttons": [
+        {"label": "Simular", "text": "Calcula qué pasaría si añades cámaras («¿y si pongo 4 cámaras más de 4 Mbit/s?»)."}
+      ]
+    },
+    "status.report": {
+      "page": "/status",
+      "anchor": "#h-ops-report",
+      "title": "Informe de salud del día",
+      "intro": [
+        "Resumen del día por cámara: tiempo grabado, minutos sin grabar, peor puntuación de imagen, hora y días guardados. Es el mismo informe que llega al panel central.",
+        "Sirve como parte de mantenimiento: lo puedes descargar en CSV o imprimir."
+      ],
+      "buttons": [
+        {"label": "Día", "text": "Elige el día del informe."},
+        {"label": "Descargar CSV", "text": "Para abrirlo con Excel."},
+        {"label": "Imprimir", "text": "Imprime la página o guárdala en PDF."}
+      ]
+    },
+    "status.diagnose": {
+      "page": "/status",
+      "anchor": "#h-ops-diagnose",
+      "title": "¿Por qué no conecta?",
+      "intro": [
+        "Revisa un equipo paso a paso: si responde en la red, si los puertos están abiertos, si el usuario y la contraseña valen, si el vídeo responde y en qué formato, la hora y si el vídeo llega al VMS.",
+        "La contraseña se prueba UNA sola vez: Hikvision y Dahua bloquean el usuario tras varios fallos."
+      ],
+      "buttons": [
+        {"label": "¿Por qué no conecta?", "text": "Hace la revisión y te dice el primer fallo, su causa probable y qué hacer."}
+      ],
+      "tasks": ["por-que-no-conecta"]
+    },
+    "status.security": {
+      "page": "/status",
+      "anchor": "#h-ops-security",
+      "title": "Auditoría de seguridad",
+      "intro": [
+        "Revisa los equipos dados de alta SIN atacarlos: contraseñas guardadas débiles o de fábrica, uso del usuario administrador, vídeo accesible sin contraseña, servicios peligrosos abiertos (Telnet, UPnP…) y firmware con fallos de seguridad conocidos.",
+        "El resultado nunca dice «seguro»: dice «Vulnerable», «Probablemente vulnerable», «Sin fallos conocidos en la tabla» o «Desconocido»."
+      ],
+      "buttons": [
+        {"label": "Hacer auditoría", "text": "Revisa todos los equipos. Tarda unos segundos por equipo."},
+        {"label": "Con usuario administrador", "text": "Opcional: escribe el usuario administrador de un equipo para revisar más ajustes (Telnet, UPnP, nube P2P). Se usa una vez y no se guarda."}
+      ],
+      "tasks": ["auditoria"]
+    },
+    "status.notifications": {
+      "page": "/status",
+      "anchor": "#h-ops-notify",
+      "title": "Avisos por correo y webhook",
+      "intro": [
+        "Te avisa de cámaras sin vídeo, cámaras tapadas o movidas, hora desajustada y problemas de disco.",
+        "Los avisos parecidos se agrupan en un solo mensaje («5 cámaras sin vídeo en la Tienda 37») y por defecto no llevan imágenes."
+      ],
+      "buttons": [
+        {"label": "Correo", "text": "Servidor de correo (SMTP), remitente y destinatarios."},
+        {"label": "Webhook", "text": "Dirección a la que el VMS envía cada aviso en JSON firmado (para la central receptora, Teams o n8n)."},
+        {"label": "Generar secreto", "text": "Crea la clave con la que se firma cada aviso. Cópiala en el receptor: solo se enseña una vez."},
+        {"label": "Probar", "text": "Envía un aviso de prueba por ese canal."},
+        {"label": "Reglas", "text": "Qué tipos de aviso salen, desde qué gravedad, por qué canales, cada cuánto se agrupan y en qué horas no se avisa (salvo lo grave)."}
+      ],
+      "tasks": ["configurar-avisos"]
+    }
+  },
+  "tasks": {
+    "anadir-camara": {
+      "title": "Añadir una cámara o un grabador",
+      "page": "/",
+      "steps": [
+        "En «Equipos y monitores», pulsa «Añadir equipo» (o «Buscar en la red» si no sabes la IP).",
+        "Elige el fabricante, escribe la IP y el usuario y la contraseña del equipo. Mejor un usuario de solo lectura creado para el VMS.",
+        "Pulsa «Probar conexión». Si sale en rojo, lee el motivo o usa «¿Por qué no conecta?».",
+        "Pulsa «Guardar equipo». Si es un grabador, marca los canales (cámaras) que quieres y pulsa «Importar seleccionados».",
+        "En «Estado del sistema» > «Salud de la imagen», pulsa «Fijar referencia» en las cámaras nuevas."
+      ]
+    },
+    "buscar-red": {
+      "title": "Buscar equipos en la red",
+      "page": "/",
+      "steps": [
+        "Pulsa «Buscar en la red» arriba a la derecha.",
+        "Pulsa «Buscar» y espera unos segundos.",
+        "Junto al equipo que quieras, pulsa «Añadir»: se rellena el formulario con su IP. Completa usuario y contraseña.",
+        "Si tu equipo no aparece, puede tener ONVIF desactivado: añádelo a mano con su IP."
+      ]
+    },
+    "asignar-monitor": {
+      "title": "Poner una cámara en un monitor",
+      "page": "/",
+      "steps": [
+        "Baja a «Monitores» y elige el monitor (1 a 4).",
+        "Elige cuántas cámaras quieres a la vez: 1, 4, 9 o 16.",
+        "Arrastra la cámara desde la lista de la izquierda a una celda (o elígela en el desplegable de la celda).",
+        "Pulsa «Guardar monitor». El muro de ese monitor cambia en unos segundos."
+      ]
+    },
+    "ver-grabaciones": {
+      "title": "Ver una grabación",
+      "page": "/playback",
+      "steps": [
+        "Entra en «Reproducción».",
+        "Elige la cámara y el día.",
+        "Pulsa en la línea de tiempo, sobre un tramo de color, el momento que quieres ver.",
+        "Usa −10 s / +10 s para afinar, o cambia la velocidad para buscar más rápido."
+      ]
+    },
+    "exportar-evidencia": {
+      "title": "Entregar una grabación a la policía (exportar evidencia)",
+      "page": "/playback",
+      "steps": [
+        "En «Reproducción», busca el momento del hecho.",
+        "En «Exportar evidencia», elige las cámaras y el intervalo (Desde/Hasta).",
+        "Escribe el motivo (obligatorio), el número de atestado si lo tienes y quién lo recibe.",
+        "Pulsa «Crear paquete», espera a que termine y pulsa «Descargar».",
+        "Copia el ZIP a un USB sin abrirlo ni cambiar nada. Imprime «acta.html», fírmala con quien lo recibe y guarda una copia.",
+        "Quien lo recibe puede comprobarlo abriendo «visor.html» del paquete: debe decir «Todo coincide»."
+      ]
+    },
+    "proteger-tramo": {
+      "title": "Guardar un tramo más tiempo (proteger)",
+      "page": "/playback",
+      "steps": [
+        "En «Reproducción», ve al momento del incidente.",
+        "En «Marcadores», pulsa «Añadir marcador aquí», elige la duración y marca «Proteger».",
+        "Escribe el motivo (por ejemplo, «denuncia del cliente») y los días que debe conservarse (90 por defecto).",
+        "Ese tramo ya no se borra con la retención. Al caducar se borra solo y queda anotado."
+      ]
+    },
+    "dibujar-zonas": {
+      "title": "Dibujar la línea de puerta o una zona de cola",
+      "page": "/analytics",
+      "steps": [
+        "Entra en «Analítica» y elige la cámara.",
+        "Marca «Analítica activada en esta cámara» y pulsa «Guardar ajustes de la cámara».",
+        "Línea de puerta: pulsa «+ Línea de puerta», haz clic en un extremo de la puerta y luego en el otro. Comprueba que la flecha ámbar apunta hacia DENTRO de la tienda (si no, marca «Invertir el sentido de entrada»).",
+        "Zona de cola: pulsa «+ Zona de cola» y haz clic en cada esquina de la zona donde espera la gente; ciérrala haciendo clic en el primer punto.",
+        "Ponle nombre y pulsa «Guardar regla». Nunca dibujes zonas sobre el puesto de caja (los trabajadores no se miden)."
+      ]
+    },
+    "leer-salud": {
+      "title": "Entender la salud de una cámara",
+      "page": "/status",
+      "steps": [
+        "Entra en «Estado del sistema» y baja a «Salud de la imagen».",
+        "Cada cámara tiene una puntuación de 0 a 100 y un estado con icono: ✔ Correcto (80 o más), ⚠ Aviso (50-79), ✖ Grave (menos de 50) y «Sin datos» si aún no tiene referencia.",
+        "La columna «Qué pasa» dice la causa en palabras: tapada, desenfocada (y cuánto), movida, en negro, congelada, fallo de infrarrojos…",
+        "Pulsa «Antes / Ahora» para comparar la imagen de referencia con la actual.",
+        "Si la cámara se recolocó a propósito, vuelve a pulsar «Fijar referencia»."
+      ]
+    },
+    "por-que-no-conecta": {
+      "title": "Una cámara no conecta",
+      "page": "/",
+      "steps": [
+        "En «Equipos», pulsa «¿Por qué no conecta?» en el equipo.",
+        "Lee el primer paso en rojo: dice qué falla (red, puerto, contraseña, ruta de vídeo, códec, hora…) y qué hacer.",
+        "Si la contraseña es incorrecta, NO pruebes muchas veces: tras 5 fallos Hikvision y Dahua bloquean el usuario 30 minutos.",
+        "Corrige lo indicado y vuelve a pulsar «Probar»."
+      ]
+    },
+    "configurar-avisos": {
+      "title": "Recibir avisos por correo o webhook",
+      "page": "/status",
+      "steps": [
+        "En «Estado del sistema» > «Avisos», rellena el servidor de correo (o la dirección del webhook) y activa el canal.",
+        "Escribe la contraseña del correo o pulsa «Generar secreto» para el webhook (cópialo en el receptor).",
+        "En «Reglas», marca qué avisos quieres y por qué canal.",
+        "Pulsa «Guardar» y después «Probar» para comprobar que llega."
+      ]
+    },
+    "auditoria": {
+      "title": "Revisar la seguridad de las cámaras",
+      "page": "/status",
+      "steps": [
+        "En «Estado del sistema» > «Auditoría de seguridad», pulsa «Hacer auditoría».",
+        "Revisa primero lo marcado como ✖ Vulnerable: suele ser contraseña de fábrica, vídeo sin contraseña o firmware antiguo con fallos explotados (KEV).",
+        "Cada fila dice qué hacer. Después de corregirlo, repite la auditoría."
+      ]
+    }
+  }
+}
