@@ -34,6 +34,7 @@ class B5Harness:
     chaos: RtspChaosServer
     discovered: list[DiscoveredDevice] = field(default_factory=list)
     clients: list[httpx.AsyncClient] = field(default_factory=list)
+    others: dict[str, HikvisionMock] = field(default_factory=dict)   # otro «equipo» en esa IP (p. ej. un impostor)
 
     async def login(self, username: str = "admin", password: str = ADMIN_PW) -> httpx.AsyncClient:
         c = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=("127.0.0.1", 50000)),
@@ -54,7 +55,8 @@ async def b5(settings: VmsSettings, credential_store: CredentialStore) -> AsyncI
     holder: dict[str, B5Harness] = {}
 
     def factory(device: Device, password: str) -> Any:
-        return client_for(device, password, transport=asgi(holder["h"].mock.app))
+        h = holder["h"]
+        return client_for(device, password, transport=asgi(h.others.get(device.host, h.mock).app))
 
     async def tester(device: DeviceBase, password: str) -> Any:
         return await test_device(device, password, transport=asgi(holder["h"].mock.app))
@@ -123,7 +125,8 @@ async def test_wrong_password_alta_sends_credentials_once(b5: B5Harness, caplog:
     r = await admin.post("/api/devices/test", json=_device_body(b5, password="Mala#Pass:9@/x"))
     assert r.status_code == 200 and r.json()["auth_ok"] is False
     assert b5.mock.auth.credentialed == 1 and b5.chaos.stats.credentialed == 0
-    # guardar con importación de canales: una sola petición con credenciales más (la del alta)
+    # La API hace lo que se le pide: si el cliente pide importar, es otro intento. La interfaz ya no lo pide tras
+    # una prueba rechazada (tests/vendors/test_device_form_ui.py: el flujo Probar→Guardar da credentialed == 1).
     r = await admin.post("/api/devices", json=_device_body(b5, password="Mala#Pass:9@/x", import_channels="all"))
     assert r.status_code == 201 and "Usuario o contraseña" in r.json()["details"]["import_error"]
     assert b5.mock.auth.credentialed == 2 and b5.chaos.stats.credentialed == 0
@@ -159,6 +162,10 @@ async def test_codec_fix_refused_for_profiles(b5: B5Harness) -> None:
     assert r.status_code == 422 and "códec" in r.json()["error"]["message"]
 
 
+async def _no_video() -> dict[str, Any]:
+    return {}
+
+
 async def test_identity_and_ip_change(b5: B5Harness) -> None:
     admin = await b5.login()
     r = await admin.post("/api/devices", json=_device_body(b5, password=TEST_PASSWORD, host="127.0.0.1"))
@@ -166,19 +173,22 @@ async def test_identity_and_ip_change(b5: B5Harness) -> None:
     r = await admin.post(f"/api/devices/{dev_id}/identity")
     assert r.status_code == 200 and r.json()["serial"] == b5.mock.serial and r.json()["mac"] == b5.mock.mac
     r2 = await admin.post("/api/devices", json={**_device_body(b5), "name": "Cámara 2", "host": "10.0.0.60",
-                                                "follow_ip": True, "kind": "camera"})
+                                                "follow_ip": True, "kind": "camera", "password": TEST_PASSWORD,
+                                                "import_channels": [1]})
     dev2 = r2.json()["id"]
 
     def mutate(cfg: Any) -> None:
         d = cfg.device(dev2)
         data = d.model_dump()
-        data["identity"] = {"serial": "", "mac": "AA-BB-CC-00-11-22", "source": "sadp"}
+        data["identity"] = {"serial": "", "mac": b5.mock.mac.upper().replace(":", "-"), "source": "sadp"}
+        data["serial"] = ""                         # solo se conoce la MAC (la dio SADP)
         cfg.devices = [Device.model_validate(data) if x.id == dev2 else x for x in cfg.devices]
 
     await b5.state.update_config(mutate, "devices")
+    b5.state.paths_status_safe = _no_video          # los dos equipos sin vídeo (candidatos a moverse)
     b5.discovered = [
         DiscoveredDevice(host="192.168.1.80", serial=b5.mock.serial, sources=["sadp"]),   # misma serie
-        DiscoveredDevice(host="10.0.0.61", mac="aa:bb:cc:00:11:22", sources=["wsd"]),     # misma MAC
+        DiscoveredDevice(host="10.0.0.61", mac=b5.mock.mac, sources=["wsd"]),             # misma MAC
         DiscoveredDevice(host="10.0.0.99", serial="OTRA-SERIE-123", sources=["dhip"]),
     ]
     assert (await admin.post(f"/api/devices/{dev_id}/move", json={"host": "192.168.1.80"})).status_code == 422
@@ -186,7 +196,8 @@ async def test_identity_and_ip_change(b5: B5Harness) -> None:
     props = {p["device_id"]: p for p in r.json()["proposals"]}
     assert set(props) == {dev_id, dev2}
     assert props[dev_id]["match"] == "serial" and props[dev_id]["applied"] is False
-    assert props[dev2]["match"] == "mac" and props[dev2]["applied"] is True            # follow_ip: sola
+    assert props[dev2]["match"] == "mac" and props[dev2]["applied"] is True, props[dev2]["message_es"]  # follow_ip: sola
+    assert props[dev2]["verified"] is True                                              # comprobada con la API
     devs = {d["id"]: d for d in (await admin.get("/api/devices")).json()}
     assert devs[dev2]["host"] == "10.0.0.61" and devs[dev_id]["host"] == "127.0.0.1"
     r = await admin.post(f"/api/devices/{dev_id}/move", json={"host": "192.168.1.80"})
@@ -210,7 +221,7 @@ async def test_ip_watch_loop_follows_devices_without_video(b5: B5Harness) -> Non
     def mutate(cfg: Any) -> None:
         d = cfg.device(dev_id)
         data = d.model_dump()
-        data["identity"] = {"serial": "SERIE-12345678", "mac": "", "source": "api"}
+        data["identity"] = {"serial": b5.mock.serial, "mac": "", "source": "api"}
         cfg.devices = [Device.model_validate(data) if x.id == dev_id else x for x in cfg.devices]
 
     await b5.state.update_config(mutate, "devices")
@@ -221,7 +232,7 @@ async def test_ip_watch_loop_follows_devices_without_video(b5: B5Harness) -> Non
         return {}                                                     # el equipo deja de dar vídeo
     b5.state.paths_status_safe = no_video
     assert await devices_without_video(b5.state) == {dev_id}
-    b5.discovered = [DiscoveredDevice(host="10.0.0.71", serial="SERIE-12345678", sources=["sadp"])]
+    b5.discovered = [DiscoveredDevice(host="10.0.0.71", serial=b5.mock.serial, sources=["sadp"])]
     task = asyncio.create_task(ip_watch_loop(b5.state, interval=0.05, timeout=0.1))
     try:
         for _ in range(100):
@@ -231,3 +242,91 @@ async def test_ip_watch_loop_follows_devices_without_video(b5: B5Harness) -> Non
     finally:
         task.cancel()
     assert b5.state.config().device(dev_id).host == "10.0.0.71"
+
+
+async def _follow_ip_camera(b5: B5Harness, admin: httpx.AsyncClient, host: str, **extra: Any) -> str:
+    r = await admin.post("/api/devices", json={**_device_body(b5), "name": f"Cam {host}", "host": host,
+                                               "kind": "camera", "follow_ip": True, "password": TEST_PASSWORD,
+                                               "import_channels": [1], **extra})
+    assert r.status_code == 201, r.text
+    dev_id = r.json()["id"]
+
+    def mutate(cfg: Any) -> None:
+        data = cfg.device(dev_id).model_dump()
+        data["identity"] = {"serial": b5.mock.serial, "mac": b5.mock.mac, "source": "api"}
+        cfg.devices = [Device.model_validate(data) if x.id == dev_id else x for x in cfg.devices]
+
+    await b5.state.update_config(mutate, "devices")
+    await b5.state.flush_apply()
+    return dev_id
+
+
+async def test_spoofed_discovery_never_gets_the_password_for_good(b5: B5Harness,
+                                                                  caplog: pytest.LogCaptureFixture) -> None:
+    """Un impostor en la LAN contesta SADP con la serie de la cámara: no se mueve sola, una sola petición
+    Digest (nunca Basic) llega al impostor y aceptar la propuesta exige volver a escribir la contraseña."""
+    caplog.set_level(logging.INFO)
+    admin = await b5.login()
+    dev_id = await _follow_ip_camera(b5, admin, "10.0.0.80")
+    b5.state.paths_status_safe = _no_video
+    impostor = HikvisionMock(password="no-la-sabe", serial="IMPOSTOR-000000000", kind="camera")
+    b5.others["10.0.0.81"] = impostor
+    b5.discovered = [
+        DiscoveredDevice(host="10.0.0.81", serial=b5.mock.serial, sources=["sadp"]),     # misma serie, otro equipo
+        DiscoveredDevice(host="203.0.113.9", serial=b5.mock.serial, sources=["dhip"]),   # IP de Internet
+        DiscoveredDevice(host="camara.example", serial=b5.mock.serial, sources=["wsd"]),  # nombre, no IP
+    ]
+    r = await admin.post("/api/devices/ip-check", json={"timeout_s": 1})
+    props = r.json()["proposals"]
+    assert [p["new_host"] for p in props] == ["10.0.0.81"]
+    p = props[0]
+    assert p["applied"] is False and p["verified"] is False and p["needs_password"] is True
+    assert "contraseña guardada no vale" in p["message_es"]
+    assert b5.state.config().device(dev_id).host == "10.0.0.80"
+    assert impostor.auth.credentialed == 1 and impostor.auth_mode == "digest"
+    # aceptar sin contraseña: se vuelve a comprobar (sin éxito) y se pide escribirla
+    r = await admin.post(f"/api/devices/{dev_id}/move", json={"host": "10.0.0.81"})
+    assert r.status_code == 422 and r.json()["error"]["details"]["fields"][0]["loc"] == ["password"]
+    assert b5.state.config().device(dev_id).host == "10.0.0.80"
+    # con la contraseña escrita por el administrador se aplica y se guarda la nueva
+    r = await admin.post(f"/api/devices/{dev_id}/move", json={"host": "10.0.0.81", "password": "Nueva#Clave:1"})
+    assert r.status_code == 200 and b5.state.config().device(dev_id).host == "10.0.0.81"
+    assert b5.state.creds.get_device_password(dev_id) == "Nueva#Clave:1"
+    moved = [json.loads(x.getMessage()) for x in caplog.records
+             if x.name == "vms.audit" and json.loads(x.getMessage())["event"] == "device_moved"]
+    assert len(moved) == 1 and moved[0]["auto"] is False and moved[0]["password_retyped"] is True
+    assert "Nueva#Clave:1" not in caplog.text and TEST_PASSWORD not in caplog.text
+
+
+async def test_follow_ip_only_moves_devices_without_video_and_audits(b5: B5Harness,
+                                                                     caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    admin = await b5.login()
+    dev_id = await _follow_ip_camera(b5, admin, "10.0.0.90")
+    b5.discovered = [DiscoveredDevice(host="10.0.0.91", serial=b5.mock.serial, sources=["sadp"])]
+    # con vídeo: solo propuesta, sin contactar con la IP nueva
+    before = b5.mock.auth.credentialed
+    props = (await admin.post("/api/devices/ip-check", json={"timeout_s": 1})).json()["proposals"]
+    assert props[0]["applied"] is False and props[0]["needs_password"] is False
+    assert b5.mock.auth.credentialed == before
+    assert b5.state.config().device(dev_id).host == "10.0.0.90"
+    # sin vídeo: se comprueba con la API y se aplica sola, con su línea de auditoría
+    b5.state.paths_status_safe = _no_video
+    props = (await admin.post("/api/devices/ip-check", json={"timeout_s": 1})).json()["proposals"]
+    assert props[0]["applied"] is True and props[0]["verified"] is True
+    assert b5.state.config().device(dev_id).host == "10.0.0.91"
+    events = [json.loads(x.getMessage()) for x in caplog.records if x.name == "vms.audit"]
+    moved = [e for e in events if e["event"] == "device_moved"]
+    assert len(moved) == 1 and moved[0]["auto"] is True and moved[0]["new_host"] == "10.0.0.91"
+
+
+async def test_follow_ip_never_automatic_with_basic_allowed(b5: B5Harness) -> None:
+    admin = await b5.login()
+    dev_id = await _follow_ip_camera(b5, admin, "10.0.0.95", allow_basic=True)
+    b5.state.paths_status_safe = _no_video
+    b5.discovered = [DiscoveredDevice(host="10.0.0.96", serial=b5.mock.serial, sources=["sadp"])]
+    before = b5.mock.auth.credentialed
+    props = (await admin.post("/api/devices/ip-check", json={"timeout_s": 1})).json()["proposals"]
+    assert props[0]["applied"] is False and props[0]["needs_password"] is True and "Basic" in props[0]["message_es"]
+    assert b5.mock.auth.credentialed == before                    # nada sale hacia la IP nueva
+    assert b5.state.config().device(dev_id).host == "10.0.0.95"

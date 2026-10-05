@@ -267,9 +267,21 @@ function deviceFormBody({ forTest = false } = {}) {
   return body;
 }
 
+// Si «Probar conexión» dijo que la contraseña es mala (o el usuario está bloqueado), «Guardar» no vuelve a
+// mandarla al equipo para importar canales mientras no cambien la contraseña, el usuario o la dirección:
+// sería un segundo intento con la misma contraseña (los equipos bloquean el usuario tras 3-5).
+const AUTH_FIELDS = new Set(["password", "username", "host", "http_port", "rtsp_port", "onvif_port", "https", "vendor"]);
+deviceForm.addEventListener("input", (ev) => {
+  if (AUTH_FIELDS.has(ev.target.name)) ctx.state.authRefused = false;
+});
+deviceForm.addEventListener("change", (ev) => {
+  if (AUTH_FIELDS.has(ev.target.name)) ctx.state.authRefused = false;
+});
+
 export function openDeviceDialog(dev = null, prefill = {}) {
   ctx.state.editingDevice = dev;
   ctx.state.testResult = null;
+  ctx.state.authRefused = false;
   portsTouched = false;
   deviceForm.reset();
   clearFieldErrors(deviceForm);
@@ -432,6 +444,7 @@ $("#btn-device-test").addEventListener("click", async (ev) => {
       const r = dev && !body.password ? await post(`/api/devices/${enc(dev.id)}/test`, undefined, { timeoutMs: 45000 })
         : await post("/api/devices/test", body, { timeoutMs: 45000 });
       ctx.state.testResult = r;
+      ctx.state.authRefused = !!r && (r.auth_ok === false || r.locked === true);
       renderTestResult(r);
     } catch (err) {
       if (!showFieldErrors(deviceForm, err)) setFormError($("#device-form-error"), errorText(err));
@@ -468,7 +481,10 @@ deviceForm.addEventListener("submit", async (ev) => {
         const manual = v ? v.manual_path : body.vendor === "generic";
         const testChans = $$("#test-channels input:checked").map((i) => Number(i.value));
         const tested = ctx.state.testResult && (ctx.state.testResult.channels || []).length;
-        if (!manual || tested) {
+        const refused = !!ctx.state.authRefused;
+        if (refused) {
+          // se guarda sin tocar el equipo; los canales se importan después con la contraseña corregida
+        } else if (!manual || tested) {
           if (tested) body.import_channels = testChans;
           else body.import_channels = body.kind === "camera" ? [1] : "all";
         }
@@ -487,6 +503,10 @@ deviceForm.addEventListener("submit", async (ev) => {
         const nCams = created && created.cameras ? created.cameras.length : 0;
         toast(`Equipo «${body.name}» añadido${nCams ? ` con ${nCams} ${nCams === 1 ? "cámara" : "cámaras"}` : ""}`, "ok");
         if (importError) toast(`No se pudieron importar los canales: ${importError}`, "bad", 9000);
+        if (refused) {
+          toast("Equipo guardado sin cámaras: la prueba rechazó la contraseña (o el usuario está bloqueado). "
+            + "Corrígela en «Editar» y después importa los canales.", "bad", 12000);
+        }
       }
       deviceDialog.close();
       await Promise.all([ctx.loadDevices(), ctx.loadCameras()]);
@@ -618,21 +638,42 @@ ipCheckBtn.addEventListener("click", async (ev) => {
           Para evitarlo, pon IP fija o reserva DHCP a cada equipo.</td></tr>`;
         return;
       }
+      // La IP llega por un descubrimiento sin autenticar: si el servidor no ha podido comprobar con la API
+      // que es el mismo equipo, pide volver a escribir la contraseña (no se reutiliza la guardada).
+      const pwInput = (i, host) => `<input type="password" class="input move-pw" style="max-width:13rem;margin-bottom:.35rem" data-move-pw="${i}" autocomplete="new-password"
+        placeholder="Contraseña del equipo" aria-label="Contraseña del equipo para ${esc(host)}">`;
       tbody.innerHTML = list.map((p, i) => `<tr>
         <td class="mono">${esc(p.old_host)} → ${esc(p.new_host)}</td>
         <td colspan="3">${esc(p.message_es)} <span class="muted small">(misma ${p.match === "serial" ? "serie" : "MAC"})</span></td>
         <td>${p.applied ? '<span class="pill ok">Actualizado solo</span>'
-          : `<button type="button" class="btn btn-sm btn-primary" data-move="${i}">Actualizar</button>`}</td></tr>`).join("");
+          : `${p.needs_password ? pwInput(i, p.new_host) : ""}
+             <button type="button" class="btn btn-sm btn-primary" data-move="${i}">Actualizar</button>`}</td></tr>`).join("");
       tbody.querySelectorAll("[data-move]").forEach((b) => b.addEventListener("click", async () => {
-        const p = list[Number(b.dataset.move)];
+        const i = Number(b.dataset.move);
+        const p = list[i];
+        const input = tbody.querySelector(`[data-move-pw="${i}"]`);
+        if (input && !input.value) {
+          toast("Escribe la contraseña del equipo para usar la IP nueva", "bad");
+          input.focus();
+          return;
+        }
         await busy(b, async () => {
           try {
-            await post(`/api/devices/${enc(p.device_id)}/move`, { host: p.new_host });
+            const payload = { host: p.new_host };
+            if (input) payload.password = input.value;
+            await post(`/api/devices/${enc(p.device_id)}/move`, payload);
             toast(`«${p.device_name}» ahora usa ${p.new_host}`, "ok");
+            if (input) input.remove();
             b.replaceWith(Object.assign(document.createElement("span"), { className: "pill ok", textContent: "Actualizado" }));
             await ctx.loadDevices();
           } catch (err) {
-            toastError(err, "No se pudo actualizar la IP");
+            if (!input && (err.fields || []).some((f) => (f.loc || []).includes("password"))) {
+              b.insertAdjacentHTML("beforebegin", pwInput(i, p.new_host));
+              tbody.querySelector(`[data-move-pw="${i}"]`).focus();
+              toast(err.message, "bad", 9000);
+            } else {
+              toastError(err, "No se pudo actualizar la IP");
+            }
           }
         });
       }));

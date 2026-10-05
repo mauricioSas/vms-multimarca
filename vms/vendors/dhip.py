@@ -49,7 +49,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from .netguard import RateLimiter, is_lan_destination
+from .netguard import RateLimiter, is_lan_destination, reply_host
 
 log = logging.getLogger("vms.vendors.dhip")
 
@@ -112,7 +112,9 @@ class DhipDevice:
 
 def to_device(info: dict[str, Any], source_ip: str) -> DhipDevice:
     ipv4 = info.get("IPv4Address")
-    host = ipv4.get("IPAddress") if isinstance(ipv4, dict) and ipv4.get("IPAddress") else source_ip
+    declared = str(ipv4.get("IPAddress") or "") if isinstance(ipv4, dict) else ""
+    # La IP de origen del datagrama manda sobre la que dice el paquete (falsificable): ver netguard.reply_host
+    host = reply_host(declared, source_ip)
 
     def num(key: str) -> int:
         v = info.get(key)

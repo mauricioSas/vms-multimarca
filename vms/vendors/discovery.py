@@ -27,6 +27,8 @@ from urllib.parse import unquote, urlsplit
 from vms.core.interfaces import DetectionHints, DiscoveredDevice
 from vms.core.models import Vendor
 
+from .netguard import reply_host
+
 log = logging.getLogger("vms.vendors.discovery")
 
 MULTICAST_ADDR = ("239.255.255.250", 3702)
@@ -64,8 +66,12 @@ def guess_vendor(scopes: list[str], model: str = "", name: str = "") -> Vendor:
     return guess_vendor_id(hints_for(scopes, model, name))[0]
 
 
-def parse_probe_matches(data: bytes, expected_relates_to: str | None = None) -> list[DiscoveredDevice]:
-    """Convierte un ProbeMatches en dispositivos. Ignora respuestas a otros Probe."""
+def parse_probe_matches(data: bytes, expected_relates_to: str | None = None,
+                        source_ip: str = "") -> list[DiscoveredDevice]:
+    """Convierte un ProbeMatches en dispositivos. Ignora respuestas a otros Probe.
+
+    `source_ip`: IP de origen del datagrama. Se prefiere la XAddr con esa IP; si ninguna la tiene, el equipo
+    se registra con la IP de origen (la del paquete es falsificable, ver `netguard.reply_host`)."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
@@ -99,9 +105,9 @@ def parse_probe_matches(data: bytes, expected_relates_to: str | None = None) -> 
             elif "/mac/" in low:
                 mac = value
         # Preferimos una XAddr IPv4 (algunas cámaras anuncian también IPv6 link-local)
-        xaddrs.sort(key=lambda x: ":" in (urlsplit(x).hostname or ""))
+        xaddrs.sort(key=lambda x: ((urlsplit(x).hostname or "") != source_ip, ":" in (urlsplit(x).hostname or "")))
         parts = urlsplit(xaddrs[0])
-        host = parts.hostname or ""
+        host = reply_host(parts.hostname or "", source_ip)
         if not host:
             continue
         port = parts.port or (443 if parts.scheme == "https" else 80)
@@ -121,7 +127,7 @@ class _Collector(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
         try:
-            devices = parse_probe_matches(data, self.message_id)
+            devices = parse_probe_matches(data, self.message_id, str(addr[0]))
         except Exception:  # noqa: BLE001 - un paquete raro no debe tumbar el escaneo
             log.exception("Error interpretando una respuesta WS-Discovery de %s", addr[0])
             return

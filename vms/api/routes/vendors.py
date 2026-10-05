@@ -12,8 +12,10 @@ administrador (rol A):
   GET  /api/devices/{id}/codec-fix                → cambios de los últimos 30 días (para «Deshacer»)
   POST /api/devices/{id}/codec-fix/undo           → repone la copia
   POST /api/devices/ip-check                      → busca en la red equipos que cambiaron de IP (serie/MAC);
-                                                    aplica sola la IP nueva si el equipo tiene follow_ip
-  POST /api/devices/{id}/move                     → acepta una propuesta reciente de cambio de IP
+                                                    aplica sola la IP nueva si el equipo tiene follow_ip, no da
+                                                    vídeo y la API autenticada confirma que es el mismo equipo
+  POST /api/devices/{id}/move                     → acepta una propuesta reciente de cambio de IP; sin
+                                                    `password`, solo si la API confirma la identidad
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from starlette.responses import Response
 
 from vms.core.audit import audit
@@ -34,7 +36,7 @@ from vms.core.models import AppConfig, Device, DeviceIdentity, DeviceKind
 from vms.core.naming import mtx_path
 from vms.vendors import registry
 from vms.vendors.codecfix import CodecFixer
-from vms.vendors.ipwatch import IpChangeProposal, apply_move, find_moves
+from vms.vendors.ipwatch import IpChangeProposal, apply_move, cannot_verify, find_moves, verify_at_new_host
 
 from ..deps import Principal, get_state, require_admin
 from ..errors import json_response
@@ -179,22 +181,40 @@ class IpCheckRequest(BaseModel):
 
 class MoveRequest(BaseModel):
     host: str = Field(min_length=1, max_length=253)
+    password: SecretStr | None = Field(None, max_length=256)
 
 
-async def run_ip_check(state: AppState, timeout: float = 3.0, *, user: str = "sistema") -> list[IpChangeProposal]:
-    """Descubre, propone y aplica las de los equipos con `follow_ip`. La usa la ruta y puede usarla un bucle
-    en segundo plano del backend (petición al arquitecto: arrancarlo en el lifespan)."""
+async def run_ip_check(state: AppState, timeout: float = 3.0, *, user: str = "sistema",
+                       only: set[str] | None = None) -> list[IpChangeProposal]:
+    """Descubre y propone; aplica sola la IP nueva de los equipos con `follow_ip` que **no dan vídeo** y cuya
+    identidad se comprueba en la IP nueva con la API autenticada (ver `vms.vendors.ipwatch`). La usan la ruta
+    y el bucle en segundo plano (`only` = equipos sin vídeo)."""
     found = await state.discoverer(timeout)
     cfg = state.config()
-    proposals = find_moves(cfg.devices, found)
-    auto = [pr for pr in proposals if pr.follow_ip]
+    proposals = find_moves(cfg.devices, found, only=only)
+    stale = only if only is not None else await devices_without_video(state)
+    now = datetime.now(timezone.utc)
+    auto: list[IpChangeProposal] = []
+    for pr in proposals:
+        dev = cfg.device(pr.device_id)
+        if dev is None:
+            continue
+        if not pr.follow_ip or pr.device_id not in stale:
+            # solo propuesta: no se contacta con la IP nueva hasta que el administrador la acepte
+            pr.needs_password = cannot_verify(apply_move(dev, pr, now)) is not None
+            continue
+        reason = await _check_move(state, dev, pr, now)
+        if reason is None:
+            auto.append(pr)
+        else:
+            pr.needs_password = True
+            pr.message_es += f" No se ha cambiado sola: {reason}."
     if auto:
-        now = datetime.now(timezone.utc)
-
         def mutate(c: AppConfig) -> None:
             for pr in auto:
                 cur = c.device(pr.device_id)
-                if cur is not None and cur.host == pr.old_host:
+                if cur is not None and cur.host == pr.old_host \
+                        and not any(d.id != cur.id and d.host.lower() == pr.new_host.lower() for d in c.devices):
                     moved = apply_move(cur, pr, now)
                     c.devices = [moved if d.id == cur.id else d for d in c.devices]
                     pr.applied = True
@@ -202,10 +222,22 @@ async def run_ip_check(state: AppState, timeout: float = 3.0, *, user: str = "si
         await state.update_config(mutate, "devices")
         for pr in auto:
             if pr.applied:
-                log.warning("Equipo «%s» seguido de %s a %s (misma %s) por «%s»", pr.device_name, pr.old_host,
-                            pr.new_host, "serie" if pr.match == "serial" else "MAC", user)
+                audit("device_moved", user=user, ip="", device_id=pr.device_id, old_host=pr.old_host,
+                      new_host=pr.new_host, match=pr.match, auto=True, verified=True)
+                log.warning("Equipo «%s» seguido de %s a %s (misma %s, comprobada con la API) por «%s»",
+                            pr.device_name, pr.old_host, pr.new_host, "serie" if pr.match == "serial" else "MAC", user)
+        if any(pr.applied for pr in auto):
+            state.schedule_apply()
     _proposals[id(state)] = (time.monotonic(), list(proposals))
     return list(proposals)
+
+
+async def _check_move(state: AppState, dev: Device, pr: IpChangeProposal, now: datetime) -> str | None:
+    """None si el equipo de la IP nueva es el mismo (API autenticada); si no, el motivo en español."""
+    reason = await verify_at_new_host(apply_move(dev, pr, now), state.creds.get_device_password(dev.id),
+                                      state.client_factory)
+    pr.verified = reason is None
+    return reason
 
 
 async def devices_without_video(state: AppState) -> set[str]:
@@ -231,8 +263,9 @@ async def ip_watch_loop(state: AppState, interval: float = 120.0, timeout: float
     while True:
         await asyncio.sleep(interval)
         try:
-            if await devices_without_video(state):
-                await run_ip_check(state, timeout)
+            stale = await devices_without_video(state)
+            if stale:
+                await run_ip_check(state, timeout, only=stale)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - la vigilancia no puede tumbar el backend
@@ -257,6 +290,14 @@ async def move_device(device_id: str, body: MoveRequest, request: Request, p: Pr
         raise ValidationFailed("No hay una propuesta reciente para esa IP: vuelve a buscar en la red "
                                "(«Buscar cambios de IP») y acepta la propuesta.")
     now = datetime.now(timezone.utc)
+    password = body.password.get_secret_value() if body.password is not None else None
+    if password is None:
+        # La contraseña guardada solo va a la IP nueva si la API autenticada confirma que es el mismo equipo
+        # (misma regla que PATCH /api/devices: no se manda a otra dirección sin que el administrador lo decida).
+        reason = await _check_move(state, _device(state.config(), device_id), proposal, now)
+        if reason is not None:
+            msg = f"Vuelve a escribir la contraseña del equipo para usar {proposal.new_host}: {reason}"
+            raise ValidationFailed(msg, details={"fields": [{"loc": ["password"], "msg": msg}]})
 
     def mutate(cfg: AppConfig) -> Device:
         cur = _device(cfg, device_id)
@@ -269,8 +310,14 @@ async def move_device(device_id: str, body: MoveRequest, request: Request, p: Pr
         return moved
 
     moved = await state.update_config(mutate, "devices")
-    audit("device_moved", user=p.username, ip=client_ip(request), device_id=device_id,
-          old_host=proposal.old_host, new_host=proposal.new_host, match=proposal.match)
+    if password is not None:
+        if password:
+            state.creds.set_device_password(device_id, password)
+        else:
+            state.creds.delete_device_password(device_id)
+    audit("device_moved", user=p.username, ip=client_ip(request), device_id=device_id, old_host=proposal.old_host,
+          new_host=proposal.new_host, match=proposal.match, auto=False, verified=password is None,
+          password_retyped=password is not None)
     log.info("Equipo «%s» movido de %s a %s por «%s»", moved.name, proposal.old_host, proposal.new_host, p.username)
     state.schedule_apply()
     return json_response({"device_id": device_id, "host": moved.host})

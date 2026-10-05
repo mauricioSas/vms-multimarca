@@ -109,3 +109,51 @@ async def test_public_destinations_are_never_probed(module: object, caplog: pyte
                                                                         else {"broadcast": False}))
     assert found == [] and "fuera de la red local" in caplog.text
     await asyncio.sleep(0)
+
+
+# --------------------------------------------------------------------------- IP falsificada en el paquete
+def test_discovery_uses_the_datagram_source_ip_not_the_declared_one() -> None:
+    """Revisión B5: un paquete SADP/DHIP/WSD puede decir cualquier IP; manda la de origen del datagrama."""
+    from tools.mocks.dhip import reply
+    from tools.mocks.sadp import probe_match
+    from vms.vendors.discovery import parse_probe_matches
+
+    info = dhip.parse_reply(reply(DhipTarget(host="203.0.113.9")))
+    assert dhip.to_device(info, "192.168.1.50").host == "192.168.1.50"
+    assert dhip.to_device(info, "").host == "203.0.113.9"                 # sin origen: lo declarado
+    assert dhip.to_device(info, "127.0.0.1").host == "203.0.113.9"        # respondedor local (pruebas)
+    data = probe_match("U", SadpTarget(host="198.51.100.7"))
+    assert sadp.parse_probe_match(data, "U", "192.168.1.51").host == "192.168.1.51"  # type: ignore[union-attr]
+    wsd = (b'<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
+           b'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"><e:Body><d:ProbeMatches><d:ProbeMatch>'
+           b"<d:Types>dn:NetworkVideoTransmitter</d:Types><d:XAddrs>http://203.0.113.9/onvif/device_service "
+           b"http://192.168.1.52:8080/onvif/device_service</d:XAddrs></d:ProbeMatch></d:ProbeMatches>"
+           b"</e:Body></e:Envelope>")
+    found = parse_probe_matches(wsd, None, "192.168.1.52")
+    assert found[0].host == "192.168.1.52" and found[0].http_port == 8080   # la XAddr que coincide con el origen
+    assert parse_probe_matches(wsd, None, "192.168.1.53")[0].host == "192.168.1.53"
+
+
+def test_lan_unicast_guard() -> None:
+    from vms.vendors.netguard import is_lan_unicast
+    assert is_lan_unicast("192.168.1.80") and is_lan_unicast("10.0.0.9") and is_lan_unicast("169.254.3.4")
+    for bad in ("203.0.113.9", "8.8.8.8", "camara.example", "127.0.0.1", "239.255.255.250", "0.0.0.0", ""):
+        assert not is_lan_unicast(bad), bad
+
+
+def test_find_moves_ignores_devices_still_seen_at_their_ip_and_non_lan_hosts() -> None:
+    """Revisión B5: un NVR que sigue en su IP y además anuncia otra (interfaz PoE) no se mueve."""
+    from vms.core.interfaces import DiscoveredDevice
+    from vms.core.models import Device
+    from vms.vendors.ipwatch import find_moves
+
+    serial = "DS-7608NI-K2SN0123456789"
+    dev = Device.model_validate({"name": "NVR", "vendor": "hikvision", "host": "192.168.1.20", "follow_ip": True,
+                                 "identity": {"serial": serial, "mac": "", "source": "api"}})
+    both = [DiscoveredDevice(host="192.168.1.20", serial=serial, sources=["wsd"]),
+            DiscoveredDevice(host="192.168.254.1", serial=serial, sources=["sadp"])]
+    assert find_moves([dev], both) == []
+    assert find_moves([dev], both[1:])[0].new_host == "192.168.254.1"
+    public = [DiscoveredDevice(host="203.0.113.9", serial=serial, sources=["dhip"]),
+              DiscoveredDevice(host="nvr.example", serial=serial, sources=["wsd"])]
+    assert find_moves([dev], public) == []

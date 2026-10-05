@@ -19,7 +19,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
-from .netguard import RateLimiter, is_lan_destination
+from .netguard import RateLimiter, is_lan_destination, reply_host
 
 log = logging.getLogger("vms.vendors.sadp")
 
@@ -54,8 +54,10 @@ def _norm_mac(mac: str) -> str:
     return ":".join(hexes[i:i + 2] for i in range(0, len(hexes), 2)) if len(hexes) == 12 else mac.lower()
 
 
-def parse_probe_match(data: bytes, expected_uuid: str | None = None) -> SadpDevice | None:
-    """Una respuesta `ProbeMatch` → SadpDevice; None si no es una respuesta SADP (o es a otra sonda)."""
+def parse_probe_match(data: bytes, expected_uuid: str | None = None, source_ip: str = "") -> SadpDevice | None:
+    """Una respuesta `ProbeMatch` → SadpDevice; None si no es una respuesta SADP (o es a otra sonda).
+
+    `source_ip`: IP de origen del datagrama; manda sobre la que el paquete dice tener (ver `reply_host`)."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
@@ -65,9 +67,12 @@ def parse_probe_match(data: bytes, expected_uuid: str | None = None) -> SadpDevi
     raw = {child.tag: (child.text or "").strip() for child in root}
     if expected_uuid and raw.get("Uuid") and raw["Uuid"].upper() != expected_uuid.upper():
         return None
-    host = raw.get("IPv4Address", "")
+    declared = raw.get("IPv4Address", "")
+    host = reply_host(declared, source_ip)
     if not host:
         return None
+    if declared and host != declared:
+        log.debug("SADP: la respuesta de %s dice ser %s; se usa la IP de origen", host, declared)
 
     def num(key: str, default: int = 0) -> int:
         v = raw.get(key, "")
@@ -89,7 +94,7 @@ class _Collector(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
         try:
-            dev = parse_probe_match(data, self.probe_uuid)
+            dev = parse_probe_match(data, self.probe_uuid, str(addr[0]))
         except Exception:  # noqa: BLE001 - un paquete raro no tumba la búsqueda
             log.exception("Respuesta SADP ilegible")
             return
