@@ -13,7 +13,9 @@ from vms.core.models import AppConfig, RetentionSettings, SystemSettings, known_
 
 from ..deps import Principal, get_state, require_admin, require_operator
 from ..errors import json_response
+from ..permissions import filter_by_camera
 from ..state import AppState
+from .analytics import scoped_analytics_status
 
 log = logging.getLogger("vms.api.system")
 router = APIRouter(prefix="/api", tags=["system"])
@@ -38,11 +40,12 @@ async def health(state: AppState = Depends(get_state)) -> Response:
 
 
 @router.get("/status")
-async def status(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+async def status(p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
     ov = await state.overview()
     return json_response({
         "status": ov["status"], "problems": ov["problems"], "version": __version__, "uptime_s": state.uptime_s(),
-        "engine": ov["engine"], "disk": ov["disk"], "cameras": ov["cameras"], "analytics": ov["analytics"],
+        "engine": ov["engine"], "disk": ov["disk"], "cameras": filter_by_camera(state, p, ov["cameras"], "live"),
+        "analytics": scoped_analytics_status(state, p, ov["analytics"]),
         "credential_backend": state.creds.backend_name, "config_warning": state.repo.load_warning,
     })
 

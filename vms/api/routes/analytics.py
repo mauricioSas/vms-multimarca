@@ -16,6 +16,7 @@ from vms.core.models import AnalyticsRule, AppConfig, CameraAnalytics, LineRule,
 
 from ..deps import Principal, get_state, require_admin, require_internal, require_operator
 from ..errors import json_response
+from ..permissions import ensure_camera_access, filter_by_camera
 from ..state import AppState
 from .cameras import get_camera
 
@@ -52,12 +53,12 @@ def _check_rule(rule: LineRule | ZoneRule) -> None:
 
 
 @router.get("/analytics/rules")
-async def list_rules(camera_id: str | None = None, _: Principal = Depends(require_operator),
+async def list_rules(camera_id: str | None = None, p: Principal = Depends(require_operator),
                      state: AppState = Depends(get_state)) -> Response:
     rules = state.config().analytics_rules
     if camera_id:
         rules = [r for r in rules if r.camera_id == camera_id]
-    return json_response(rules)
+    return json_response(filter_by_camera(state, p, rules, "live"))
 
 
 @router.post("/analytics/rules")
@@ -77,9 +78,14 @@ async def create_rule(body: dict[str, Any] = Body(...), p: Principal = Depends(r
 
 
 @router.get("/analytics/rules/{rule_id}")
-async def get_rule(rule_id: str, _: Principal = Depends(require_operator),
+async def get_rule(rule_id: str, p: Principal = Depends(require_operator),
                    state: AppState = Depends(get_state)) -> Response:
-    return json_response(_get_rule(state.config(), rule_id))
+    rule = _get_rule(state.config(), rule_id)
+    try:
+        ensure_camera_access(state, p, rule.camera_id, "live")
+    except NotFoundError:
+        raise NotFoundError("La regla no existe") from None
+    return json_response(rule)
 
 
 @router.put("/analytics/rules/{rule_id}")
@@ -119,10 +125,10 @@ async def delete_rule(rule_id: str, p: Principal = Depends(require_admin),
 
 
 @router.get("/analytics/cameras")
-async def list_analytics_cameras(_: Principal = Depends(require_operator),
+async def list_analytics_cameras(p: Principal = Depends(require_operator),
                                  state: AppState = Depends(get_state)) -> Response:
     # Solo las cámaras con ajustes guardados (las demás usan los valores por defecto de CameraAnalytics)
-    return json_response(state.config().analytics_cameras)
+    return json_response(filter_by_camera(state, p, state.config().analytics_cameras, "live"))
 
 
 @router.put("/analytics/cameras/{camera_id}")
@@ -142,8 +148,16 @@ async def put_analytics_camera(camera_id: str, body: dict[str, Any] = Body(...),
 
 
 @router.get("/analytics/status")
-async def analytics_status(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
-    return json_response(state.analytics_status())
+async def analytics_status(p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
+    return json_response(scoped_analytics_status(state, p, state.analytics_status()))
+
+
+def scoped_analytics_status(state: AppState, p: Principal, status: dict[str, Any]) -> dict[str, Any]:
+    """El estado de la analítica con solo las cámaras del ámbito del usuario (CONTRATO §18.8)."""
+    cams = status.get("cameras")
+    if isinstance(cams, list):
+        status = {**status, "cameras": filter_by_camera(state, p, cams, "live")}
+    return status
 
 
 def build_internal_config(state: AppState) -> dict[str, Any]:

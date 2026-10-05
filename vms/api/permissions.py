@@ -1,6 +1,7 @@
 """Permisos por cámara (CONTRATO §18.8). Dueño: B6.
 
-Las rutas de cámaras, vivo, grabaciones y descargas ya llaman a estas funciones desde la fase 0 de
+Las rutas de cámaras, vivo, grabaciones, descargas, muros (`PUT /api/walls/{monitor}`), analítica
+(listas de reglas y de cámaras, estado) y `/api/status` ya llaman a estas funciones desde la fase 0 de
 la v2, así B6 solo cambia este archivo para activar el ámbito por cámara (`User.camera_scope`).
 
 Comportamiento actual (fase 0): todo permitido, exactamente como en la v1. Reglas que implementa B6:
@@ -11,13 +12,14 @@ Comportamiento actual (fase 0): todo permitido, exactamente como en la v1. Regla
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Literal
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal, TypeVar
 
 from .deps import Principal
 from .state import AppState
 
 CameraAction = Literal["live", "playback", "export", "bookmark"]
+T = TypeVar("T")
 
 
 def camera_allowed(state: AppState, principal: Principal, camera_id: str, action: CameraAction) -> bool:
@@ -36,3 +38,17 @@ def visible_camera_ids(state: AppState, principal: Principal, camera_ids: Iterab
                        action: CameraAction) -> set[str]:
     """Subconjunto de `camera_ids` que el usuario puede ver para `action`."""
     return {cid for cid in camera_ids if camera_allowed(state, principal, cid, action)}
+
+
+def filter_by_camera(state: AppState, principal: Principal, items: Iterable[T], action: CameraAction,
+                     key: str = "camera_id") -> list[T]:
+    """Solo los elementos (modelos o diccionarios con `key`) de cámaras visibles para `action`.
+
+    Los elementos sin cámara (sin `key`) se conservan.
+    """
+    out: list[T] = []
+    for item in items:
+        cid: Any = item.get(key) if isinstance(item, Mapping) else getattr(item, key, None)
+        if not isinstance(cid, str) or camera_allowed(state, principal, cid, action):
+            out.append(item)
+    return out

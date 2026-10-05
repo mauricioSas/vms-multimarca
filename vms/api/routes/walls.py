@@ -11,6 +11,7 @@ from vms.core.models import MAX_MONITORS, WALL_SLOTS, AppConfig, WallLayout, Wal
 
 from ..deps import Principal, get_state, require_kiosk, require_operator
 from ..errors import json_response
+from ..permissions import visible_camera_ids
 from ..state import AppState
 
 log = logging.getLogger("vms.api.walls")
@@ -46,8 +47,13 @@ async def put_wall(monitor: int, body: WallUpdate, p: Principal = Depends(requir
         wall = _get_wall(cfg, monitor)
         if body.cells is not None:
             ids = {c.id for c in cfg.cameras}
+            # Una cámara que se AÑADE al muro tiene que estar en el ámbito del usuario («live», CONTRATO
+            # §18.8): si no, el kiosco se la enseñaría. Fuera del ámbito = «no existe» (no se revela). Las que
+            # ya estaban (puestas por un administrador) se pueden dejar o quitar.
+            added = {c for c in body.cells if c is not None and c in ids and c not in wall.cells}
+            allowed = visible_camera_ids(state, p, added, "live")
             bad = [{"loc": ["cells", i], "msg": "La cámara no existe"} for i, c in enumerate(body.cells)
-                   if c is not None and c not in ids]
+                   if c is not None and (c not in ids or (c in added and c not in allowed))]
             if bad:
                 raise ValidationFailed("Hay cámaras que no existen en el muro", details={"fields": bad})
             wall.cells = (list(body.cells) + [None] * WALL_SLOTS)[:WALL_SLOTS]
