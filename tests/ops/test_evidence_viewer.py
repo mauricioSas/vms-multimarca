@@ -1,12 +1,14 @@
 """`visor.html` del paquete de evidencias en Chromium SIN red (criterio 4 de B6).
 
 Se abre como archivo local (`file://`) en un contexto sin conexión, se le da la carpeta del paquete y
-tiene que decir «Todo coincide» (huellas SHA-256 y firma Ed25519 con WebCrypto). Después se cambia UN byte
+tiene que decir «Todo coincide» (huellas SHA-256 y firma Ed25519 con WebCrypto) solo cuando además se le da
+el key_id de la tienda; sin él, avisa de que la clave no está comprobada. Después se cambia UN byte
 de un segmento y tiene que detectarlo. La marca de agua va superpuesta (no quemada en el vídeo).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -49,12 +51,14 @@ def _build(tmp: Path) -> Path:
     return out / exp.export_id
 
 
-def _check(browser: Any, folder: Path) -> tuple[str, str, Any]:
+def _check(browser: Any, folder: Path, key_id: str | None = None) -> tuple[str, str, Any]:
     ctx = browser.new_context(offline=True, locale="es-ES")
     page = ctx.new_page()
     requests: list[str] = []
     page.on("request", lambda r: requests.append(r.url))
     page.goto((folder / "visor.html").as_uri())
+    if key_id is not None:
+        page.fill("#expect-key", key_id)
     page.set_input_files("#pick", str(folder))
     page.wait_for_function("document.body.dataset.verify && document.body.dataset.verify !== 'info'", timeout=20000)
     state = page.evaluate("document.body.dataset.verify")
@@ -67,14 +71,22 @@ def _check(browser: Any, folder: Path) -> tuple[str, str, Any]:
 
 def test_viewer_verifies_offline_and_detects_a_changed_byte(browser: Any, tmp_path: Path) -> None:
     folder = _build(tmp_path)
+    kid = json.loads((folder / "manifiesto.json").read_text(encoding="utf-8"))["signing_key"]["key_id"]
+    # sin la clave de la tienda: huellas y firma coherentes, pero NUNCA «Todo coincide» (revisión B6)
     state, text, wm = _check(browser, folder)
+    assert state == "warn" and "NO está comprobada" in text and kid[:16] in text, text
+    assert "ana" in wm and "ev-20261004-abcdef" in wm, "marca de agua con usuario, fecha y paquete"
+    # con la clave de la tienda: correcto
+    state, text, _ = _check(browser, folder, key_id=kid)
     assert state == "ok", text
     assert "Todo coincide" in text and "firma válida" in text
-    assert "ana" in wm and "ev-20261004-abcdef" in wm, "marca de agua con usuario, fecha y paquete"
+    # con otra clave: no te fíes
+    state, text, _ = _check(browser, folder, key_id="ab" * 32)
+    assert state == "mismatch" and "OTRA clave" in text, text
 
     seg = next((folder / "video" / "cam-00000001" / "segments").glob("*.mp4"))
     data = bytearray(seg.read_bytes())
     data[1234] ^= 0xFF
     seg.write_bytes(bytes(data))
-    state, text, _ = _check(browser, folder)
+    state, text, _ = _check(browser, folder, key_id=kid)
     assert state == "mismatch" and "no coinciden" in text and "1 de" in text, text

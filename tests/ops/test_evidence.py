@@ -92,7 +92,11 @@ async def test_export_package_verifies_and_detects_a_changed_byte(api: Harness, 
     assert {"visor.html", "acta.html", "LEEME.txt", "clave-publica.pem"} <= paths
     assert m.signing_key["key_id"] == api.state.paths.base.joinpath("ops", "evidence-key.json").read_text() \
         .split('"key_id": "')[1].split('"')[0]
-    assert cli.main(["verify", str(pkg)]) == 0
+    kid = m.signing_key["key_id"]
+    # sin --key-id la clave no está anclada: «coherente» (3), nunca «correcto» (0)
+    assert cli.main(["verify", str(pkg)]) == 3
+    assert cli.main(["verify", str(pkg), "--key-id", kid]) == 0
+    assert verify(pkg, expect_key_id=kid).key_checked and not verify(pkg).key_checked
 
     # audit.log: quién, qué, motivo y huella del manifiesto
     line = next(json.loads(r.getMessage()) for r in caplog.records
@@ -116,6 +120,45 @@ async def test_export_package_verifies_and_detects_a_changed_byte(api: Harness, 
     assert not verify(extra).ok
     # otra instalación (key_id distinto) → falla con --key-id
     assert cli.main(["verify", str(pkg), "--key-id", "00" * 32]) == 1
+
+    # regresión (revisión B6): paquete falsificado y RE-FIRMADO con otra clave → nunca «correcto»
+    resigned = _forge_resigned(pkg, tmp_path / "t4.zip", segs[0])
+    res = verify(resigned)
+    assert res.ok and not res.key_checked          # coherente consigo mismo…
+    assert cli.main(["verify", str(resigned)]) == 3                     # …pero sin clave comprobada
+    assert cli.main(["verify", str(resigned), "--key-id", kid]) == 1    # y con la clave de la tienda, falla
+
+
+def _forge_resigned(src: Path, dst: Path, segment: str) -> Path:
+    """Lo que haría un falsificador: cambia un segmento, recalcula huellas, genera otra clave y re-firma."""
+    import hashlib
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from vms.ops.evidence.keys import key_id_of, public_pem
+    with zipfile.ZipFile(src) as zi:
+        prefix = zi.namelist()[0].split("/", 1)[0] + "/"
+        files = {i.filename[len(prefix):]: zi.read(i.filename) for i in zi.infolist() if not i.is_dir()}
+    data = bytearray(files[segment])
+    data[50] ^= 0xFF
+    files[segment] = bytes(data)
+    key = Ed25519PrivateKey.generate()
+    raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    files["clave-publica.pem"] = public_pem(raw).encode()
+    manifest = json.loads(files["manifiesto.json"])
+    for f in manifest["files"]:
+        if f["path"] in files:
+            f["sha256"] = hashlib.sha256(files[f["path"]]).hexdigest()
+            f["bytes"] = len(files[f["path"]])
+    manifest["signing_key"] = {"algorithm": "ed25519", "public_key": base64.b64encode(raw).decode(),
+                               "key_id": key_id_of(raw)}
+    files["manifiesto.json"] = json.dumps(manifest).encode()
+    files["manifiesto.sig"] = base64.b64encode(key.sign(files["manifiesto.json"]))
+    with zipfile.ZipFile(dst, "w") as zo:
+        for name, d in files.items():
+            zo.writestr(prefix + name, d)
+    return dst
 
 
 def _rewrite(src: Path, dst: Path, fn: Any, add: tuple[str, bytes] | None = None) -> Path:

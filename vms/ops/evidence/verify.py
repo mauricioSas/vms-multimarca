@@ -6,8 +6,13 @@ Comprueba, sin red:
    manifiesto, y que `clave-publica.pem` y `key_id` corresponden a esa clave;
 3. el tamaño y el SHA-256 de CADA archivo listado, y que no sobra ninguno.
 
-Opcional: `--key-id <hex>` exige además que la firma sea de una instalación concreta (la que conoce la
-central por el latido). Sale con 0 si todo cuadra, 1 si algo no coincide y 2 si no se puede leer.
+La clave pública viaja DENTRO del paquete: quien falsifique un paquete puede re-firmarlo con otra clave y
+el paquete seguirá siendo «coherente». Por eso la firma solo prueba el origen si el `key_id` coincide con el
+de la instalación que lo exportó, que la central conoce por el latido (`payload.evidence_key`) y que figura en
+el acta original. `--key-id <hex>` hace esa comprobación (`VerifyResult.key_checked`).
+
+Códigos de salida del CLI: 0 = todo cuadra y la clave es la esperada; 3 = huellas y firma coherentes pero la
+clave NO se ha comprobado (falta `--key-id`); 1 = algo no coincide; 2 = no se puede leer.
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ class VerifyResult:
     manifest: EvidenceManifest | None = None
     errors: list[str] = field(default_factory=list)
     checked_files: int = 0
+    key_checked: bool = False         # el key_id de la firma coincide con el esperado (--key-id)
 
     def fail(self, msg: str) -> None:
         self.ok = False
@@ -130,8 +136,12 @@ def verify(path: str | Path, *, expect_key_id: str | None = None) -> VerifyResul
         kid = key_id_of(pub_raw)
         if manifest.signing_key.get("key_id") != kid:
             res.fail("El key_id del manifiesto no corresponde a su clave pública")
-        if expect_key_id and expect_key_id.lower() != kid:
-            res.fail(f"La firma es de otra instalación (key_id {kid[:16]}…, se esperaba {expect_key_id[:16]}…)")
+        if expect_key_id:
+            if expect_key_id.strip().lower() != kid:
+                res.fail(f"La firma es de otra instalación (key_id {kid[:16]}…, se esperaba "
+                         f"{expect_key_id.strip()[:16]}…)")
+            else:
+                res.key_checked = True
         try:
             pem = serialization.load_pem_public_key(src.read(PUBKEY))
             if not isinstance(pem, Ed25519PublicKey) or pem.public_bytes(
@@ -162,4 +172,6 @@ def verify(path: str | Path, *, expect_key_id: str | None = None) -> VerifyResul
     extra = sorted(present - listed - {MANIFEST, SIGNATURE})
     for name in extra:
         res.fail(f"Archivo que no está en el manifiesto: {name}")
+    if not res.ok:
+        res.key_checked = False
     return res

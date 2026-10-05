@@ -14,3 +14,5 @@
   .card { border: 0; padding: 0; }
   body { background: #fff; color: #000; }
 }
+.ops-key{margin-top:4px;font-size:12px}
+.ops-key code{display:block;word-break:break-all;user-select:all}

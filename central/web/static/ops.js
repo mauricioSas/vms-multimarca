@@ -45,9 +45,14 @@
       const problems = r.problems.length
         ? el("ul", { class: "ops-problems" }, r.problems.map((p) => el("li", {}, p)))
         : el("span", { class: "muted" }, "Sin problemas");
+      // key_id de la firma de evidencias: para comprobar que un paquete exportado viene de esta tienda
+      const key = r.evidence_key_id
+        ? el("details", { class: "ops-key" }, el("summary", {}, "Clave de evidencias"),
+          el("code", { class: "mono" }, r.evidence_key_id))
+        : null;
       return el("tr", {},
         el("td", {}, check),
-        el("td", {}, el("a", { href: `/sites/${encodeURIComponent(r.site_id)}` }, r.name), el("div", { class: "muted" }, r.code || r.site_id)),
+        el("td", {}, el("a", { href: `/sites/${encodeURIComponent(r.site_id)}` }, r.name), el("div", { class: "muted" }, r.code || r.site_id), key),
         el("td", {}, badge(r.status)),
         el("td", { class: "num" }, r.score_min ?? "—"),
         el("td", { class: "num" }, `${r.cameras_critical} / ${r.cameras_warning}`),

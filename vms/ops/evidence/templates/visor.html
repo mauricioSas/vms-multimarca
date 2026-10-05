@@ -39,6 +39,10 @@ ul.files li button:hover{text-decoration:underline}
 .drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;margin-top:10px}
 .drop.over{border-color:var(--accent)}
 dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{color:var(--muted)}
+.keybox{border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}
+.keybox label{display:block;font-weight:600;margin-bottom:4px}
+.keybox input{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font:12px ui-monospace,Consolas,monospace}
+.keyid{font-family:ui-monospace,Consolas,monospace;font-size:13px;font-weight:700;word-break:break-all}
 </style>
 </head>
 <body>
@@ -54,6 +58,12 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
     <label class="btn" for="pick">Abrir la carpeta del paquete</label>
     <input type="file" id="pick" webkitdirectory directory multiple hidden>
     <div class="drop" id="drop">o arrastra aquí la carpeta</div>
+    <div class="keybox">
+      <label for="expect-key">Clave de la tienda (key_id)</label>
+      <input id="expect-key" autocomplete="off" spellcheck="false" placeholder="Pega el key_id que muestra la central o el acta original">
+      <p class="muted" style="margin:6px 0 0">La firma solo demuestra que el paquete viene de la tienda si su clave
+        es la de la tienda: un paquete falsificado puede venir firmado con otra clave.</p>
+    </div>
     <div id="result" class="banner info" role="status" aria-live="polite">Todavía no se ha comprobado nada.</div>
     <dl id="meta"></dl>
     <ul class="files" id="files" aria-label="Archivos del paquete"></ul>
@@ -132,12 +142,14 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
       ["Exportado por", `${m.created_by} · ${fmtDate(m.created_at)}`],
       ["Motivo", m.reason || ""],
       ["Caso", m.case_ref || "—"],
+      ["Clave de firma (key_id)", (m.signing_key && m.signing_key.key_id) || "—"],
     ];
     const dl = $("meta");
     dl.textContent = "";
     for (const [k, v] of rows) {
       const dt = document.createElement("dt"); dt.textContent = k;
       const dd = document.createElement("dd"); dd.textContent = v; dd.style.margin = "0";
+      if (k.startsWith("Clave")) dd.className = "keyid";
       dl.append(dt, dd);
     }
   }
@@ -191,6 +203,7 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
   async function load(fileList) {
     state.files = new Map();
     state.results = {};
+    state.done = false;
     for (const f of fileList) state.files.set(relPath(f), f);
     const mf = state.files.get("manifiesto.json");
     if (!mf) {
@@ -223,24 +236,44 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{c
     }
     const listed = new Set(m.files.map((f) => f.path).concat(["manifiesto.json", "manifiesto.sig"]));
     const extra = [...state.files.keys()].filter((p) => !listed.has(p));
+    state.bad = bad; state.extra = extra.length; state.done = true;
+    summarize();
+    const firstMp4 = m.files.find((f) => /\.mp4$/i.test(f.path) && !/\/segments\//.test(f.path)) || m.files.find((f) => /\.mp4$/i.test(f.path));
+    if (firstMp4 && state.files.get(firstMp4.path)) play(firstMp4.path);
+  }
+
+  // Resultado: «ok» SOLO si huellas, firma y clave de la tienda coinciden. Sin la clave esperada, «warn».
+  function summarize() {
+    const m = state.manifest;
+    if (!m || !state.done) return;
+    const bad = state.bad || 0;
     const n = m.files.length;
-    if (bad || state.signature === "bad" || state.signature === "missing") {
+    const kid = String((m.signing_key && m.signing_key.key_id) || "").toLowerCase();
+    const expected = $("expect-key").value.trim().toLowerCase();
+    state.keyCheck = !expected ? "unchecked" : expected === kid ? "match" : "other";
+    if (bad || state.signature === "bad" || state.signature === "missing" || state.keyCheck === "other") {
       state.summary = "mismatch";
       const parts = [];
       if (bad) parts.push(`${bad} de ${n} archivos no coinciden con el manifiesto (modificados o ausentes)`);
       if (state.signature === "bad") parts.push("la firma del manifiesto NO es válida");
       if (state.signature === "missing") parts.push("falta la firma (manifiesto.sig)");
-      setResult("bad", `Atención: ${parts.join("; ")}. Este paquete no está íntegro.`);
+      if (state.keyCheck === "other") parts.push("la firma es de OTRA clave, no de la de la tienda");
+      setResult("bad", `Atención: ${parts.join("; ")}. No te fíes de este paquete.`);
     } else if (state.signature === "unsupported") {
       state.summary = "ok-unsigned";
       setResult("warn", `Las ${n} huellas coinciden. Este navegador no puede comprobar la firma Ed25519: compruébala con «python -m vms.ops.evidence verify».`);
+    } else if (state.keyCheck === "unchecked") {
+      state.summary = "ok-key-unchecked";
+      setResult("warn", `Las ${n} huellas coinciden y la firma es válida con la clave que trae el paquete, pero esa ` +
+        `clave NO está comprobada: compara su key_id (${kid.slice(0, 16)}…) con el de la tienda en la central o ` +
+        "en el acta original y pégalo arriba.");
     } else {
       state.summary = "ok";
-      setResult("ok", `Todo coincide: ${n} archivos íntegros y firma válida.` + (extra.length ? ` (Hay ${extra.length} archivos que no son del paquete.)` : ""));
+      setResult("ok", `Todo coincide: ${n} archivos íntegros y firma válida de la clave de la tienda.` +
+        (state.extra ? ` (Hay ${state.extra} archivos que no son del paquete.)` : ""));
     }
-    const firstMp4 = m.files.find((f) => /\.mp4$/i.test(f.path) && !/\/segments\//.test(f.path)) || m.files.find((f) => /\.mp4$/i.test(f.path));
-    if (firstMp4 && state.files.get(firstMp4.path)) play(firstMp4.path);
   }
+  $("expect-key").addEventListener("input", summarize);
 
   $("pick").addEventListener("change", (e) => { if (e.target.files.length) load(e.target.files); });
 
