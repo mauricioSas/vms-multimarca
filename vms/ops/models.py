@@ -184,6 +184,10 @@ class Bookmark(_Ops):
     protect_reason: str = Field("", max_length=300)
     protect_until: datetime | None = None    # por defecto +90 días
     case_ref: str = Field("", max_length=64) # número de caso o atestado
+    protected_by: str = ""
+    protected_files: list[str] = Field(default_factory=list)   # nombres de segmento copiados o enlazados
+    released_at: datetime | None = None      # cuándo dejó de estar protegido (caducidad o a mano)
+    release_reason: str = ""
 
 
 class BookmarkCreate(BaseModel):
@@ -195,6 +199,16 @@ class BookmarkCreate(BaseModel):
     protect_reason: str = Field("", max_length=300)
     protect_days: int = Field(90, ge=1, le=3650)
     case_ref: str = Field("", max_length=64)
+
+
+class BookmarkUpdate(BaseModel):
+    """PATCH /api/bookmarks/{id} (administrador; se audita). Solo se aplican los campos presentes."""
+
+    note: str | None = Field(None, max_length=500)
+    case_ref: str | None = Field(None, max_length=64)
+    protect: bool | None = None               # True = proteger (o ampliar); False = dejar de proteger
+    protect_reason: str | None = Field(None, max_length=300)
+    protect_days: int | None = Field(None, ge=1, le=3650)
 
 
 # =========================================================================== §18.7 exportación de evidencias
@@ -234,6 +248,8 @@ class EvidenceManifest(BaseModel):
     cameras: list[dict[str, object]]          # camera_id, name, device, codec, clock_skew_s medido
     files: list[EvidenceFile]
     signing_key: dict[str, str]               # algorithm "ed25519", public_key (base64), key_id (sha256 de la pública)
+    pc_clock: dict[str, object] = Field(default_factory=dict)   # última medida de la hora del PC (si la hay)
+    notes_es: list[str] = Field(default_factory=list)          # avisos (p. ej. «no se pudo unir el MP4»)
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -247,6 +263,9 @@ class EvidenceExport(_Ops):
     download_url: str | None = None
     bytes: int | None = None
     error: str = ""
+    sha256_manifest: str | None = None
+    files: int | None = None
+    finished_at: datetime | None = None
 
 
 # =========================================================================== §18.10 avisos

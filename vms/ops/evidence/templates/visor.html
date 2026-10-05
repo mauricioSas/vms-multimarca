@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor de evidencias · VMS Multimarca</title>
+<!-- Visor autocontenido del paquete de evidencias (CONTRATO §18.7). No usa la red: todo el código está
+     en este archivo. Comprueba los SHA-256 de manifiesto.json con crypto.subtle y, si el navegador
+     lo admite, la firma Ed25519. La marca de agua se SUPERPONE al vídeo: el archivo original no cambia. -->
+<style>
+:root{--bg:#0f1418;--panel:#182027;--line:#2a343d;--text:#e8edf1;--muted:#9aa7b2;--ok:#2fb36d;--warn:#e3a72f;--bad:#e5484d;--accent:#3b8bea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header h1{font-size:18px;margin:0}
+.muted{color:var(--muted)} .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+main{display:grid;grid-template-columns:minmax(280px,380px) 1fr;gap:16px;padding:16px 20px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px 14px;font:inherit;font-weight:600;cursor:pointer}
+.btn:focus-visible{outline:3px solid #fff}
+.banner{border-radius:8px;padding:10px 12px;margin:12px 0;font-weight:600;display:flex;gap:8px;align-items:flex-start}
+.banner.ok{background:rgba(47,179,109,.15);border:1px solid var(--ok)}
+.banner.warn{background:rgba(227,167,47,.15);border:1px solid var(--warn)}
+.banner.bad{background:rgba(229,72,77,.18);border:1px solid var(--bad)}
+.banner.info{background:rgba(59,139,234,.12);border:1px solid var(--accent)}
+ul.files{list-style:none;margin:8px 0 0;padding:0;max-height:55vh;overflow:auto}
+ul.files li{display:flex;gap:8px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--line)}
+ul.files li button{background:none;border:0;color:var(--text);text-align:left;cursor:pointer;font:inherit;flex:1;padding:0}
+ul.files li button:hover{text-decoration:underline}
+.st{font-size:12px;font-weight:700;white-space:nowrap}
+.st.ok{color:var(--ok)} .st.bad{color:var(--bad)} .st.pend{color:var(--muted)}
+.stage{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:16/9}
+.stage video{width:100%;height:100%;display:block;background:#000}
+.wm{position:absolute;inset:0;pointer-events:none;overflow:hidden;display:flex;flex-wrap:wrap;align-content:space-around;
+  justify-content:space-around;transform:rotate(-18deg) scale(1.3);opacity:.28}
+.wm span{color:#fff;font-weight:700;font-size:15px;text-shadow:0 0 3px #000;padding:28px 18px;white-space:nowrap}
+.wm-bar{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#fff;font-size:12px;padding:4px 8px;pointer-events:none}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;margin-top:10px}
+.drop.over{border-color:var(--accent)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0 0} dt{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Visor de evidencias</h1>
+  <span class="muted" id="hdr-info"></span>
+</header>
+<main>
+  <section class="card" aria-labelledby="h-check">
+    <h2 id="h-check" style="margin:0 0 6px;font-size:16px">1. Comprobar el paquete</h2>
+    <p class="muted" style="margin:0 0 10px">Elige la carpeta donde descomprimiste el paquete (la que contiene este
+      archivo). Nada sale de este equipo: las huellas se calculan aquí mismo.</p>
+    <label class="btn" for="pick">Abrir la carpeta del paquete</label>
+    <input type="file" id="pick" webkitdirectory directory multiple hidden>
+    <div class="drop" id="drop">o arrastra aquí la carpeta</div>
+    <div id="result" class="banner info" role="status" aria-live="polite">Todavía no se ha comprobado nada.</div>
+    <dl id="meta"></dl>
+    <ul class="files" id="files" aria-label="Archivos del paquete"></ul>
+  </section>
+  <section class="card" aria-labelledby="h-play">
+    <h2 id="h-play" style="margin:0 0 10px;font-size:16px">2. Ver los vídeos</h2>
+    <div class="stage" id="stage">
+      <video id="video" controls playsinline aria-label="Vídeo de la evidencia"></video>
+      <div class="wm" id="wm" aria-hidden="true"></div>
+      <div class="wm-bar" id="wm-bar"></div>
+    </div>
+    <p class="muted" id="play-hint">Elige un archivo de vídeo en la lista. Si no se ve (por ejemplo, vídeo H.265), ábrelo
+      con VLC: el archivo es el original.</p>
+  </section>
+</main>
+<script id="info" type="application/json">/*__INFO__*/{}</script>
+<script>
+"use strict";
+(() => {
+  const INFO = JSON.parse(document.getElementById("info").textContent || "{}");
+  const $ = (id) => document.getElementById(id);
+  const state = { files: new Map(), manifest: null, results: {}, signature: "pending", summary: "idle" };
+  window.__visor = state;
+
+  function fmtDate(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso || "";
+    try { return d.toLocaleString("es-ES", { timeZone: INFO.timezone || undefined }); } catch { return d.toLocaleString("es-ES"); }
+  }
+  $("hdr-info").textContent = INFO.export_id ? `${INFO.export_id} · ${INFO.site || ""}` : "";
+
+  function setResult(kind, text) {
+    const r = $("result");
+    r.className = "banner " + kind;
+    r.textContent = (kind === "ok" ? "✔ " : kind === "bad" ? "✖ " : kind === "warn" ? "⚠ " : "") + text;
+    document.body.dataset.verify = kind === "ok" ? "ok" : kind === "bad" ? "mismatch" : kind;
+  }
+
+  function relPath(file) {
+    // webkitRelativePath = «carpeta/sub/archivo»: se quita la primera carpeta (la del paquete)
+    const p = (file.webkitRelativePath || file.name).replace(/\\/g, "/");
+    const i = p.indexOf("/");
+    return i >= 0 ? p.slice(i + 1) : p;
+  }
+
+  function hex(buf) {
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function sha256(file) {
+    return hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
+  }
+
+  function b64(s) {
+    const bin = atob(String(s).trim());
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  async function verifySignature(manifestBytes, sigText, pubB64) {
+    try {
+      const key = await crypto.subtle.importKey("raw", b64(pubB64), { name: "Ed25519" }, false, ["verify"]);
+      return (await crypto.subtle.verify({ name: "Ed25519" }, key, b64(sigText), manifestBytes)) ? "ok" : "bad";
+    } catch (err) {
+      console.warn("Firma Ed25519 no comprobable en este navegador", err);
+      return "unsupported";
+    }
+  }
+
+  function renderMeta(m) {
+    const rows = [
+      ["Sede", (m.site && m.site.name) || ""],
+      ["Desde", fmtDate(m.range_utc && m.range_utc[0])],
+      ["Hasta", fmtDate(m.range_utc && m.range_utc[1])],
+      ["Exportado por", `${m.created_by} · ${fmtDate(m.created_at)}`],
+      ["Motivo", m.reason || ""],
+      ["Caso", m.case_ref || "—"],
+    ];
+    const dl = $("meta");
+    dl.textContent = "";
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v; dd.style.margin = "0";
+      dl.append(dt, dd);
+    }
+  }
+
+  function renderFiles() {
+    const ul = $("files");
+    ul.textContent = "";
+    for (const f of state.manifest.files) {
+      const li = document.createElement("li");
+      const st = document.createElement("span");
+      const r = state.results[f.path];
+      st.className = "st " + (r === "ok" ? "ok" : r ? "bad" : "pend");
+      st.textContent = r === "ok" ? "✔ íntegro" : r === "missing" ? "✖ falta" : r === "changed" ? "✖ modificado" : "…";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = f.path;
+      b.className = "mono";
+      if (/\.mp4$/i.test(f.path)) b.addEventListener("click", () => play(f.path));
+      else b.disabled = true;
+      li.append(st, b);
+      ul.append(li);
+    }
+  }
+
+  function watermark(m) {
+    const text = `${m.created_by} · ${fmtDate(m.created_at)} · ${m.export_id}`;
+    const wm = $("wm");
+    wm.textContent = "";
+    for (let i = 0; i < 24; i++) {
+      const s = document.createElement("span");
+      s.textContent = text;
+      wm.append(s);
+    }
+    $("wm-bar").textContent = `Copia de evidencia — ${text}`;
+  }
+
+  let currentUrl = null;
+  function play(path) {
+    const file = state.files.get(path);
+    if (!file) return;
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(file);
+    const v = $("video");
+    v.src = currentUrl;
+    v.play().catch(() => {});
+    $("play-hint").textContent = state.results[path] === "ok"
+      ? `Reproduciendo ${path} (íntegro).`
+      : `Reproduciendo ${path}: OJO, este archivo NO coincide con el manifiesto.`;
+  }
+
+  async function load(fileList) {
+    state.files = new Map();
+    state.results = {};
+    for (const f of fileList) state.files.set(relPath(f), f);
+    const mf = state.files.get("manifiesto.json");
+    if (!mf) {
+      setResult("bad", "En esa carpeta no está manifiesto.json: elige la carpeta del paquete completo.");
+      return;
+    }
+    const manifestBytes = new Uint8Array(await mf.arrayBuffer());
+    let m;
+    try {
+      m = JSON.parse(new TextDecoder().decode(manifestBytes));
+    } catch {
+      setResult("bad", "manifiesto.json está dañado.");
+      return;
+    }
+    state.manifest = m;
+    renderMeta(m);
+    watermark(m);
+    renderFiles();
+    setResult("info", "Comprobando las huellas…");
+    const sigFile = state.files.get("manifiesto.sig");
+    state.signature = sigFile ? await verifySignature(manifestBytes, await sigFile.text(), m.signing_key && m.signing_key.public_key) : "missing";
+    let bad = 0;
+    for (const f of m.files) {
+      const file = state.files.get(f.path);
+      if (!file) { state.results[f.path] = "missing"; bad++; renderFiles(); continue; }
+      const same = file.size === f.bytes && (await sha256(file)) === f.sha256;
+      state.results[f.path] = same ? "ok" : "changed";
+      if (!same) bad++;
+      renderFiles();
+    }
+    const listed = new Set(m.files.map((f) => f.path).concat(["manifiesto.json", "manifiesto.sig"]));
+    const extra = [...state.files.keys()].filter((p) => !listed.has(p));
+    const n = m.files.length;
+    if (bad || state.signature === "bad" || state.signature === "missing") {
+      state.summary = "mismatch";
+      const parts = [];
+      if (bad) parts.push(`${bad} de ${n} archivos no coinciden con el manifiesto (modificados o ausentes)`);
+      if (state.signature === "bad") parts.push("la firma del manifiesto NO es válida");
+      if (state.signature === "missing") parts.push("falta la firma (manifiesto.sig)");
+      setResult("bad", `Atención: ${parts.join("; ")}. Este paquete no está íntegro.`);
+    } else if (state.signature === "unsupported") {
+      state.summary = "ok-unsigned";
+      setResult("warn", `Las ${n} huellas coinciden. Este navegador no puede comprobar la firma Ed25519: compruébala con «python -m vms.ops.evidence verify».`);
+    } else {
+      state.summary = "ok";
+      setResult("ok", `Todo coincide: ${n} archivos íntegros y firma válida.` + (extra.length ? ` (Hay ${extra.length} archivos que no son del paquete.)` : ""));
+    }
+    const firstMp4 = m.files.find((f) => /\.mp4$/i.test(f.path) && !/\/segments\//.test(f.path)) || m.files.find((f) => /\.mp4$/i.test(f.path));
+    if (firstMp4 && state.files.get(firstMp4.path)) play(firstMp4.path);
+  }
+
+  $("pick").addEventListener("change", (e) => { if (e.target.files.length) load(e.target.files); });
+
+  // Arrastrar la carpeta (Chrome/Edge): se recorre el árbol con webkitGetAsEntry
+  const drop = $("drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    const out = [];
+    async function walk(entry, prefix) {
+      if (entry.isFile) {
+        const file = await new Promise((res, rej) => entry.file(res, rej));
+        Object.defineProperty(file, "webkitRelativePath", { value: prefix + file.name });
+        out.push(file);
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        let batch;
+        do {
+          batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+          for (const child of batch) await walk(child, prefix + entry.name + "/");
+        } while (batch.length);
+      }
+    }
+    for (const item of e.dataTransfer.items) {
+      const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+      if (entry) await walk(entry, "");
+    }
+    if (out.length) load(out);
+  });
+})();
+</script>
+</body>
+</html>

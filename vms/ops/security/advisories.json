@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "generated_at": "2026-10-05T00:00:00Z",
+  "source": "Unmanned Studio",
+  "kev_catalog_version": "2026.10.04",
+  "nvd_notice": "This product uses the NVD API but is not endorsed or certified by the NVD.",
+  "advisories": [
+    {
+      "id": "ADV-2026-001",
+      "vendor": "hikvision",
+      "model_regex": "^DS-2CD",
+      "families": ["IPC_G3", "IPC_H5", "IPC_E2"],
+      "compare": "build_date",
+      "fixed_build_date": "2021-06-28",
+      "fixed_version": null,
+      "cves": ["CVE-2021-36260"],
+      "kev": true,
+      "kev_date_added": "2022-01-10",
+      "cvss": 9.8,
+      "epss": null,
+      "vendor_advisory_url": "https://www.hikvision.com/us-en/support/cybersecurity/security-advisory/security-notification-command-injection-vulnerability-in-some-hikvision-products/security-notification-command-injection-vulnerability-in-some-hikvision-products/",
+      "reviewed": "2026-10-05",
+      "notes_es": "Inyección de órdenes en la web del equipo sin autenticación. Corregido en los firmware con build 210628 o posterior de las familias afectadas (IPC_G3, IPC_H5, IPC_E2 y otras del aviso). NVD no publica rangos de versión para este CVE: se compara la fecha del build. Confirma la familia exacta con la herramienta de búsqueda del aviso de Hikvision."
+    },
+    {
+      "id": "ADV-2026-002",
+      "vendor": "hikvision",
+      "model_regex": "^DS-2CD",
+      "families": [],
+      "compare": "build_date",
+      "fixed_build_date": null,
+      "fixed_version": null,
+      "cves": ["CVE-2017-7921"],
+      "kev": true,
+      "kev_date_added": "2026-03-05",
+      "cvss": null,
+      "epss": null,
+      "vendor_advisory_url": "",
+      "reviewed": "2026-10-05",
+      "notes_es": "Autenticación incorrecta en firmware antiguos de cámaras Hikvision (2014-2017). La tabla aún no tiene la versión corregida verificada: el resultado es «Desconocido» si el firmware es anterior a 2018. Actualiza el firmware a la última versión del fabricante."
+    },
+    {
+      "id": "ADV-2026-003",
+      "vendor": "dahua",
+      "model_regex": "^(DH-)?IPC-H[A-Z]*5",
+      "families": ["IPC-HX5XXX"],
+      "compare": "version",
+      "fixed_build_date": null,
+      "fixed_version": "2.820.0000000.18.R.210705",
+      "cves": ["CVE-2021-33044", "CVE-2021-33045"],
+      "kev": true,
+      "kev_date_added": "2024-08-21",
+      "cvss": 9.8,
+      "epss": null,
+      "vendor_advisory_url": "",
+      "reviewed": "2026-10-05",
+      "notes_es": "Omisión de la autenticación durante el inicio de sesión. NVD lo da para la familia IPC-HX5XXX con versión anterior a 2.820.0000000.18.R.210705. Para otros modelos, consulta el aviso de seguridad (PSIRT) de Dahua."
+    }
+  ]
+}
