@@ -1,7 +1,8 @@
 //! Lógica portable de la prueba S4: puntero `active.json`, diario mínimo y vigilancia de la versión a prueba.
 //!
-//! Formato del puntero (subconjunto de CONTRATO §13.3):
-//! `{"schema":1,"active":"1.1.0","previous":"1.0.0","trial":true,"trial_since":1759622400,"updated":1759622400}`
+//! Formato del puntero (CONTRATO §13.4, mismos nombres de campo):
+//! `{"schema":1,"active":"1.1.0","previous":"1.0.0","trial":true,"trial_since_unix":1759622400,"updated_unix":1759622400}`
+//! Los campos que esta prueba no usa (p. ej. el objeto `updater`) se conservan tal cual al reescribirlo.
 //! El diario (`journal.json`) solo guarda aquí `last_good`, que es lo que necesita el arrancador
 //! para reconstruir un puntero ausente o corrupto.
 
@@ -16,7 +17,7 @@ pub fn now_s() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pointer {
     pub schema: u32,
     pub active: String,
@@ -25,9 +26,12 @@ pub struct Pointer {
     #[serde(default)]
     pub trial: bool,
     #[serde(default)]
-    pub trial_since: Option<u64>,
+    pub trial_since_unix: Option<u64>,
     #[serde(default)]
-    pub updated: u64,
+    pub updated_unix: u64,
+    /// Campos desconocidos (`updater`, los de versiones futuras): se conservan (CONTRATO §13.4).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -66,7 +70,7 @@ impl Layout {
 
     pub fn write_pointer(&self, p: &Pointer) -> io::Result<()> {
         let mut p = p.clone();
-        p.updated = now_s();
+        p.updated_unix = now_s();
         atomic_write(&self.pointer(), &serde_json::to_vec_pretty(&p).map_err(io::Error::other)?)
     }
 
@@ -86,14 +90,7 @@ impl Layout {
             Ok(p) if !p.active.is_empty() && self.version_dir(&p.active).is_dir() => Ok((p, false)),
             _ => {
                 let j = self.read_journal()?;
-                let p = Pointer {
-                    schema: 1,
-                    active: j.last_good,
-                    previous: None,
-                    trial: false,
-                    trial_since: None,
-                    updated: 0,
-                };
+                let p = Pointer { schema: 1, active: j.last_good, ..Pointer::default() };
                 self.write_pointer(&p)?;
                 Ok((p, true))
             }
@@ -108,8 +105,9 @@ impl Layout {
             active: to.to_string(),
             previous: Some(cur.active),
             trial: true,
-            trial_since: Some(now_s()),
-            updated: 0,
+            trial_since_unix: Some(now_s()),
+            updated_unix: 0,
+            extra: cur.extra,
         };
         self.write_pointer(&p)?;
         Ok(p)
@@ -119,7 +117,7 @@ impl Layout {
     pub fn confirm(&self) -> io::Result<Pointer> {
         let (mut p, _) = self.load_or_rebuild()?;
         p.trial = false;
-        p.trial_since = None;
+        p.trial_since_unix = None;
         self.write_pointer(&p)?;
         self.write_journal(&Journal { last_good: p.active.clone() })?;
         Ok(p)
@@ -137,8 +135,9 @@ impl Layout {
             active: target,
             previous: Some(p.active),
             trial: false,
-            trial_since: None,
-            updated: 0,
+            trial_since_unix: None,
+            updated_unix: 0,
+            extra: p.extra,
         };
         self.write_pointer(&np)?;
         Ok(np)
@@ -147,7 +146,34 @@ impl Layout {
 
 /// ¿Ha pasado el plazo para confirmar la versión a prueba?
 pub fn trial_expired(p: &Pointer, now: u64, timeout: Duration) -> bool {
-    p.trial && p.trial_since.is_some_and(|t| now.saturating_sub(t) >= timeout.as_secs())
+    p.trial && p.trial_since_unix.is_some_and(|t| now.saturating_sub(t) >= timeout.as_secs())
+}
+
+/// Espera creciente entre relanzamientos de un hijo que cae: 1, 2, 5, 10 y 30 s (como `vmsctl run`,
+/// CONTRATO §14.1). Vuelve a empezar si el hijo aguantó `stable` en marcha.
+pub struct Backoff {
+    step: usize,
+    stable: Duration,
+}
+
+pub const BACKOFF_S: [u64; 5] = [1, 2, 5, 10, 30];
+
+impl Backoff {
+    pub fn new(stable: Duration) -> Self {
+        Self { step: 0, stable }
+    }
+    /// Espera antes de relanzar un hijo que cayó tras `ran` en marcha.
+    pub fn after_crash(&mut self, ran: Duration) -> Duration {
+        if ran >= self.stable {
+            self.step = 0;
+        }
+        let wait = BACKOFF_S[self.step.min(BACKOFF_S.len() - 1)];
+        self.step += 1;
+        Duration::from_secs(wait)
+    }
+    pub fn reset(&mut self) {
+        self.step = 0;
+    }
 }
 
 /// Ventana de caídas: «3 caídas en 10 minutos».
@@ -219,15 +245,7 @@ mod tests {
     #[test]
     fn pointer_to_a_missing_version_is_rebuilt() {
         let (_d, l) = layout_with(&["1.0.0"]);
-        l.write_pointer(&Pointer {
-            schema: 1,
-            active: "9.9.9".into(),
-            previous: None,
-            trial: false,
-            trial_since: None,
-            updated: 0,
-        })
-        .unwrap();
+        l.write_pointer(&Pointer { schema: 1, active: "9.9.9".into(), ..Pointer::default() }).unwrap();
         assert_eq!(l.load_or_rebuild().unwrap().0.active, "1.0.0");
     }
 
@@ -261,10 +279,38 @@ mod tests {
             active: "1.1.0".into(),
             previous: Some("1.0.0".into()),
             trial: true,
-            trial_since: Some(1000),
-            updated: 0,
+            trial_since_unix: Some(1000),
+            ..Pointer::default()
         };
         assert!(!trial_expired(&p, 1010, Duration::from_secs(30)));
         assert!(trial_expired(&p, 1030, Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn pointer_uses_contract_names_and_keeps_unknown_fields() {
+        let (_d, l) = layout_with(&["1.0.0", "1.1.0"]);
+        let contract = r#"{"schema": 1, "active": "1.0.0", "previous": null, "trial": false,
+            "trial_since_unix": null, "updated_unix": 1763600000,
+            "updater": {"slot": "b", "previous_slot": "a", "trial": false, "trial_since_unix": null}}"#;
+        std::fs::write(l.pointer(), contract).unwrap();
+        l.switch("1.1.0").unwrap();
+        l.rollback().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(l.pointer()).unwrap()).unwrap();
+        assert_eq!(v["updater"]["slot"], "b");
+        assert_eq!(v["active"], "1.0.0");
+        assert!(v["updated_unix"].as_u64().unwrap() > 1763600000);
+        assert!(v.get("trial_since_unix").is_some() && v.get("trial_since").is_none() && v.get("updated").is_none());
+    }
+
+    #[test]
+    fn backoff_grows_and_restarts_after_a_stable_run() {
+        let mut b = Backoff::new(Duration::from_secs(60));
+        let quick = Duration::from_millis(200);
+        let waits: Vec<u64> = (0..7).map(|_| b.after_crash(quick).as_secs()).collect();
+        assert_eq!(waits, [1, 2, 5, 10, 30, 30, 30]);
+        assert_eq!(b.after_crash(Duration::from_secs(61)).as_secs(), 1);
+        assert_eq!(b.after_crash(quick).as_secs(), 2);
+        b.reset();
+        assert_eq!(b.after_crash(quick).as_secs(), 1);
     }
 }

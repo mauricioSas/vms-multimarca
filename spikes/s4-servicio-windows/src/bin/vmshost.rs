@@ -64,7 +64,7 @@ mod service {
 #[cfg(windows)]
 mod service {
     use super::arg;
-    use s4_servicio_windows::{append_log, now_s, trial_expired, CrashWindow, Layout, Pointer};
+    use s4_servicio_windows::{append_log, now_s, trial_expired, Backoff, CrashWindow, Layout, Pointer};
     use std::ffi::{c_void, OsString};
     use std::io;
     use std::os::windows::io::AsRawHandle;
@@ -247,6 +247,7 @@ mod service {
     fn supervise(cfg: &Config, layout: &Layout, rx: &Receiver<()>) -> io::Result<()> {
         let job = Job::new()?;
         let mut crashes = CrashWindow::new(3, Duration::from_secs(600));
+        let mut backoff = Backoff::new(Duration::from_secs(60));
         let mut st = Stats { rollbacks: 0, launches: 0, last_event: String::new() };
         loop {
             let (mut p, rebuilt) = layout.load_or_rebuild()?;
@@ -318,15 +319,27 @@ mod service {
                         let _ = child.wait();
                         break false; // la vuelta atrás la hace el principio del bucle
                     }
-                    p = cur;
+                    if cur != p {
+                        // p. ej. la versión se confirmó: host-status.json no se queda con «trial: true»
+                        p = cur;
+                        write_status(layout, &p, Some((&child, in_job)), crashes.count(), &st);
+                    }
                 }
             };
+            let mut wait = Duration::from_secs(1);
             if failed && p.trial && crashes.record(Instant::now()) {
                 do_rollback(layout, &mut st, "3 caídas en 10 min")?;
                 crashes.reset();
+                backoff.reset();
+            } else if failed {
+                // Espera creciente: una versión buena que cae en bucle no se relanza cada segundo
+                wait = backoff.after_crash(started.elapsed());
+                append_log(&layout.log(), &format!("relanzo {} dentro de {} s", p.active, wait.as_secs()));
+            } else {
+                backoff.reset();
             }
             write_status(layout, &p, None, crashes.count(), &st);
-            if stop_requested(rx, Duration::from_secs(1)) {
+            if stop_requested(rx, wait) {
                 return Ok(());
             }
         }
