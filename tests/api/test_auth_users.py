@@ -152,5 +152,29 @@ async def test_pages_with_session(api: Harness) -> None:
     assert (await admin.get("/wall/7")).status_code == 404
     assert (await admin.get("/setup")).headers.get("location") == "/login"
     k = await api.kiosk()
-    assert (await k.get("/")).headers["location"] == "/wall/1"
+    # las páginas del panel no aceptan la sesión de kiosco (piden login; antes saltaban al muro 1, y en un perfil
+    # compartido con los muros el panel no podía volver a entrar)
+    assert (await k.get("/")).headers["location"] == "/login?next=/"
+    assert (await k.get("/status")).headers["location"] == "/login?next=/status"
     assert (await k.get("/wall/4")).status_code in (200, 503)
+
+
+async def test_panel_and_kiosk_sessions_coexist_in_one_browser(api: Harness) -> None:
+    """Crítico 1 de la revisión: el mismo navegador (o perfil de WebView2) con el panel y los muros abiertos."""
+    c = await api.login()                                     # panel: administrador
+    r = await c.post("/api/local/kiosk-session", json={"token": "token-kiosco-de-pruebas", "next": "/wall/1"})
+    assert r.status_code == 204 and "vms_kiosk=" in r.headers["set-cookie"]
+    wall = {"X-VMS-Client": "wall"}
+    assert (await c.get("/api/auth/me")).json()["username"] == "admin"           # el panel sigue siendo admin
+    assert (await c.get("/api/auth/me", headers=wall)).json()["kiosk"] is True     # el muro, kiosco
+    assert (await c.get("/api/devices")).status_code == 200
+    assert (await c.get("/api/devices", headers=wall)).status_code == 403
+    # iniciar sesión otra vez en el panel no toca el muro
+    await c.post("/api/auth/login", json={"username": "admin", "password": "Admin#12345"})
+    assert (await c.get("/api/auth/me", headers=wall)).json()["kiosk"] is True
+    # cerrar sesión en el panel no saca al muro; el panel pide login (no salta al muro)
+    r = await c.post("/api/auth/logout")
+    assert r.status_code == 204 and "vms_kiosk" not in r.headers.get("set-cookie", "")
+    assert (await c.get("/api/auth/me", headers=wall)).json()["kiosk"] is True
+    assert (await c.get("/", follow_redirects=False)).headers["location"] == "/login?next=/"
+    assert (await c.get("/wall/1")).status_code in (200, 503)

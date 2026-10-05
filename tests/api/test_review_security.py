@@ -24,6 +24,7 @@ from tests.api.test_live_recordings import FakeMediaMtx, setup  # noqa: F401 - f
 from tests.fakes import FakeEngine
 from vms.api import create_app
 from vms.api import security as security_mod
+from vms.api.deps import KIOSK_COOKIE
 from vms.api.security import COOKIE_NAME, KioskSigner, LoginLimiter
 from vms.core.credentials import CredentialStore
 from vms.core.settings import VmsSettings
@@ -33,7 +34,7 @@ from vms.core.settings import VmsSettings
 async def test_kiosk_cookie_survives_backend_restart(api: Harness, settings: VmsSettings,
                                                      credential_store: CredentialStore) -> None:
     k = await api.kiosk()
-    cookie = k.cookies.get(COOKIE_NAME)
+    cookie = k.cookies.get(KIOSK_COOKIE)
     assert cookie and cookie.startswith("k1.")
     # «Reinicio»: otra instancia de la app con los mismos ajustes y sesiones vacías en memoria
     app2 = create_app(api.settings, engine=FakeEngine(), credential_store=credential_store, heartbeat=False,
@@ -41,21 +42,26 @@ async def test_kiosk_cookie_survives_backend_restart(api: Harness, settings: Vms
     async with app2.router.lifespan_context(app2):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app2, client=("127.0.0.1", 50000)),
                                      base_url="http://testserver", headers=HEADERS) as c2:
-            c2.cookies.set(COOKIE_NAME, cookie)
+            c2.cookies.set(KIOSK_COOKIE, cookie)
             r = await c2.get("/api/auth/me")
             assert r.status_code == 200 and r.json() == {"username": "kiosco", "role": "kiosk", "kiosk": True}
+            # una cookie de kiosco de antes de separar las cookies (en vms_session) sigue valiendo como kiosco
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app2, client=("127.0.0.1", 50000)),
+                                         base_url="http://testserver", headers=HEADERS,
+                                         cookies={COOKIE_NAME: cookie}) as legacy:
+                assert (await legacy.get("/api/auth/me")).json()["kiosk"] is True
             assert (await c2.get("/api/walls/1")).status_code == 200
             assert (await c2.get("/api/devices")).status_code == 403    # sigue siendo solo lectura
             # Cookie manipulada o de otro token de kiosco: no vale
-            c2.cookies.set(COOKIE_NAME, cookie[:-2] + ("00" if not cookie.endswith("00") else "11"))
+            c2.cookies.set(KIOSK_COOKIE, cookie[:-2] + ("00" if not cookie.endswith("00") else "11"))
             assert (await c2.get("/api/auth/me")).status_code == 401
             other = KioskSigner("otro-token").issue()
-            c2.cookies.set(COOKIE_NAME, other)
+            c2.cookies.set(KIOSK_COOKIE, other)
             assert (await c2.get("/api/auth/me")).status_code == 401
             # Tras cerrar sesión, la cookie no se puede «recuperar»
-            c2.cookies.set(COOKIE_NAME, cookie)
+            c2.cookies.set(KIOSK_COOKIE, cookie)
             assert (await c2.post("/api/auth/logout")).status_code == 204
-            c2.cookies.set(COOKIE_NAME, cookie)
+            c2.cookies.set(KIOSK_COOKIE, cookie)
             assert (await c2.get("/api/auth/me")).status_code == 401
 
 

@@ -1,6 +1,6 @@
 // Utilidades compartidas por los módulos de B6 (salud, evidencias, avisos, ayuda y onboarding).
 // Dueño: B6. Todo dato del servidor se inserta como texto (nunca innerHTML con datos).
-import { get, post, enc } from "./api.js";
+import { get, post, enc, subscribeEvents } from "./api.js";
 import { toastError } from "./ui.js";
 
 let mePromise = null;
@@ -99,24 +99,22 @@ export function modal(title, { wide = false } = {}) {
 }
 
 // ------------------------------------------------------------------ eventos SSE de B6
-let source = null;
-const listeners = { health: new Set(), bookmark: new Set(), evidence: new Set(), notice: new Set() };
-/** Escucha los eventos de B6 (`health`, `bookmark`, `evidence`, `notice`) con una sola conexión por página. */
+const OPS_EVENTS = ["health", "bookmark", "evidence", "notice"];
+/**
+ * Escucha los eventos de B6 (`health`, `bookmark`, `evidence`, `notice`) por la conexión única de la página
+ * (`subscribeEvents` de api.js): una segunda EventSource por página agotaba el cupo de conexiones del navegador.
+ * Nunca en los muros (CONTRATO §18.9). Devuelve la función para dejar de escuchar.
+ */
 export function onOpsEvent(name, fn) {
-  listeners[name]?.add(fn);
-  if (!source && typeof EventSource !== "undefined" && !location.pathname.startsWith("/wall")) {
-    source = new EventSource("/api/events", { withCredentials: true });
-    for (const ev of Object.keys(listeners)) {
-      source.addEventListener(ev, (e) => {
-        let data = null;
-        try { data = JSON.parse(e.data); } catch { return; }
-        for (const f of listeners[ev]) {
-          try { f(data); } catch (err) { console.warn("Evento", ev, err); }
-        }
-      });
-    }
+  if (!OPS_EVENTS.includes(name) || typeof EventSource === "undefined" || location.pathname.startsWith("/wall")) {
+    return () => {};
   }
-  return () => listeners[name]?.delete(fn);
+  const sub = subscribeEvents({
+    [name]: (data) => {
+      try { fn(data); } catch (err) { console.warn("Evento", name, err); }
+    },
+  });
+  return () => sub.close();
 }
 
 // ------------------------------------------------------------------ «¿Por qué no conecta?»

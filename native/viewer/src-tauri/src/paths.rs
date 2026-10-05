@@ -56,6 +56,41 @@ pub fn config_dir() -> PathBuf {
     env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join(LINUX_DIR_NAME)
 }
 
+/// Perfil de WebView2 (carpeta de datos: cookies, caché, SharedWorker y proceso del navegador) de una ventana.
+///
+/// Los 4 muros comparten `Muros` (un SharedWorker con UNA conexión de eventos para todos y un único proceso de
+/// GPU); el panel y las páginas locales van en `Panel`, con su propio almacén de cookies: la sesión de kiosco de
+/// los muros y la del operador del panel no se pisan (CONTRATO §17.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WebProfile {
+    Panel,
+    Muros,
+}
+
+impl WebProfile {
+    fn dir_name(self) -> &'static str {
+        match self {
+            WebProfile::Panel => "panel",
+            WebProfile::Muros => "muros",
+        }
+    }
+}
+
+/// Carpeta de datos de WebView2 de un perfil, por usuario y fuera de la parte itinerante del perfil de Windows
+/// (`%LOCALAPPDATA%\VMSMultimarca\WebView2\<perfil>`). Con `VMS_VIEWER_CONFIG_DIR` (pruebas) cuelga de ahí.
+pub fn webview_data_dir(profile: WebProfile) -> PathBuf {
+    let base = if env_path("VMS_VIEWER_CONFIG_DIR").is_some() {
+        config_dir()
+    } else if cfg!(windows) {
+        env_path("LOCALAPPDATA")
+            .map(|p| p.join(APP_ID))
+            .unwrap_or_else(|| home().join("AppData").join("Local").join(APP_ID))
+    } else {
+        config_dir()
+    };
+    base.join("WebView2").join(profile.dir_name())
+}
+
 pub fn viewer_config_file() -> PathBuf {
     config_dir().join("viewer.json")
 }
@@ -165,6 +200,15 @@ mod tests {
         }
         let l = InstallLayout { root: PathBuf::from("/r"), version: "2.0.0".into() };
         assert_eq!(l.viewer_exe("../../evil"), None);
+    }
+
+    #[test]
+    fn panel_and_walls_have_separate_webview_data_dirs() {
+        let panel = webview_data_dir(WebProfile::Panel);
+        let walls = webview_data_dir(WebProfile::Muros);
+        assert_ne!(panel, walls);
+        assert_eq!(panel.parent(), walls.parent());
+        assert!(walls.ends_with(Path::new("WebView2").join("muros")), "{}", walls.display());
     }
 
     #[test]

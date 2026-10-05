@@ -11,9 +11,9 @@ from starlette.responses import RedirectResponse, Response
 from vms.core.errors import AuthError, ConflictError, ForbiddenError, RateLimited
 from vms.core.models import User, UserCreate
 
-from ..deps import Principal, get_state, require_kiosk
+from ..deps import Principal, cookie_name, get_state, require_kiosk
 from ..errors import json_response
-from ..security import (COOKIE_NAME, Session, client_ip, constant_eq, hash_password_async, is_local,
+from ..security import (Session, client_ip, constant_eq, hash_password_async, is_local,
                         verify_password_async)
 from ..state import AppState
 
@@ -27,8 +27,11 @@ class LoginRequest(BaseModel):
 
 
 def set_session_cookie(response: Response, request: Request, session: Session, max_age: int | None) -> None:
-    """max_age None = cookie de sesión del navegador (kiosco: dura mientras el navegador esté abierto)."""
-    response.set_cookie(COOKIE_NAME, session.token, max_age=max_age, httponly=True, samesite="strict",
+    """max_age None = cookie de sesión del navegador (kiosco: dura mientras el navegador esté abierto).
+
+    El kiosco va en su propia cookie (`vms_kiosk`): entrar en los muros no cierra la sesión del panel del mismo
+    navegador, ni iniciar sesión en el panel convierte los muros en operador (deps.py)."""
+    response.set_cookie(cookie_name(session), session.token, max_age=max_age, httponly=True, samesite="strict",
                         secure=request.url.scheme == "https", path="/")
 
 
@@ -71,7 +74,10 @@ async def logout(request: Request, p: Principal = Depends(require_kiosk),
                  state: AppState = Depends(get_state)) -> Response:
     state.sessions.delete(p.session.token)
     resp = Response(status_code=204)
-    resp.delete_cookie(COOKIE_NAME, path="/")
+    # solo la cookie de esa sesión: cerrar sesión en el panel no saca a los muros del mismo navegador
+    for name, value in request.cookies.items():
+        if value == p.session.token:
+            resp.delete_cookie(name, path="/")
     return resp
 
 

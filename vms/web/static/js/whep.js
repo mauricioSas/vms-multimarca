@@ -21,7 +21,7 @@
 //  - una conexión WebRTC «disconnected» más de disconnectGraceMs se da por perdida, sin esperar a que el
 //    navegador la declare «failed» (eso tarda unos 30 s).
 
-import { redirectToLogin } from "./api.js";
+import { apiHeaders, redirectToLogin } from "./api.js";
 
 const DEFAULT_BACKOFF = [1000, 2000, 5000, 10000, 30000];
 export const FAST_RETRY_MS = 2000;
@@ -217,7 +217,7 @@ export class WhepReader {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
-        headers: { "Content-Type": "application/sdp", "X-Requested-With": "vms" },
+        headers: apiHeaders({ "Content-Type": "application/sdp" }),
         body: pc.localDescription.sdp,
       });
       if (gen !== this.gen) {
@@ -264,7 +264,7 @@ export class WhepReader {
   async _fetchIceServers(gen) {
     try {
       const res = await fetch(this.url, { method: "OPTIONS", credentials: "same-origin", cache: "no-store",
-        headers: { "X-Requested-With": "vms" } });
+        headers: apiHeaders() });
       if (gen !== this.gen) return [];
       if (res.status === 401) {
         redirectToLogin();
@@ -368,7 +368,7 @@ export class WhepReader {
 
   _deleteSession(url) {
     fetch(url, { method: "DELETE", credentials: "same-origin", keepalive: true,
-      headers: { "X-Requested-With": "vms" } }).catch((err) => {
+      headers: apiHeaders() }).catch((err) => {
       console.warn("No se pudo cerrar la sesión WHEP en el servidor", err);
     });
   }

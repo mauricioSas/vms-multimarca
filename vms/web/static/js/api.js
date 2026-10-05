@@ -2,6 +2,8 @@
 // - Todas las peticiones llevan «X-Requested-With: vms» (protección CSRF del backend).
 // - Los errores llegan como {"error": {code, message, details}} y se lanzan como ApiError.
 // - Un 401 fuera del login redirige a /login?next=<página actual>.
+// - En los muros (/wall/N) llevan además «X-VMS-Client: wall»: el backend usa entonces la sesión de kiosco aunque
+//   el mismo navegador tenga abierta la del panel, y al revés (vms/api/deps.py).
 
 export class ApiError extends Error {
   constructor(status, code, message, details = {}, headers = null) {
@@ -20,7 +22,18 @@ export class ApiError extends Error {
 }
 
 const CSRF_HEADER = { "X-Requested-With": "vms" };
+const WALL_PAGE = typeof location !== "undefined" && /^\/wall\/[1-4]\/?$/.test(location.pathname);
 let redirecting = false;
+
+/** Cabeceras comunes de toda petición a la API (CSRF y, en los muros, de qué cliente sale). */
+export function apiHeaders(extra = {}) {
+  return WALL_PAGE ? { ...CSRF_HEADER, "X-VMS-Client": "wall", ...extra } : { ...CSRF_HEADER, ...extra };
+}
+
+/** URL de /api/events para esta página (los muros se identifican en la URL: EventSource no admite cabeceras). */
+export function eventsUrl(wall = WALL_PAGE) {
+  return wall ? "/api/events?client=wall" : "/api/events";
+}
 
 export function loginUrl(next = location.pathname + location.search + location.hash) {
   const safe = safeNext(next);
@@ -72,7 +85,7 @@ async function parseError(res) {
  * @param {{signal?: AbortSignal, auth?: boolean, raw?: boolean, timeoutMs?: number}} [opts]
  */
 export async function api(method, path, body, opts = {}) {
-  const headers = { ...CSRF_HEADER, Accept: "application/json" };
+  const headers = apiHeaders({ Accept: "application/json" });
   const init = { method, headers, credentials: "same-origin", cache: "no-store" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -138,48 +151,75 @@ export function enc(value) {
   return encodeURIComponent(String(value));
 }
 
-/**
- * Suscripción a /api/events (SSE). EventSource se reconecta solo; aquí además se vigila
- * que lleguen pings y, si el flujo se queda mudo, se recrea.
- */
-export function subscribeEvents(handlers, { staleMs = 45000 } = {}) {
-  let es = null;
-  let lastSeen = Date.now();
-  let closed = false;
-  let watchdog = null;
+// ------------------------------------------------------------------ eventos del servidor (SSE)
+// UNA sola conexión a /api/events por página, compartida por todos los módulos que escuchan (panel, estado,
+// salud, marcadores, evidencias, avisos…). Con HTTP/1.1 el navegador abre como mucho 6 conexiones a la vez con
+// el servidor y cada SSE ocupa una para siempre: dos por página agotaban el cupo con 3 pestañas y el muro del
+// mismo navegador se quedaba sin poder negociar vídeo. Los muros usan su propio SharedWorker (wall-events.js).
+export const EVENT_NAMES = ["config", "status", "engine", "update", "health", "bookmark", "evidence", "notice"];
+const STALE_MS = 45000;          // los «status» llegan cada 5 s: 45 s sin nada = conexión muerta
+const hub = { es: null, subs: new Set(), lastSeen: 0, watchdog: null };
 
-  const touch = () => { lastSeen = Date.now(); };
-  const open = () => {
-    if (closed) return;
-    if (es) es.close();
-    es = new EventSource("/api/events", { withCredentials: true });
-    touch();
-    es.onopen = () => { touch(); handlers.onOpen?.(); };
-    es.onmessage = touch; // pings como comentario no disparan eventos; los datos sí
-    es.onerror = () => { handlers.onError?.(); };
-    for (const name of ["config", "status"]) {
-      es.addEventListener(name, (ev) => {
-        touch();
-        let data = null;
-        try { data = JSON.parse(ev.data); } catch (err) { console.warn("Evento SSE no válido", name, err); return; }
-        handlers[name]?.(data);
-      });
+function hubEach(fn) {
+  for (const sub of [...hub.subs]) {
+    try {
+      fn(sub.handlers);
+    } catch (err) {
+      console.warn("Error en un oyente de eventos del servidor", err);
     }
-  };
-  open();
-  // los eventos «status» llegan cada 5 s: si en staleMs no llega nada, la conexión está muerta
-  watchdog = setInterval(() => {
-    if (Date.now() - lastSeen > staleMs) {
-      console.warn("Sin eventos del servidor; se reabre la conexión SSE");
-      open();
-    }
-  }, Math.min(15000, staleMs));
+  }
+}
+
+function hubOpen() {
+  if (hub.es) hub.es.close();
+  const es = new EventSource(eventsUrl(), { withCredentials: true });
+  hub.es = es;
+  hub.lastSeen = Date.now();
+  const touch = () => { hub.lastSeen = Date.now(); };
+  es.onopen = () => { touch(); hubEach((h) => h.onOpen?.()); };
+  es.onmessage = touch; // pings como comentario no disparan eventos; los datos sí
+  es.onerror = () => { hubEach((h) => h.onError?.()); };
+  for (const name of EVENT_NAMES) {
+    es.addEventListener(name, (ev) => {
+      touch();
+      let data = null;
+      try { data = JSON.parse(ev.data); } catch (err) { console.warn("Evento SSE no válido", name, err); return; }
+      hubEach((h) => h[name]?.(data));
+    });
+  }
+}
+
+function hubClose() {
+  clearInterval(hub.watchdog);
+  hub.watchdog = null;
+  if (hub.es) hub.es.close();
+  hub.es = null;
+}
+
+/**
+ * Suscripción a /api/events (SSE) sobre la conexión única de la página. `handlers`: {config, status, engine,
+ * update, health, bookmark, evidence, notice, onOpen, onError}. EventSource se reconecta solo; además, si el
+ * flujo se queda mudo 45 s, se recrea. Devuelve {close()}: la conexión se cierra al irse el último oyente.
+ */
+export function subscribeEvents(handlers) {
+  const sub = { handlers };
+  hub.subs.add(sub);
+  if (!hub.es) {
+    hubOpen();
+    hub.watchdog = setInterval(() => {
+      if (Date.now() - hub.lastSeen > STALE_MS) {
+        console.warn("Sin eventos del servidor; se reabre la conexión SSE");
+        hubOpen();
+      }
+    }, 15000);
+  } else if (hub.es.readyState === EventSource.OPEN) {
+    // llega tarde a una conexión ya abierta: recibe su «onOpen» como si la hubiera abierto él
+    setTimeout(() => { if (hub.subs.has(sub)) handlers.onOpen?.(); }, 0);
+  }
   return {
     close() {
-      closed = true;
-      clearInterval(watchdog);
-      if (es) es.close();
-      es = null;
+      hub.subs.delete(sub);
+      if (!hub.subs.size) hubClose();
     },
   };
 }

@@ -2,11 +2,14 @@
 
 Los archivos y su ruta pública los define vms.web (PAGES, WALL_PAGE, page_file). Aquí se añade
 la comprobación de sesión en el servidor (además de la que hace cada página en el navegador):
-  /            sin sesión → /login (o /setup si no hay usuarios y es el propio equipo); kiosco → /wall/1
+  /            sin sesión de usuario → /login (o /setup si no hay usuarios y es el propio equipo)
   /login       público (si no hay usuarios y es el propio equipo → /setup)
   /setup       solo sin usuarios y desde el propio equipo; si no → /login
-  /wall/1..4   cualquier sesión (también kiosco)
-  resto        sesión de operador o administrador; kiosco → /wall/1
+  /wall/1..4   cualquier sesión (la de kiosco primero: es un muro)
+  resto        sesión de operador o administrador; la de kiosco no cuenta → /login
+
+Las páginas del panel ignoran la cookie de kiosco (deps.py): en un navegador o perfil donde también hay muros
+abiertos, el panel pide su propio inicio de sesión en vez de saltar al muro.
 """
 from __future__ import annotations
 
@@ -67,13 +70,11 @@ def _handler(route: str, name: str) -> Callable[[Request], Awaitable[Response]]:
             return RedirectResponse("/setup", status_code=303) if _needs_setup(request) else _serve(name, title)
         if route == "/setup":
             return _serve(name, title) if _needs_setup(request) else RedirectResponse("/login", status_code=303)
-        p = principal_from(request, get_state(request))
+        p = principal_from(request, get_state(request), wall=False, allow_kiosk=False)
         if p is None:
             if route == "/" and _needs_setup(request):
                 return RedirectResponse("/setup", status_code=303)
             return _login_redirect(request)
-        if p.kiosk:
-            return RedirectResponse("/wall/1", status_code=303)
         return _serve(name, title)
 
     return handler
@@ -87,6 +88,6 @@ for _route, _name in web.PAGES.items():
 async def wall_page(monitor: int, request: Request) -> Response:
     if not 1 <= monitor <= MAX_MONITORS:
         return HTMLResponse("<!doctype html><title>404</title><p>Monitor no válido (1 a 4)</p>", status_code=404)
-    if principal_from(request, get_state(request)) is None:
+    if principal_from(request, get_state(request), wall=True) is None:
         return _login_redirect(request)
     return _serve(web.WALL_PAGE, f"Monitor {monitor}")

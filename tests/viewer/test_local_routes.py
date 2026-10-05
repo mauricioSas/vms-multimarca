@@ -15,7 +15,7 @@ async def test_kiosk_session_sets_signed_cookie_and_opens_wall(api: Harness) -> 
     r = await c.post("/api/local/kiosk-session", json={"token": TOKEN, "next": "/wall/3"})
     assert r.status_code == 204, r.text
     cookie = r.headers["set-cookie"]
-    assert "vms_session=k1." in cookie and "httponly" in cookie.lower() and "samesite=strict" in cookie.lower()
+    assert "vms_kiosk=k1." in cookie and "vms_session" not in cookie and "httponly" in cookie.lower() and "samesite=strict" in cookie.lower()
     assert "max-age" not in cookie.lower(), "cookie de sesión del WebView (sin Max-Age), como el kiosco de la v1"
     assert r.headers["cache-control"] == "no-store"
     me = (await c.get("/api/auth/me")).json()
@@ -78,13 +78,13 @@ async def test_kiosk_cookie_from_the_viewer_survives_backend_restart(api: Harnes
     """Backend reiniciado → el muro sigue sin login: la cookie es firmada (no vive en memoria)."""
     c = api.client()
     assert (await c.post("/api/local/kiosk-session", json={"token": TOKEN, "next": "/wall/1"})).status_code == 204
-    cookie = c.cookies.get("vms_session")
+    cookie = c.cookies.get("vms_kiosk")
     assert cookie and cookie.startswith("k1.")
     from vms.api import create_app
     from tests.fakes import FakeEngine
     app2 = create_app(api.settings, engine=FakeEngine(), credential_store=api.creds, heartbeat=False, start_engine=False)
     transport = httpx.ASGITransport(app=app2, client=("127.0.0.1", 50001))
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver",
-                                 cookies={"vms_session": cookie}, headers={"X-Requested-With": "vms"}) as c2:
+                                 cookies={"vms_kiosk": cookie}, headers={"X-Requested-With": "vms"}) as c2:
         r = await c2.get("/api/auth/me")
         assert r.status_code == 200 and r.json()["kiosk"] is True

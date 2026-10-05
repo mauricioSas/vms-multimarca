@@ -16,6 +16,7 @@ use tauri::{
 use crate::config::ViewerConfig;
 use crate::health::{self, Level};
 use crate::monitors::{self, MonitorInfo};
+use crate::paths::{self, WebProfile};
 use crate::pinning::{self, PinCheck};
 use crate::servers::{self, origin_of};
 use crate::state::{self, wall_label, wall_of, CertView, PendingKiosk, Viewer, PANEL};
@@ -89,15 +90,37 @@ pub fn parse_args(args: &[String]) -> Options {
 }
 
 // ============================================================================================ ventanas
-fn browser_args() -> String {
-    // Los mismos argumentos en todas las ventanas: comparten el entorno (y el proceso de GPU) de WebView2.
+/// Perfil de WebView2 de una ventana: los muros, el suyo (compartido entre los 4); el panel y las páginas
+/// locales, otro (ver [`paths::WebProfile`]).
+pub fn profile_of(label: &str) -> WebProfile {
+    if wall_of(label).is_some() {
+        WebProfile::Muros
+    } else {
+        WebProfile::Panel
+    }
+}
+
+/// Argumentos del navegador de un perfil. Todas las ventanas de un mismo perfil (misma carpeta de datos) llevan
+/// los mismos: WebView2 comparte un entorno, y su proceso de GPU, solo entre ventanas con las mismas opciones.
+fn browser_args(profile: WebProfile) -> String {
     let mut args = String::from(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required",
     );
     if let Some(port) = cdp_port() {
+        // cada perfil es un navegador aparte: los muros en el puerto pedido y el panel en el siguiente
+        let port = match profile {
+            WebProfile::Muros => port,
+            WebProfile::Panel => port.saturating_add(1),
+        };
         args.push_str(&format!(" --remote-debugging-port={port}"));
     }
     args
+}
+
+/// Carpeta de datos y argumentos de WebView2 de la ventana `label`.
+pub fn webview_options(label: &str) -> (std::path::PathBuf, String) {
+    let profile = profile_of(label);
+    (paths::webview_data_dir(profile), browser_args(profile))
 }
 
 /// Puerto CDP solo en builds de prueba (`--features prueba`), PLAN-V2 §4.6.
@@ -131,9 +154,11 @@ pub fn ensure_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> tauri::Resu
     let nav_label = label.to_string();
     let nav_app = app.clone();
     let load_app = app.clone();
+    let (data_dir, args) = webview_options(label);
     let mut b = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title(title)
-        .additional_browser_args(&browser_args())
+        .data_directory(data_dir)
+        .additional_browser_args(&args)
         .on_navigation(move |url| on_navigation(&nav_app, &nav, &nav_label, url))
         .on_page_load(move |w, p| on_page_load(&load_app, &w, &p))
         .on_new_window(|_, _| NewWindowResponse::Deny);
@@ -1070,8 +1095,24 @@ mod tests {
         if !cfg!(feature = "prueba") {
             std::env::set_var("VMS_VIEWER_CDP_PORT", "9222");
             assert_eq!(cdp_port(), None);
-            assert!(!browser_args().contains("remote-debugging"));
+            assert!(!browser_args(WebProfile::Muros).contains("remote-debugging"));
+            assert!(!browser_args(WebProfile::Panel).contains("remote-debugging"));
         }
+    }
+
+    #[test]
+    fn walls_share_one_webview_profile_apart_from_the_panel() {
+        // Crítico 1 de la revisión: con una sola carpeta de datos, la cookie de kiosco de los muros y la del
+        // operador del panel vivían en el mismo almacén y se pisaban.
+        let walls: Vec<_> = (1..=4).map(|n| webview_options(&state::wall_label(n))).collect();
+        assert!(walls.iter().all(|w| w == &walls[0]), "los 4 muros: misma carpeta y mismas opciones");
+        let panel = webview_options(PANEL);
+        assert_ne!(panel.0, walls[0].0, "el panel no comparte carpeta de datos con los muros");
+        for (local, ..) in LOCAL_WINDOWS {
+            assert_eq!(webview_options(local), panel, "las páginas locales van con el panel");
+        }
+        assert_eq!(profile_of("muro-3"), WebProfile::Muros);
+        assert_eq!(profile_of("muro-9"), WebProfile::Panel);
     }
 
     #[test]

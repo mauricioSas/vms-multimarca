@@ -11,7 +11,7 @@
 // - Versión nueva del servicio (evento «update» o /api/health): el muro se recarga una vez, solo.
 // - Muro oculto más de 60 s (monitor desconectado, ventana minimizada): se para el vídeo hasta que vuelva.
 
-import { ApiError, get, put, isId, enc } from "./api.js";
+import { ApiError, get, put, isId, enc, eventsUrl } from "./api.js";
 import { WhepReader, noteEngineEvent } from "./whep.js";
 
 const GRIDS = [1, 4, 9, 16];
@@ -398,7 +398,7 @@ function subscribeWallEvents(handlers) {
   let lastSeen = Date.now();
   const open = () => {
     if (es) es.close();
-    es = new EventSource("/api/events", { withCredentials: true });
+    es = new EventSource(eventsUrl(true), { withCredentials: true });
     lastSeen = Date.now();
     es.onopen = () => {
       lastSeen = Date.now();
@@ -558,6 +558,7 @@ async function main() {
 // Estado para diagnóstico (consola del navegador o pruebas automáticas). Sin datos sensibles.
 window.__vmsWall = {
   monitor,
+  get kiosk() { return me ? !!me.kiosk : null; },
   get layout() { return layout; },
   get expanded() { return expanded; },
   get events() { return { ...eventStats, engineRunning, serverVersion }; },

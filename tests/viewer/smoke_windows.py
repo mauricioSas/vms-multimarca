@@ -7,7 +7,8 @@ se conecta a ella por CDP directo (`/json/list` + `websockets`, que ya viene en 
 pequeño: simulador de cámaras (MediaMTX + ffmpeg de pruebas) + backend real (`python -m vms`), y comprueba:
 
 1. muro: `VMS.exe --walls` abre /wall/1 entrando con el token de kiosco del archivo (sin login ni token en la
-   URL) y cada celda pinta ≥ 30 fotogramas en 10 s (`requestVideoFrameCallback`);
+   URL) y cada celda pinta ≥ 30 fotogramas en 10 s (`requestVideoFrameCallback`); el panel va en otro perfil de
+   WebView2 (otra carpeta de datos, otro navegador): iniciar sesión en él no toca la sesión de kiosco del muro;
 2. capacidades: desde la página del backend, `invoke()` de cualquier comando del visor se rechaza; desde una
    página local (segunda instancia con `--abrir diagnostico`) funciona;
 3. sin permiso: con una ACL que niega la lectura de `kiosk.token` al usuario, el muro muestra «Sin permiso para
@@ -42,6 +43,9 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 CDP_PORT = 9222
+# El visor abre dos navegadores WebView2 (dos carpetas de datos): los muros en CDP_PORT y el panel y las páginas
+# locales en CDP_PORT + 1 (app.rs::browser_args).
+CDP_PORTS = (CDP_PORT, CDP_PORT + 1)
 FRAMES_MIN = 30
 
 FRAMES_JS = """async (ms) => {
@@ -58,6 +62,13 @@ FRAMES_JS = """async (ms) => {
   return {cells: vids.length, rvfc: counts, decoded: q1.map((x, i) => x - q0[i]),
           size: vids.map(v => [v.videoWidth, v.videoHeight])};
 }"""
+
+LOGIN_JS = """async ([u, p]) => (await fetch('/api/auth/login', {method: 'POST',
+  headers: {'Content-Type': 'application/json', 'X-Requested-With': 'vms'},
+  body: JSON.stringify({username: u, password: p})})).status"""
+
+ME_JS = """async (wall) => (await fetch('/api/auth/me', {headers: wall ? {'X-Requested-With': 'vms',
+  'X-VMS-Client': 'wall'} : {'X-Requested-With': 'vms'}})).json()"""
 
 IPC_JS = """async ([cmd, args]) => {
   const ipc = window.__TAURI_INTERNALS__;
@@ -206,8 +217,7 @@ class Viewer:
 
     def start(self, *args: str) -> None:
         self.proc = subprocess.Popen([str(self.exe), *args], env=self.env)
-        wait_for(lambda: httpx.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=1).status_code == 200,
-                 60, "el puerto CDP del visor no abrió")
+        wait_for(lambda: any(_cdp_open(p) for p in CDP_PORTS), 60, "el puerto CDP del visor no abrió")
 
     def run_second(self, *args: str) -> int:
         """Segunda instancia: pasa los argumentos a la primera y sale."""
@@ -219,30 +229,39 @@ class Viewer:
             self.proc.wait(timeout=20)
         self.proc = None
 
-        def closed() -> bool:
-            try:
-                httpx.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=0.5)
-                return False
-            except httpx.HTTPError:
-                return True
-        wait_for(closed, 30, "el visor anterior sigue vivo")
+        wait_for(lambda: not any(_cdp_open(p, 0.5) for p in CDP_PORTS), 30, "el visor anterior sigue vivo")
 
 
 class CdpError(RuntimeError):
     pass
 
 
+def _cdp_open(port: int, timeout: float = 1.0) -> bool:
+    try:
+        return httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=timeout).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def _targets() -> list[dict[str, Any]]:
-    r = httpx.get(f"http://127.0.0.1:{CDP_PORT}/json/list", timeout=5)
-    return [t for t in r.json() if t.get("type") == "page"]
+    """Páginas de los dos navegadores del visor (muros y panel), cada una con el puerto CDP de su navegador."""
+    out: list[dict[str, Any]] = []
+    for port in CDP_PORTS:
+        try:
+            r = httpx.get(f"http://127.0.0.1:{port}/json/list", timeout=5)
+        except httpx.HTTPError:
+            continue
+        out.extend({**t, "port": port} for t in r.json() if t.get("type") == "page")
+    return out
 
 
 class Page:
     """Una página (un WebView) por CDP directo. Cada orden abre su propia conexión al objetivo, así sirve aunque
     la página cambie de origen (tauri.localhost → backend), cosa que Playwright con WebView2 no siguió (CI)."""
 
-    def __init__(self, target_id: str) -> None:
+    def __init__(self, target_id: str, port: int = CDP_PORT) -> None:
         self.id = target_id
+        self.port = port
 
     def _info(self) -> dict[str, Any]:
         for t in _targets():
@@ -304,13 +323,13 @@ class Cdp:
         wait_for(lambda: _targets(), 30, "el visor no tiene páginas en CDP")
 
     def pages(self) -> list[Page]:
-        return [Page(t["id"]) for t in _targets()]
+        return [Page(t["id"], t["port"]) for t in _targets()]
 
     def find(self, pred: Callable[[str], bool], timeout: float, what: str) -> Page:
         def look() -> Page | None:
             for t in _targets():
                 if pred(str(t.get("url", ""))):
-                    return Page(t["id"])
+                    return Page(t["id"], t["port"])
             return None
         try:
             found: Page = wait_for(look, timeout, what)
@@ -355,7 +374,7 @@ def start_backend(work: Path) -> tuple[Any, Any, str, str]:
     secrets = work / "data" / "secrets"
     secrets.mkdir(parents=True, exist_ok=True)
     (secrets / "kiosk.token").write_text(kiosk + "\n", encoding="utf-8")
-    return simenv, svc, base, kiosk
+    return simenv, svc, base, admin
 
 
 def current_user() -> str:
@@ -382,8 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         holder: dict[str, Any] = {}
 
         def stack() -> str:
-            s, b, base, _ = start_backend(work)
-            holder.update(sim=s, svc=b, base=base)
+            s, b, base, admin = start_backend(work)
+            holder.update(sim=s, svc=b, base=base, admin=admin)
             return f"backend en {base}"
         if not res.run("pila: simulador + backend real con 3 cámaras", stack):
             return 1
@@ -409,6 +428,26 @@ def main(argv: list[str] | None = None) -> int:
             holder["wall"] = page
             return f"{r['cells']} celdas, fotogramas en 10 s: {r['rvfc']} (decodificados {r['decoded']})"
         res.run("1 · muro /wall/1 con fotogramas, entrando con kiosk.token (sin login)", wall_with_frames)
+
+        def panel_apart_from_walls() -> str:
+            wall = holder.get("wall") or cdp.find(lambda u: u.endswith("/wall/1"), 30, "muro")
+            assert viewer.run_second("--panel") == 0
+            panel = cdp.find(lambda u: u.startswith(base) and "/login" in u, 60, "el panel no abrió el login")
+            assert panel.port != wall.port, "el panel y los muros deben ser navegadores (perfiles) distintos"
+            st = panel.evaluate(LOGIN_JS, ["admin", holder["admin"]])
+            assert st == 200, st
+            # cada perfil solo tiene su cookie: con o sin la marca de muro, el panel es admin y el muro, kiosco
+            who = {(name, hdr): page.evaluate(ME_JS, hdr) for name, page in (("panel", panel), ("muro", wall))
+                   for hdr in (False, True)}
+            assert all(v.get("username") == "admin" for (n, _), v in who.items() if n == "panel"), who
+            assert all(v.get("kiosk") is True for (n, _), v in who.items() if n == "muro"), who
+            try:
+                wall.evaluate("() => location.reload()")
+            except Exception:  # noqa: BLE001 - la recarga puede cortar la evaluación
+                pass
+            wall.wait_for_function("() => window.__vmsWall && window.__vmsWall.kiosk === true", timeout=30000)
+            return f"panel en el puerto CDP {panel.port} (admin), muros en el {wall.port} (kiosco)"
+        res.run("1 · panel y muros en perfiles de WebView2 separados (sesiones que no se pisan)", panel_apart_from_walls)
 
         def remote_page_has_no_ipc() -> str:
             page = holder.get("wall") or cdp.find(lambda u: u.endswith("/wall/1"), 30, "muro")

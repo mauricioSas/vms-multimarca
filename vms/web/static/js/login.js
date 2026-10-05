@@ -54,5 +54,11 @@ form.addEventListener("submit", async (ev) => {
   });
 });
 
-// si ya hay sesión, no hace falta volver a entrar
-get("/api/auth/me", { auth: false }).then(() => location.replace(next)).catch(() => checkSetup());
+// si ya hay sesión de usuario, no hace falta volver a entrar (la de kiosco de unos muros abiertos en este mismo
+// navegador no sirve para el panel: se pide usuario y contraseña)
+get("/api/auth/me", { auth: false })
+  .then((me) => {
+    if (me && !me.kiosk) location.replace(next);
+    else checkSetup();
+  })
+  .catch(() => checkSetup());
