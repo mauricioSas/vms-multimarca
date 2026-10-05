@@ -964,9 +964,9 @@ la v1. En SSD el borrado seguro no está garantizado (se documenta).
 - Comportamiento verificado con MediaMTX v1.21.1 en S2 (macOS):
   - el renombrado atómico dispara la recarga (0,2 s hasta tener vídeo en una ruta nueva);
   - la recarga **solo reinicia las rutas cuya configuración cambió**: las demás no cortan ni abren segmento;
-  - cambiar un ajuste de grabación en `pathDefaults` (`recordDeleteAfter`, `recordSegmentDuration`) no
-    reinicia las rutas, **pero abre un segmento nuevo en todas** (hueco medido ≤ 0,8 s con GOP de 1 s,
-    es decir, ≤ 1 GOP). Por eso la retención se cambia como un ajuste excepcional (se avisa en la
+  - cambiar un ajuste de grabación en `pathDefaults` (`recordDeleteAfter`, `recordSegmentDuration`; medido
+    con los dos) no reinicia las rutas, **pero abre un segmento nuevo en todas** (hueco medido ≤ 0,8 s con
+    GOP de 1 s, es decir, ≤ 1 GOP). `record: false` en una sola ruta no afecta a las demás. Por eso la retención se cambia como un ajuste excepcional (se avisa en la
     interfaz) y `recordDeleteAfter` se mantiene en el YAML: así la retención funciona aunque el backend
     esté caído días;
   - motor matado (SIGKILL) y relanzado con el mismo YAML → vuelve a grabar todo en 0,2 s sin backend;

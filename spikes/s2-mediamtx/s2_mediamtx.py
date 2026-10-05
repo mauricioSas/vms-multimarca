@@ -247,23 +247,27 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(1.5)
         res["hueco_al_cambiar_pathDefaults_s"] = {n: segment_gaps(rec / n, ffprobe) for n in snap}
 
-        # ---- 3 bis: cambio de recordSegmentDuration (¿reinicia?) — solo se informa
+        # ---- 3 bis: cambio de recordSegmentDuration (¿reinicia? ¿abre segmento?) — solo se informa
         snap = {n: p["readyTime"] for n, p in paths().items()}
+        segs = {n: segments(n) for n in snap}
         econf["pathDefaults"]["recordSegmentDuration"] = "30m"
         atomic_write_yaml(yml, econf)
         time.sleep(4)
         after = {n: p["readyTime"] for n, p in paths().items()}
         res["informativo_recordSegmentDuration"] = {
-            "rutas_reiniciadas": sorted(n for n in snap if after.get(n) != snap[n])}
+            "rutas_reiniciadas": sorted(n for n in snap if after.get(n) != snap[n]),
+            "segmentos_nuevos": {n: sorted(set(segments(n)) - set(segs[n])) for n in snap}}
 
         # ---- 3 ter: desactivar la grabación de una sola ruta (cam-c) — solo se informa
         snap = {n: p["readyTime"] for n, p in paths().items()}
+        segs = {n: segments(n) for n in snap}
         econf["paths"]["cam-c/main"]["record"] = False
         atomic_write_yaml(yml, econf)
         time.sleep(4)
         after = {n: p["readyTime"] for n, p in paths().items()}
         res["informativo_record_false_en_una_ruta"] = {
-            "rutas_reiniciadas": sorted(n for n in snap if after.get(n) != snap[n])}
+            "rutas_reiniciadas": sorted(n for n in snap if after.get(n) != snap[n]),
+            "segmentos_nuevos": {n: sorted(set(segments(n)) - set(segs[n])) for n in snap}}
         econf["paths"]["cam-c/main"]["record"] = True
         atomic_write_yaml(yml, econf)
         time.sleep(3)

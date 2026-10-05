@@ -8,7 +8,7 @@
 |---|---|---|
 | **S1** WebView2 decodifica 4×16 flujos por hardware | PC Windows del laboratorio (la ejecuta el usuario) | **Pendiente.** Kit listo (visor Tauri mínimo + `s1.ps1` + guía de 3 pasos). B2 espera |
 | **S2** MediaMTX v1.21.1 con el YAML como fuente única | macOS (MacBook M1 Pro) | **Aprobada** (7/7), con un matiz sobre la retención |
-| **S3** Firma TUF `root`/`targets` ECDSA P-256 + python-tuf 7 | macOS (software) y CI Ubuntu (SoftHSM2) | **Aprobada** (6/6 casos con claves software y 6/6 con PKCS#11/SoftHSM2). Falta repetirla con YubiKey cuando se compren (D4) |
+| **S3** Firma TUF `root`/`targets` ECDSA P-256 + python-tuf 7 | macOS (software) y CI Ubuntu (SoftHSM2) | **Aprobada** (7/7 casos con claves software y 7/7 con PKCS#11/SoftHSM2). Falta repetirla con YubiKey cuando se compren (D4) |
 | **S4** `windows-service-rs` + `vmshost` + Job Object + cuenta virtual | CI `windows-latest` | **Aprobada** (9/9 pasos en Windows real), con un hallazgo de diseño para B1 |
 | **S5** Fijación del certificado del visor remoto | — | No toca en la fase 0 (va en paralelo a B2 cuando S1 apruebe) |
 
@@ -47,14 +47,17 @@ de fotogramas perdidos (y ≥ 98 % de flujos con vídeo). Si no: Electron (plan 
 y contraseña para leer, como un NVR) con 3 flujos de prueba, y un MediaMTX «motor» cuyas rutas viven solo en
 su `mediamtx.yml` (nadie usa la API para crearlas), grabando fMP4. Resultado completo:
 [`spikes/s2-mediamtx/resultado-macos-2026-10-05.json`](../../spikes/s2-mediamtx/resultado-macos-2026-10-05.json)
-(ejecutado dos veces con el mismo resultado; números de la última).
+(ejecutado tres veces con el mismo resultado; números de la última, del 5/10 tras la revisión de la fase 0,
+que añadió la medida de segmentos nuevos en los casos de `recordSegmentDuration` y `record: false`).
 
 | Comprobación | Resultado medido |
 |---|---|
 | Graba solo con el YAML | Sí: segmentos de las dos rutas sin ninguna llamada a la API |
 | El renombrado atómico (temporal + `os.replace`) dispara la recarga | Sí: **0,22 s** desde el renombrado hasta tener vídeo en la ruta nueva |
 | La recarga solo reinicia lo que cambió | Sí: la ruta sin cambios mantiene `readyTime` y **no abre segmento nuevo**; la ruta con origen cambiado se reinicia (segmento nuevo, hueco 0,5 s) |
-| Ajuste de grabación en caliente (`recordDeleteAfter` en `pathDefaults`) | Se aplica (la API devuelve `2d`) **sin reiniciar ninguna ruta**, pero **abre un segmento nuevo en todas** (hueco 0,69-0,79 s con GOP de 1 s). Igual con `recordSegmentDuration` y con `record: false` en una sola ruta (sin reinicios) |
+| Ajuste de grabación en caliente (`recordDeleteAfter` en `pathDefaults`) | Se aplica (la API devuelve `2d`) **sin reiniciar ninguna ruta**, pero **abre un segmento nuevo en todas** (hueco 0,50-0,79 s con GOP de 1 s) |
+| Cambio de `recordSegmentDuration` en `pathDefaults` | Igual: ninguna ruta se reinicia (`readyTime` igual) y **las 3 abren un segmento nuevo** (medido contando los archivos antes y después) |
+| `record: false` en una sola ruta | Ninguna ruta se reinicia y **ninguna otra abre segmento nuevo**: solo afecta a esa ruta |
 | Motor matado con SIGKILL y arrancado con el mismo YAML, sin backend | Vuelve a grabar las 3 rutas en **0,23 s** |
 | ¿Escribe MediaMTX contraseñas en su registro? | No, ni con un 401 (`bad status code: 401 (Unauthorized)` sin URL). Ojo: la **API sí devuelve el `source` con la contraseña** |
 
@@ -87,18 +90,23 @@ papel»). Versiones: tuf 7.0.1, securesystemslib 1.5.1, python-pkcs11 0.10.0.
 | Target alterado en el servidor | Rechazado (`LengthOrHashMismatchError`) | igual: OK / rechazado |
 | `targets` firmado con una clave no autorizada | Rechazado (`UnsignedMetadataError`) | igual: OK / rechazado |
 | `timestamp` caducado | Rechazado (`ExpiredMetadataError`) | igual: OK / rechazado |
-| Rollback (timestamp anterior al ya visto) | Rechazado (`BadVersionNumberError`) | igual: OK / rechazado |
-| Rotación de `root` 1 → 2 con 2 de 3 claves viejas | El cliente sigue la cadena y deja de aceptar la clave sustituida | igual: OK / rechazado |
+| Rollback de `timestamp` (versión anterior a la ya vista) | Rechazado (`BadVersionNumberError`) | igual: OK / rechazado |
+| Rollback de `snapshot` (timestamp nuevo y bien firmado que apunta a un snapshot anterior) | Rechazado (`BadVersionNumberError`) | igual: OK / rechazado |
+| Rotación de `root` 1 → 2 con 2 de 3 claves viejas | El cliente sigue la cadena; un `3.root` firmado con la clave sustituida + otra vieja (que con `1.root` llegaba al umbral) se rechaza (`UnsignedMetadataError`). Control: firmado con 2 claves válidas de `2.root` se acepta | igual: OK / rechazado |
 
 Hallazgo de licencia: `HSMSigner` de securesystemslib 1.5.1 usa **python-pkcs11 (MIT)**, no PyKCS11 (GPL);
 leído en el código instalado. Además, como `tools/release` no se distribuye, la cadena de firma no toca lo
 que llega a las tiendas.
 
 **Ejecución en CI** (job `spike-s3`, run [37245437660](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245437660),
-Ubuntu, `softhsm2` de apt; repetida en [37245939158](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245939158) con la clase de cada firmante en la salida: `root` = `HSMSigner`, `HSMSigner`, `CryptoSigner` (la «de papel») y `targets` = `HSMSigner`; token `vms-dev` creado y destruido con el runner): los 6 casos dan lo mismo con
+Ubuntu, `softhsm2` de apt; repetida en [37245939158](https://github.com/mauricioSas/vms-multimarca/actions/runs/37245939158) con la clase de cada firmante en la salida: `root` = `HSMSigner`, `HSMSigner`, `CryptoSigner` (la «de papel») y `targets` = `HSMSigner`; token `vms-dev` creado y destruido con el runner): los 6 casos de entonces dan lo mismo con
 `--signer software` (0,58 s) y con `--signer pkcs11` (0,66 s). Las claves ECDSA P-256 de `root` (2 de 3) y
 `targets` se generaron dentro del token con python-pkcs11 y firmaron con `HSMSigner` (`CKM_ECDSA` sobre el
 SHA-256 y conversión a DER); python-tuf 7 las verificó con `ecdsa-sha2-nistp256`.
+
+Los casos 6 (rollback de `snapshot`) y la comprobación de la clave sustituida se añadieron tras la revisión
+de la fase 0: medidos con claves software en macOS; en CI los repite el job `spike-s3` con SoftHSM2 (resultado
+en `docs/ESTADO.md`).
 
 **Veredicto:** el diseño de PLAN-V2 §1.6 funciona con PKCS#11. Pendiente solo lo que depende del hardware:
 repetirlo con 2 YubiKey (módulo `ykcs11`, ranura PIV 9c) y medir el flujo con PIN y toque físico.
@@ -113,7 +121,7 @@ hospeda el servicio `VMSS4Hello` con la cuenta virtual `NT SERVICE\VMSS4Hello`; 
 `versions\<activa>\hola.exe` dentro de un Job Object «kill on close» y vigila la versión a prueba: 3 caídas
 en 10 min o sin confirmar en el plazo → vuelve a la anterior. El puntero se escribe con
 `vms_common::atomic_write` (`MoveFileExW` con `WRITE_THROUGH`). `run-s4.ps1` instala con `sc.exe`, pone ACL
-por SID (el SID del servicio; sin herencia), arranca, consulta, rompe y desinstala. Lógica portable con 5
+por SID (el SID del servicio; sin herencia), arranca, consulta, rompe y desinstala. Lógica portable con 7
 pruebas unitarias (`cargo test`, verdes en macOS) y `clippy -D warnings` limpio para
 `x86_64-pc-windows-msvc`.
 

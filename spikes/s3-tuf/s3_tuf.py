@@ -12,7 +12,8 @@ Qué comprueba (PLAN-V2 §1.6 y §6.1, S3):
   2. `snapshot` y `timestamp` con ed25519 (software, como el secreto del flujo de CI).
   3. Un cliente `ngclient.Updater` descarga un target por HTTP y lo verifica.
   4. Casos negativos: target alterado, `targets` firmado con una clave no autorizada, `timestamp`
-     caducado, versión anterior de `snapshot` (rollback) y rotación de `root` 1 → 2 (con 2 de 3).
+     caducado, vuelta a una versión anterior de `timestamp` y de `snapshot` (rollback), y rotación de
+     `root` 1 → 2 (con 2 de 3) comprobando que un `3.root` firmado con la clave sustituida se rechaza.
 
 Todas las claves son de DESARROLLO: se generan en una carpeta temporal y se borran al terminar.
 Nunca se guardan en el repositorio. Sale con código 0 solo si todos los casos dan lo esperado y
@@ -296,6 +297,27 @@ def run(mode: str, lib: str, token_label: str, pin: str) -> dict[str, Any]:
                     (repo.meta_dir / "timestamp.json").write_bytes(ts_now)
             case("rollback_timestamp", rollback)
 
+            # 5 bis. rollback de snapshot: un timestamp NUEVO y bien firmado (clave de CI robada) que apunta
+            # a un snapshot anterior al que el cliente ya vio
+            def rollback_snapshot() -> str:
+                up = new_client(work, url, trusted_root, "rollback-snapshot")
+                up.refresh()
+                ts_now = (repo.meta_dir / "timestamp.json").read_bytes()
+                forged = copy.deepcopy(repo.timestamp)
+                forged.signed.version += 1
+                forged.signed.snapshot_meta = MetaFile(version=repo.snapshot.signed.version - 1)
+                repo.sign(forged, "timestamp")
+                forged.to_file(str(repo.meta_dir / "timestamp.json"), repo.ser)
+                try:
+                    cdir = work / "clients" / "rollback-snapshot"
+                    up2 = Updater(metadata_dir=str(cdir / "metadata"), metadata_base_url=f"{url}/metadata/",
+                                  target_dir=str(cdir / "targets"), target_base_url=f"{url}/targets/",
+                                  bootstrap=None)
+                    return expect(BadVersionNumberError, up2.refresh)
+                finally:
+                    (repo.meta_dir / "timestamp.json").write_bytes(ts_now)
+            case("rollback_snapshot", rollback_snapshot)
+
             # 6. rotación de root 1 → 2 (2 de las 3 claves viejas + clave nueva que sustituye a la 3.ª)
             def rotate_root() -> str:
                 old_signers = keys.signers["root"]
@@ -312,7 +334,19 @@ def run(mode: str, lib: str, token_label: str, pin: str) -> dict[str, Any]:
                 up.refresh()
                 assert up._trusted_set.root.version == 2  # noqa: SLF001 - comprobación de la prueba
                 assert compromised not in up._trusted_set.root.roles["root"].keyids  # noqa: SLF001
-                return "el cliente siguió 1.root → 2.root y ya no acepta la clave sustituida"
+                # Con 1.root, «vieja n.º 1 + sustituida» llegaba al umbral (2 de 3). Con 2.root ya no:
+                # un 3.root firmado así tiene que rechazarse.
+                forged = copy.deepcopy(repo.root)
+                forged.signed.version = 3
+                repo.sign(forged, "root", [old_signers[0], old_signers[2]])
+                forged_path = repo.meta_dir / "3.root.json"
+                forged.to_file(str(forged_path), repo.ser)
+                try:
+                    rejected = expect(UnsignedMetadataError, new_client(work, url, trusted_root, "forged-root").refresh)
+                finally:
+                    forged_path.unlink()
+                return ("el cliente siguió 1.root → 2.root; un 3.root firmado con la clave sustituida + otra "
+                        f"vieja: {rejected}")
             case("rotacion_root", rotate_root)
 
     results["seconds"] = round(time.perf_counter() - t_start, 2)
