@@ -165,7 +165,9 @@ begin
   Cams := StrToIntDef(Trim(RecCamerasEdit.Text), 0);
   Tenths := ParseTenths(RecMbpsEdit.Text);
   Days := EstimatedDays(Free, Cams, Tenths);
-  if Days >= 0 then
+  if Days = 0 then
+    Result := Result + #13#10 + FmtMessage(CustomMessage('RecDaysLess1'), [IntToStr(Cams), Trim(RecMbpsEdit.Text)])
+  else if Days > 0 then
   begin
     Result := Result + #13#10 + FmtMessage(CustomMessage('RecDays'), [IntToStr(Days), IntToStr(Cams),
       Trim(RecMbpsEdit.Text)]);

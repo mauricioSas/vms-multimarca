@@ -5,7 +5,6 @@ var
   gUninstPurge: Boolean;
   gUninstDataDir: String;
   gUninstRecDir: String;
-  gUninstRecCreated: String;
 
 { vmsctl con el que desinstalar: el de la versión activa, si no el de esta versión, si no cualquiera. }
 function UninstallVmsctl: String;
@@ -34,6 +33,16 @@ begin
   end;
 end;
 
+{ settings.recording.recordings_dir de config.json ('' si no está o es null). Se lee antes de borrar los datos. }
+function ConfigRecordingsDir(const DataDir: String): String;
+var
+  Raw: AnsiString;
+begin
+  Result := '';
+  if LoadStringFromFile(AddBackslash(DataDir) + 'config\config.json', Raw) then
+    Result := JsonGetString(Utf8Decode(Raw), 'recordings_dir');
+end;
+
 { Solo se borra una carpeta de datos que no sea la raíz de un disco ni una carpeta del sistema. }
 function SafeToPurge(const Dir: String): Boolean;
 begin
@@ -50,8 +59,9 @@ begin
   RegQueryStringValue(HKLM, VMS_REG_KEY, 'DataDir', gUninstDataDir);
   gUninstRecDir := '';
   RegQueryStringValue(HKLM, VMS_REG_KEY, 'RecordingsDir', gUninstRecDir);
-  gUninstRecCreated := '0';
-  RegQueryStringValue(HKLM, VMS_REG_KEY, 'RecordingsDirCreated', gUninstRecCreated);
+  { Tras reinstalar encima de datos conservados, el registro ya no la tiene: se lee de config.json. }
+  if gUninstRecDir = '' then
+    gUninstRecDir := ConfigRecordingsDir(gUninstDataDir);
   if VmsHasSwitch('PURGE') then
     gUninstPurge := True
   else if UninstallSilent then
@@ -95,8 +105,8 @@ begin
   end
   else
     Log('AVISO: la carpeta de datos ' + gUninstDataDir + ' no se borra por seguridad (raíz o carpeta del sistema).');
-  { La carpeta de grabaciones solo si la creó el instalador (marca) y no es la raíz de un disco. }
-  if (gUninstRecDir <> '') and (gUninstRecCreated = '1') and SafeToPurge(gUninstRecDir) and
+  { La carpeta de grabaciones solo si la creó el instalador (su marca está dentro) y no es la raíz de un disco. }
+  if (gUninstRecDir <> '') and SafeToPurge(gUninstRecDir) and
     FileExists(AddBackslash(gUninstRecDir) + VMS_MARKER_FILE) then
   begin
     if DelTree(gUninstRecDir, True, True, True) then

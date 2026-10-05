@@ -192,11 +192,20 @@ def run_uninstall(env: Env, args: Sequence[str], name: str, *, timeout: float = 
     return RunResult(proc.returncode, log, time.monotonic() - started)
 
 
+def windows_powershell_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Entorno para ``powershell.exe`` (5.1) lanzado desde un proceso de PowerShell 7 (el runner de CI): sin el
+    ``PSModulePath`` de pwsh, que le hace cargar módulos de la 7 y falla (Get-Acl, Get-LocalGroup…)."""
+    env = dict(os.environ if base is None else base)
+    for key in [k for k in env if k.upper() == "PSMODULEPATH"]:
+        del env[key]
+    return env
+
+
 def powershell(script: str, *, timeout: float = 120) -> str:
     """PowerShell solo en las pruebas (el producto no lo usa). Salida en UTF-8."""
     full = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; " + script
     proc = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", full],
-                          capture_output=True, timeout=timeout, check=False)
+                          capture_output=True, timeout=timeout, env=windows_powershell_env(), check=False)
     out = proc.stdout.decode("utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"PowerShell falló ({proc.returncode}): {proc.stderr.decode('utf-8', 'replace')[-2000:]}")

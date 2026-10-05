@@ -41,9 +41,10 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     proc = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
          str(source / "deploy" / "windows" / "install.ps1"), "-Components", "Backend", "-PythonMode", "Embedded",
-         "-SiteId", "site-v1-e2e", "-SourceDir", str(source)],
+         "-SiteId", "site-v1-e2e", "-SourceDir", str(source),
+         "-DownloadsDir", str(source / "deploy" / "windows" / "downloads")],
         cwd=source, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=1800,
-        check=False)
+        env=h.windows_powershell_env(), check=False)
     v1_log.write_bytes(proc.stdout or b"")
     step.details["v1_install_s"] = round(time.monotonic() - started, 1)
     tail = (proc.stdout or b"").decode("utf-8", "replace")[-4000:]
@@ -93,7 +94,7 @@ def test_upgrade_from_v1(e2e: E2E, step: h.Step) -> None:
     for key in ("VMS_KIOSK_TOKEN", "VMS_SITE_ID", "VMS_CREDENTIAL_BACKEND"):
         assert env_after.get(key) == before["env"].get(key), key
     assert env_after.get("VMS_ENGINE_MODE") == "attach"
-    assert "VMS_ADMIN_INITIAL_PASSWORD" not in env_after, "con usuarios no se pide ni guarda contraseña inicial"
+    assert not env_after.get("VMS_ADMIN_INITIAL_PASSWORD"), "con usuarios no se pide ni guarda contraseña inicial"
 
     # --- 4. programa: v2 en su sitio, restos de la v1 fuera
     prog = h.program_dir()
