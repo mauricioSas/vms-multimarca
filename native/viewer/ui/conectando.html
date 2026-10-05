@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conectando · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main class="centrado">
+    <div class="marca">VMS Multimarca</div>
+    <div class="estado">
+      <span id="punto" class="punto espera" aria-hidden="true"></span>
+      <h1 id="titulo">Conectando con el servicio…</h1>
+    </div>
+    <p id="mensaje" role="status" aria-live="polite">Esperando a que el servicio de vídeo responda.</p>
+    <p class="small muted" id="detalle"></p>
+    <div class="acciones">
+      <button type="button" id="ahora">Reintentar ahora</button>
+      <a class="boton" id="diag" href="diagnostico.html">Ver diagnóstico</a>
+    </div>
+    <p class="small muted" id="nota">La grabación no depende de esta ventana: sigue aunque la cierres.</p>
+  </main>
+  <script type="module" src="conectando.js"></script>
+</body>
+</html>

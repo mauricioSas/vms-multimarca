@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diagnóstico · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main>
+    <div class="marca">VMS Multimarca · Diagnóstico</div>
+    <h1>Diagnóstico del puesto</h1>
+    <p>Lo que ve este visor ahora mismo. Si llamas a soporte, lee estos datos o haz una captura.</p>
+    <p class="error" id="error" hidden></p>
+
+    <h2>Servicio de vídeo</h2>
+    <div class="tarjeta" id="servicio">
+      <div class="estado"><span id="punto" class="punto espera" aria-hidden="true"></span><strong id="srv-estado">Comprobando…</strong></div>
+      <dl class="datos espacio">
+        <dt>Servidor</dt><dd id="srv-nombre">—</dd>
+        <dt>Dirección</dt><dd class="mono" id="srv-url">—</dd>
+        <dt>Versión</dt><dd id="srv-version">—</dd>
+        <dt>Detalle</dt><dd id="srv-detalle">—</dd>
+      </dl>
+    </div>
+
+    <h2>Actualizaciones</h2>
+    <div class="tarjeta">
+      <p id="act-etiqueta">—</p>
+      <dl class="datos" id="act-datos"></dl>
+    </div>
+
+    <h2>Este equipo</h2>
+    <div class="tarjeta">
+      <dl class="datos">
+        <dt>Versión del visor</dt><dd id="visor-version">—</dd>
+        <dt>Instalación</dt><dd class="mono" id="instalacion">—</dd>
+        <dt>Datos</dt><dd class="mono" id="datos">—</dd>
+        <dt>Configuración</dt><dd class="mono" id="visor-json">—</dd>
+        <dt>Clave de los muros</dt><dd id="clave">—</dd>
+      </dl>
+    </div>
+
+    <div class="acciones">
+      <button type="button" id="actualizar">Volver a comprobar</button>
+      <a class="boton" id="volver" href="conectando.html" hidden>Volver</a>
+    </div>
+  </main>
+  <script type="module" src="diagnostico.js"></script>
+</body>
+</html>

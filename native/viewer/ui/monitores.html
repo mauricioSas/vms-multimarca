@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muros y monitores · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main>
+    <div class="marca">VMS Multimarca · Muros y monitores</div>
+    <h1>Muros y monitores</h1>
+    <p>Elige en qué monitor se abre cada muro. Si un monitor se desconecta, su muro se oculta y vuelve solo cuando el
+      monitor reaparece; los demás muros no se mueven.</p>
+    <p class="error" id="error" hidden></p>
+
+    <h2>Monitores conectados</h2>
+    <table aria-label="Monitores conectados">
+      <thead><tr><th>#</th><th>Monitor</th><th>Posición</th><th>Resolución</th><th>Escala</th></tr></thead>
+      <tbody id="monitores"></tbody>
+    </table>
+
+    <h2>Muros</h2>
+    <table aria-label="Asignación de muros">
+      <thead><tr><th>Muro</th><th>Monitor</th><th>Servidor</th><th>Estado</th></tr></thead>
+      <tbody id="muros"></tbody>
+    </table>
+    <div class="acciones"><button type="button" id="actualizar">Actualizar la lista</button></div>
+  </main>
+  <script type="module" src="monitores.js"></script>
+</body>
+</html>

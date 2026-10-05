@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Certificado del servidor · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main class="centrado">
+    <div class="marca">VMS Multimarca</div>
+    <p class="error" id="error" hidden></p>
+
+    <section id="cambiado" hidden>
+      <h1>El certificado del servidor cambió</h1>
+      <div class="tarjeta peligro">
+        <p><strong>No se ha abierto nada.</strong> El servidor <strong id="c-servidor"></strong>
+          (<span class="mono" id="c-url"></span>) presenta un certificado distinto del que se guardó la última vez.</p>
+        <p>Puede ser normal (el servidor se reinstaló o se renovó su certificado) o puede ser que otro equipo se esté
+          haciendo pasar por él. Antes de seguir, pregunta a quien administra ese servidor si cambió su certificado y
+          compara la huella nueva con la que muestra el servidor.</p>
+      </div>
+      <h2>Huella guardada</h2>
+      <div class="huella" id="c-esperada"></div>
+      <h2>Huella que presenta ahora</h2>
+      <div class="huella" id="c-observada"></div>
+    </section>
+
+    <section id="primera" hidden>
+      <h1>Confirma el certificado del servidor</h1>
+      <div class="tarjeta aviso">
+        <p>Es la primera vez que este puesto se conecta a <strong id="p-servidor"></strong>
+          (<span class="mono" id="p-url"></span>). Compara esta huella con la que muestra el servidor antes de
+          confiar en él. Si más adelante cambia, el visor te avisará.</p>
+      </div>
+      <h2>Huella SHA-256</h2>
+      <div class="huella" id="p-observada"></div>
+    </section>
+
+    <div class="acciones">
+      <button type="button" id="reintentar">Volver a comprobar</button>
+      <button type="button" id="confiar" class="peligro" disabled>Confiar en este certificado</button>
+    </div>
+    <p class="small muted" id="nota-confiar" hidden>Para confiar en el certificado nuevo, escribe los 4 últimos
+      caracteres de la huella nueva: <input id="ultimos" size="6" maxlength="5" autocomplete="off"></p>
+  </main>
+  <script type="module" src="certificado.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Servidores · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main>
+    <div class="marca">VMS Multimarca · Servidores</div>
+    <h1>Servidores</h1>
+    <p>Los equipos con el servicio de vídeo a los que se conecta este puesto. El servidor «local» es este mismo PC.
+      Un servidor de otro equipo se conecta por HTTPS y con su certificado fijado: si el certificado cambia, el visor
+      avisa y no abre nada hasta que lo revises.</p>
+    <p class="error" id="error" hidden></p>
+
+    <table aria-label="Servidores configurados">
+      <thead><tr><th>Nombre</th><th>Dirección y huella</th><th>Uso</th><th></th></tr></thead>
+      <tbody id="lista"></tbody>
+    </table>
+
+    <h2>Añadir o cambiar un servidor</h2>
+    <form class="tarjeta" id="form" autocomplete="off">
+      <div class="fila">
+        <div><label for="nombre">Nombre</label><input id="nombre" maxlength="64" required placeholder="Central"></div>
+        <div><label for="url">Dirección</label><input id="url" required placeholder="https://192.168.1.20:8643"></div>
+      </div>
+      <div class="acciones"><button type="submit" id="probar">Probar</button></div>
+      <div id="resultado" hidden>
+        <p id="res-mensaje"></p>
+        <div id="res-huella-caja" hidden>
+          <p class="small muted">Huella SHA-256 del certificado que presenta el servidor ahora mismo. Compárala con la
+            que muestra el servidor (en su página «Estado» o al instalarlo) antes de guardarlo.</p>
+          <div class="huella" id="res-huella"></div>
+        </div>
+        <div class="acciones"><button type="button" class="principal" id="guardar" disabled>Guardar</button></div>
+      </div>
+    </form>
+
+    <h2>Qué abre cada ventana</h2>
+    <div class="tarjeta">
+      <div class="fila" id="asignaciones"></div>
+      <p class="small muted">Un muro de otro servidor usa el usuario de solo vista de ese servidor (se inicia sesión
+        una vez en el propio muro). Mezclar cámaras de varios servidores en un mismo muro llegará más adelante.</p>
+    </div>
+  </main>
+  <script type="module" src="servidores.js"></script>
+</body>
+</html>

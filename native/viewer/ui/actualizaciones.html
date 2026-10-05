@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Actualizaciones · VMS Multimarca</title>
+  <link rel="stylesheet" href="comun.css">
+</head>
+<body>
+  <main>
+    <div class="marca">VMS Multimarca · Actualizaciones</div>
+    <h1>Actualizaciones</h1>
+    <p id="etiqueta">—</p>
+    <p class="error" id="error" hidden></p>
+    <div class="tarjeta">
+      <dl class="datos">
+        <dt>Visor</dt><dd id="visor">—</dd>
+        <dt>Instalada</dt><dd id="instalada">—</dd>
+        <dt>Canal</dt><dd id="canal">—</dd>
+        <dt>Última comprobación</dt><dd id="ultima">—</dd>
+      </dl>
+    </div>
+    <p class="small muted">Las versiones nuevas se instalan solas en la ventana de mantenimiento (de madrugada), sin
+      cortar la grabación. Buscar o volver atrás a mano necesita una cuenta de administrador: Windows lo pedirá.</p>
+    <div class="acciones">
+      <button type="button" id="buscar">Buscar ahora</button>
+    </div>
+    <p id="res-buscar" role="status"></p>
+
+    <h2>Volver a la versión anterior</h2>
+    <div class="tarjeta aviso">
+      <p>Vuelve a la versión que había antes de la última actualización. Los cambios de configuración hechos desde
+        entonces se perderán (se restaura la copia que se hizo al actualizar). La grabación sigue.</p>
+      <label for="motivo">Motivo (queda en el registro)</label>
+      <input id="motivo" maxlength="200" placeholder="Por ejemplo: los muros no muestran vídeo desde la actualización">
+      <div class="acciones"><button type="button" class="peligro" id="volver">Volver a la versión anterior…</button></div>
+      <p id="res-volver" role="status"></p>
+    </div>
+  </main>
+  <script type="module" src="actualizaciones.js"></script>
+</body>
+</html>
