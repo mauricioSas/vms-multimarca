@@ -955,8 +955,9 @@ versión salvo `/ALLOWDOWNGRADE`. Cerrojo compartido por la tubería (§15.2, or
   claro dentro de un equipo (se descarta y se avisa, como en la v1).
 - Cuerpos de petición que llegan como `dict` (ajustes, reglas, analítica por cámara): se filtran con
   `vms.core.models.known_fields_only(Modelo, cuerpo)` antes de mezclarse con lo guardado.
-- Versión **mayor** que la propia: se carga sin migrar y se registra un aviso. **Pendiente de B4:** arrancar
-  en solo lectura (`config_warning`, `status: degraded`) y no guardar nunca.
+- Versión **mayor** que la propia: se carga sin migrar, en **solo lectura** (`ConfigStore.read_only`; el aviso
+  de `load()` llega a `config_warning`) y no se guarda nunca: `save()` lanza `NewerConfigError` (409
+  `config_read_only`). Tampoco se guarda un `AppConfig` con `version` mayor que `CONFIG_VERSION`.
 - `Vendor`: texto `^[a-z0-9][a-z0-9-]{1,31}$`. El alta (`DeviceCreate`, `DeviceUpdate`,
   `DeviceTestRequest`) lo valida contra `known_vendor_ids()` (lo amplía el registro con
   `register_vendor_ids()`); un equipo guardado con una marca desconocida se conserva y la interfaz muestra
