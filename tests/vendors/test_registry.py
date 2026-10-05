@@ -16,7 +16,7 @@ from vms.vendors.registry import REGISTRY, RegistryError, best_match, get_driver
 
 ROOT = Path(__file__).resolve().parents[2]
 V2_DRIVERS = {"hikvision", "dahua", "onvif", "generic", "ezviz", "imou", "uniview", "tplink-vigi", "tapo", "hanwha",
-              "axis", "ajax", "reolink", "bosch"}
+              "axis", "milesight", "ajax", "reolink", "bosch"}
 
 
 def test_plan_matrix_is_registered() -> None:
@@ -80,6 +80,8 @@ def test_rtsp_facade_delegates_to_registry() -> None:
     with pytest.raises(ValueError):
         rtsp.preset_paths("hikvision", 0)
     assert rtsp.vendor_name("tplink-vigi") == "TP-Link VIGI" and rtsp.vendor_name("x") == "x"
+    assert rtsp.preset_paths("milesight", 1) == ("/main", "/sub")
+    assert registry.variants_for("milesight", 1)[0].main == "//main"
 
 
 @pytest.mark.parametrize(("hints", "expected"), [
@@ -96,6 +98,7 @@ def test_rtsp_facade_delegates_to_registry() -> None:
     (DetectionHints(model="XNO-6080R"), "hanwha"),
     (DetectionHints(model="RLC-510A"), "reolink"),
     (DetectionHints(model="NBN-73023BA"), "bosch"),
+    (DetectionHints(model="MS-C5376-PE"), "milesight"),
     (DetectionHints(scopes=["onvif://www.onvif.org/name/VIVOTEK"], model="FD9389"), "onvif"),
 ])
 def test_best_match(hints: DetectionHints, expected: str) -> None:

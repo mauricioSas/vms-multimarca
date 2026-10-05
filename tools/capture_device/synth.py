@@ -101,6 +101,8 @@ CASES: list[Case] = [
     Case("axis", "camera", DetectionHints(scopes=brand_scopes("AXIS", "M1065-L"))),
     Case("ajax", "camera", DetectionHints(scopes=brand_scopes("Ajax", "TurretCam")), _ajax,
          notes="Ruta de vídeo leída por ONVIF (en el equipo real se copia de la app); RTSP en el 8554"),
+    Case("milesight", "camera", DetectionHints(scopes=brand_scopes("Milesight", "MS-C5376-PE")), scenario="double-slash",
+         notes="La ruta /main da 404 y responde //main (caso documentado de doble barra)"),
     Case("reolink", "camera", DetectionHints(scopes=brand_scopes("Reolink", "RLC-510A"))),
     Case("bosch", "camera", DetectionHints(scopes=brand_scopes("Bosch", "NBN-73023BA"))),
 ]

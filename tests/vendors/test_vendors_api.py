@@ -86,7 +86,7 @@ async def test_vendors_listing_is_admin_only_and_has_no_functions(b5: B5Harness)
     data = r.json()
     ids = [v["id"] for v in data]
     assert {"hikvision", "dahua", "onvif", "generic", "ezviz", "imou", "uniview", "tplink-vigi", "tapo", "hanwha",
-            "axis", "ajax", "reolink", "bosch"} <= set(ids)
+            "axis", "milesight", "ajax", "reolink", "bosch"} <= set(ids)
     hik = next(v for v in data if v["id"] == "hikvision")
     assert hik["maturity"] in ("verified", "fixtures", "community", "experimental")
     assert hik["preset_examples"][0] == {"channel": 1, "main": "/Streaming/Channels/101",
