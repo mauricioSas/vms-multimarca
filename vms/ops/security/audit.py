@@ -30,6 +30,7 @@ from vms.core.models import Camera, Device
 from vms.core.rtsp import format_host, preset_paths, redact
 from vms.core.sources import camera_paths
 
+from ..drivers import SECURITY_READ, capabilities, driver_name, has_api
 from ..host import dynamic
 from ..models import ClockCheck, SecurityAuditReport, SecurityFinding
 from .advisories import LoadedTable, evaluate
@@ -174,9 +175,10 @@ async def audit_device(dev: Device, cams: list[Camera], deps: AuditDeps, table: 
         probes["sdk"] = deps.tcp_check(host, sdk, deps.timeout)
     res = dict(zip(probes, await asyncio.gather(*probes.values()), strict=True))
     sec: DeviceSecuritySettings | None = None
-    if admin is not None:
-        client = deps.client_factory(dev, password)
+    if admin is not None and SECURITY_READ in capabilities(dev.vendor) and has_api(dev.vendor):
+        client: Any = None
         try:
+            client = deps.client_factory(dev, password)
             if isinstance(client, DeviceSecurityClient):
                 sec = await client.security_settings(admin[0], admin[1])
         except DeviceError as exc:
@@ -185,10 +187,12 @@ async def audit_device(dev: Device, cams: list[Camera], deps: AuditDeps, table: 
         except Exception:  # noqa: BLE001
             log.exception("Error leyendo los ajustes de seguridad de %s", did)
         finally:
-            try:
-                await client.aclose()
-            except Exception:  # noqa: BLE001
-                log.debug("Error cerrando el cliente", exc_info=True)
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001
+                    log.debug("Error cerrando el cliente", exc_info=True)
+
     telnet_on = sec.telnet_enabled if sec and sec.telnet_enabled is not None else res["telnet"]
     out.append(_f(did, "telnet", "critical", "vulnerable", "Telnet está activado: es un acceso sin cifrar.",
                   "Desactiva Telnet en el equipo (Red > Avanzado).") if telnet_on else
@@ -226,8 +230,12 @@ async def audit_device(dev: Device, cams: list[Camera], deps: AuditDeps, table: 
                    if sec.p2p_cloud_enabled else _f(did, "p2p_cloud", "info", "ok", "La nube del fabricante (P2P) "
                                                                                      "está desactivada."))
     else:
-        out.append(_f(did, "p2p_cloud", "info", "unknown", "Para saber si la nube del fabricante (P2P) está activa "
-                                                           "hacen falta las credenciales de administrador."))
+        no_read = admin is not None and not (SECURITY_READ in capabilities(dev.vendor) and has_api(dev.vendor))
+        out.append(_f(did, "p2p_cloud", "info", "unknown",
+                      f"Los equipos «{driver_name(dev.vendor)}» no permiten leer sus ajustes de seguridad desde el "
+                      "programa: comprueba en el equipo si la nube del fabricante (P2P) está activa." if no_read else
+                      "Para saber si la nube del fabricante (P2P) está activa hacen falta las credenciales de "
+                      "administrador."))
     # 3) acceso anónimo: una petición sin credenciales a cada uno
     path = None
     if cams:

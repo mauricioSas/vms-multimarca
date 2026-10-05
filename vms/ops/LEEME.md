@@ -9,6 +9,7 @@ Operación, IA de verificación y onboarding dentro del backend. Lo arranca el `
 |---|---|
 | `service.py` | Tareas en segundo plano (salud, hora, vigilancia de cámaras caídas, huecos de grabación y disco, resumen del latido, mantenimiento) y operaciones de las rutas. Al arrancar crea la clave de evidencias y da por fallidas las exportaciones cortadas |
 | `host.py` | `OpsHost`: lo que B6 usa del backend, como Protocol (mypy no arrastra `vms.api` ni `vms.engine`) |
+| `drivers.py` | Lo que B6 pregunta al registro de drivers de B5: capacidades (`time_read`, `security_read`), si hay API (Ezviz/Reolink/RTSP manual no: ni se pide cliente) y la marca real de un equipo dado de alta como ONVIF |
 | `health/imaging.py` | Salud 0-100 con OpenCV clásico frente a la referencia (mediana): negra, tapada, congelada (sin OSD), movida/girada con **puerta de inliers ≥ 15 %**, mira a otro sitio, desenfocada, degradada, IR atascado/débil, contraluz, color, ruido |
 | `health/tracker.py` | Histéresis (N comprobaciones seguidas para cambiar de estado) |
 | `health/references.py` | Referencias de día y noche y la imagen del último aviso (`<datos>/ops/references/`) |
