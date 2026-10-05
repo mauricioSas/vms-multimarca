@@ -40,7 +40,7 @@ from vms.core.interfaces import Capability, ChannelInfo, DetectionHints, DeviceI
 from vms.core.models import DeviceBase
 
 from .detect import scope_values
-from .registry import REGISTRY, get_driver, preset_for
+from .registry import REGISTRY, get_driver, preset_for, variants_for
 
 log = logging.getLogger("vms.vendors.capture")
 
@@ -256,9 +256,12 @@ async def capture(device: DeviceBase, password: str, out_dir: Path, *, transport
     sdp_text = ""
     codec = None
     if rtsp_path:
+        alts = tuple(v.main for v in variants_for(device.vendor, ch, kind)) if preset else ()
         probe = await probe_rtsp(device.host, device.rtsp_port, rtsp_path, device.username, password,
-                                 timeout=timeout, allow_basic=device.allow_basic, trace=trace)
+                                 timeout=timeout, allow_basic=device.allow_basic, trace=trace, alt_paths=alts)
         sdp_text, codec = probe.sdp_text, probe.video_codec
+        if probe.ok and probe.path:
+            rtsp_path = probe.path          # la ruta que respondió (puede ser una variante del driver)
     if hints is None:
         hints = await _discover_hints(device.host, discover_timeout)
 
