@@ -6,9 +6,13 @@ ACL por SID, firewall por puerto, procesos con su cuenta virtual, puertos ocupad
 una versión a prueba rota **por petición** (solo VMSUpdater escribe el puntero), diag bundle sin secretos,
 parada sin huérfanos y migración desde servicios WinSW de la v1.
 
-Payload mínimo: `vmshost.exe`, `versions\\<X>\\bin\\vmsctl.exe`, el runtime embebible con solo
-`requirements-vms.txt` (la analítica y el latido no tienen sus dependencias: caen y `vmshost` los relanza
-con espera, que también es una prueba), el código (`app\\vms`, `analytics`, `central`) y `mediamtx.exe`.
+Payload mínimo: `vmshost.exe`, `versions\\<X>\\bin\\vmsctl.exe`, el runtime embebible con
+`requirements-vms.txt` + `requirements-analytics.txt` (la analítica arranca de verdad), el código
+(`app\\vms`, `analytics`, `central`), `mediamtx.exe` y una ranura del actualizador con un doble de
+`vms_updater` (el de verdad es de B4). El latido sin `VMS_CENTRAL_URL` queda «en espera» (sano).
+
+`health wait` mira el estado real de cada proceso (`logs\\status-<Servicio>.json`), no solo el SCM: se
+comprueba también que un servicio en bucle de caídas da 12 (prueba negativa con el latido mal configurado).
 
 Solo biblioteca estándar. Las comprobaciones leen el registro y las ACL por SID (nunca texto traducido),
 salvo `Get-CimInstance … GetOwner` y `Get-Acl`, que solo usa esta prueba.
@@ -175,7 +179,15 @@ def main() -> int:
             shutil.copytree(REPO / pkg, vdir / "app" / pkg, ignore=ignore)
         (vdir / "engine").mkdir()
         shutil.copy2(a.mediamtx, vdir / "engine" / "mediamtx.exe")
-        r = run([str(vdir / "runtime" / "python.exe"), "-c", "import vms, fastapi, cryptography, sys; print(vms.__file__)"])
+        # Ranura del actualizador: vmsctl + Python sin paquetes de terceros + el doble de vms_updater
+        slot = root / "updater" / "slot-a"
+        slot.mkdir(parents=True)
+        shutil.copy2(a.build / "vmsctl.exe", slot / "vmsctl.exe")
+        shutil.copytree(a.runtime, slot / "runtime",
+                        ignore=lambda d, names: ["site-packages"] if Path(d).name == "Lib" else [])
+        shutil.copytree(REPO / "native" / "ci" / "stub_updater", slot / "app", ignore=ignore)
+        r = run([str(vdir / "runtime" / "python.exe"), "-c",
+                 "import vms, fastapi, cryptography, supervision, sys; print(vms.__file__)"])
         got = os.path.normcase(os.path.normpath(r.stdout.strip()))
         want = os.path.normcase(os.path.normpath(vdir / "app"))
         assert r.returncode == 0 and got.startswith(want), f"runtime embebible: {r.stdout} {r.stderr}"
@@ -223,6 +235,8 @@ def main() -> int:
             acts = [(int.from_bytes(fa[20 + 8 * i:24 + 8 * i], "little"),
                      int.from_bytes(fa[24 + 8 * i:28 + 8 * i], "little")) for i in range(count)]
             assert reset == 86400 and acts == [(1, 1000), (1, 5000), (1, 30000)], f"{s}: recuperación {reset} {acts}"
+            pre = reg(rf"SYSTEM\CurrentControlSet\Services\{s}", "PreshutdownTimeout")
+            assert pre == 30000, f"{s}: plazo de preapagado {pre}"
             out[s] = acts
         # El SID calculado (Rust y Python) es el mismo que da Windows
         sc = run(["sc.exe", "showsid", "VMSBackend"]).stdout
@@ -248,6 +262,13 @@ def main() -> int:
             found[sub or "raíz"] = sorted(sids)
         tok = acl_sids(data / "secrets" / "internal.token")
         assert service_sid("VMSAnalytics") in tok and service_sid("VMSHeartbeat") in tok, tok
+        # logs\: engine.log solo lo modifica VMSEngine (el backend lo lee); los demás servicios no aparecen
+        eng = acl_sids(data / "logs" / "engine.log")
+        analytics = service_sid("VMSAnalytics")
+        assert {engine, backend} <= eng and analytics not in eng, f"engine.log: {eng}"
+        found["logs/engine.log"] = sorted(eng)
+        env = acl_sids(data / ".env")
+        assert backend in env and analytics in env and users not in env, f".env: {env}"
         key = (data / "secrets" / "secret.key").read_text(encoding="ascii")
         assert key.startswith("vms-dpapi-v1:"), "secret.key protegida con DPAPI de máquina"
         return found
@@ -264,7 +285,39 @@ def main() -> int:
     def start_and_health() -> str:
         ctl("services", "start", timeout=180)
         out = ctl("health", "wait", "--timeout", "240", timeout=300)
+        checks = {c["name"]: c for c in out["data"]["checks"]}
+        for s in SERVICES:
+            assert checks[f"{s} (proceso)"]["ok"], checks
+        assert "en espera" in checks["VMSHeartbeat (proceso)"]["detail"], checks["VMSHeartbeat (proceso)"]
         return f"sano en {out['data']['waited_s']} s: {out['data']['checks']}"
+
+    def env_line(key: str, value: str | None) -> None:
+        env = data / ".env"
+        lines = [ln for ln in env.read_text(encoding="utf-8").splitlines() if not ln.startswith(f"{key}=")]
+        if value is not None:
+            lines.append(f"{key}={value}")
+        env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def crash_loop_is_unhealthy() -> str:
+        # Latido con panel central pero sin token de sede: el agente sale con 2 nada más arrancar (bucle).
+        env_line("VMS_CENTRAL_URL", "http://127.0.0.1:9")
+        ctl("services", "restart", "--only", "VMSHeartbeat", timeout=180)
+        out = ctl("health", "wait", "--timeout", "45", expect=12, timeout=120)
+        msg = out.get("error", {}).get("message_es", "")
+        assert "VMSHeartbeat (proceso)" in msg, json.dumps(out, ensure_ascii=False)[:1500]
+        assert "VMSBackend (proceso)" not in msg, msg
+        env_line("VMS_CENTRAL_URL", None)
+        ctl("services", "restart", "--only", "VMSHeartbeat", timeout=180)
+        ok = ctl("health", "wait", "--timeout", "120", timeout=180)
+        return f"en bucle → 12 ({msg[:300]}); sin central → sano en {ok['data']['waited_s']} s"
+
+    def status_files() -> dict[str, Any]:
+        out = {}
+        for s in SERVICES:
+            st = json.loads((data / "logs" / f"status-{s}.json").read_text(encoding="utf-8"))
+            assert st["state"] in ("running", "idle"), (s, st)
+            out[s] = st["state"]
+        return out
 
     def identities() -> dict[str, Any]:
         mtx = owner_of("mediamtx.exe")
@@ -336,6 +389,10 @@ def main() -> int:
         return "servicios y reglas quitados; datos conservados"
 
     def migrate_v1() -> str:
+        # Como dejaba la v1 el .env (install.ps1, Protect-Path): sin herencia, solo SYSTEM y Administradores.
+        r = run(["icacls", str(data / ".env"), "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F"])
+        assert r.returncode == 0, r.stdout
+        assert service_sid("VMSBackend") not in acl_sids(data / ".env")
         for s in ("VMSBackend", "VMSAnalytics", "VMSHeartbeat"):
             winsw = root / "services" / f"{s}.exe"
             r = run(["sc.exe", "create", s, "binPath=", f'"{winsw}"', "start=", "demand"])
@@ -348,9 +405,11 @@ def main() -> int:
             key = rf"SYSTEM\CurrentControlSet\Services\{s}"
             assert "vmshost.exe" in reg(key, "ImagePath").lower(), s
         assert reg(r"SYSTEM\CurrentControlSet\Services\VMSBackend", "ObjectName").lower() == "nt service\\vmsbackend"
+        env = acl_sids(data / ".env")
+        assert service_sid("VMSBackend") in env and service_sid("VMSHeartbeat") in env, f".env tras migrar: {env}"
         ctl("services", "start", timeout=180)
         h = ctl("health", "wait", "--timeout", "240", timeout=300)
-        return f"WinSW → vmshost (puesto store); sano en {h['data']['waited_s']} s"
+        return f"WinSW → vmshost (puesto store); .env legible por los servicios; sano en {h['data']['waited_s']} s"
 
     def purge() -> str:
         ctl("services", "uninstall", "--purge", timeout=240)
@@ -367,6 +426,8 @@ def main() -> int:
         step("acl_por_sid", check_acl, critical=False)
         step("firewall_por_puerto", firewall, critical=False)
         step("arranque_y_health_wait", start_and_health)
+        step("estado_real_de_cada_proceso", status_files, critical=False)
+        step("health_detecta_servicio_en_bucle", crash_loop_is_unhealthy, critical=False)
         step("procesos_con_su_cuenta", identities, critical=False)
         step("puertos_ocupados_codigo_10", ports_busy, critical=False)
         step("registros", logs_redacted, critical=False)

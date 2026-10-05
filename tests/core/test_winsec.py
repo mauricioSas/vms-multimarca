@@ -120,3 +120,83 @@ def test_real_dpapi_roundtrip_on_windows(tmp_path: Path) -> None:  # pragma: no 
     old = tmp_path / "internal.token"
     old.write_bytes(b"token-v1")
     assert winsec.migrate_plaintext(old) and winsec.read_secret(old) == b"token-v1"
+
+
+
+def _v1_store(tmp_path: Path) -> tuple[Path, bytes]:
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    key = Fernet.generate_key()
+    (secrets / "secret.key").write_bytes(key)                     # v1: clave en claro
+    CredentialStore(EncryptedFileBackend(secrets / "credentials.enc", key)).set_device_password("dev-1", "Cl4ve!")
+    return secrets, key
+
+
+@pytest.mark.usefixtures("fake_dpapi")
+def test_failed_replace_keeps_the_v1_key_intact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regresión: si la sustitución falla (antivirus, disco lleno), la clave en claro NO se pierde."""
+    secrets, key = _v1_store(tmp_path)
+
+    def locked(path: Path, data: bytes) -> None:
+        raise PermissionError(13, "bloqueado por el antivirus")
+
+    with monkeypatch.context() as m:
+        m.setattr(winsec, "atomic_write_bytes", locked)
+        with pytest.raises(PermissionError):
+            winsec.migrate_plaintext(secrets / "secret.key")
+        assert (secrets / "secret.key").read_bytes() == key, "la clave en claro sigue intacta"
+        # El almacén abre igual (la migración fallida solo deja un aviso) y las contraseñas siguen ahí
+        assert CredentialStore.create("file", secrets).get_device_password("dev-1") == "Cl4ve!"
+        assert (secrets / "secret.key").read_bytes() == key
+    # Sin el bloqueo, el siguiente arranque la migra y todo sigue abriendo
+    assert CredentialStore.create("file", secrets).get_device_password("dev-1") == "Cl4ve!"
+    assert winsec.is_protected(secrets / "secret.key")
+
+
+@pytest.mark.usefixtures("fake_dpapi")
+def test_power_cut_between_temp_and_rename_keeps_the_v1_key(tmp_path: Path,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regresión: corte de luz tras escribir el temporal y antes de renombrar → la clave sigue en claro."""
+    from vms.core import atomic
+
+    secrets, key = _v1_store(tmp_path)
+
+    class PowerCut(BaseException):
+        pass
+
+    def cut(tmp: Path, dst: Path) -> None:
+        raise PowerCut
+
+    with monkeypatch.context() as m:
+        m.setattr(atomic, "replace", cut)
+        with pytest.raises(PowerCut):
+            winsec.migrate_plaintext(secrets / "secret.key")
+    assert (secrets / "secret.key").read_bytes() == key
+    # «Reinicio»: el almacén abre, migra (pisando el temporal huérfano) y las contraseñas siguen
+    assert CredentialStore.create("file", secrets).get_device_password("dev-1") == "Cl4ve!"
+    assert winsec.is_protected(secrets / "secret.key")
+    assert not atomic.temp_path(secrets / "secret.key").exists()
+
+
+@pytest.mark.usefixtures("fake_dpapi")
+def test_dpapi_roundtrip_mismatch_does_not_touch_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "site.token"
+    p.write_bytes(b"token-v1")
+    monkeypatch.setattr(winsec, "unprotect", lambda blob: b"otra-cosa")
+    with pytest.raises(winsec.SecretProtectionError, match="se deja en claro"):
+        winsec.migrate_plaintext(p)
+    assert p.read_bytes() == b"token-v1"
+
+
+@pytest.mark.usefixtures("fake_dpapi")
+def test_unreadable_after_replace_restores_the_plaintext(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "secret.key"
+    p.write_bytes(b"clave-v1")
+
+    def broken_read(path: Path) -> bytes:
+        raise winsec.SecretProtectionError("lectura rota")
+
+    monkeypatch.setattr(winsec, "read_secret", broken_read)
+    with pytest.raises(winsec.SecretProtectionError, match="se restauró en claro"):
+        winsec.migrate_plaintext(p)
+    assert p.read_bytes() == b"clave-v1"

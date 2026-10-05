@@ -150,9 +150,18 @@ impl Pointer {
     }
 
     /// La versión activa pasa a `to`, «a prueba» desde `now`.
+    ///
+    /// `previous` guarda siempre una versión **confirmada**: si la activa sigue a prueba (o se vuelve a
+    /// cambiar a la misma), se conserva el `previous` de antes. Así una vuelta atrás nunca cae en una
+    /// versión que nadie confirmó. Volver a la confirmada mientras otra está a prueba es una vuelta atrás.
     pub fn switched(&self, to: &str, now: u64) -> Pointer {
+        if self.trial && self.previous.as_deref() == Some(to) {
+            return self.rolled_back(to);
+        }
         let mut p = self.clone();
-        p.previous = Some(self.active.clone());
+        if !self.trial && self.active != to {
+            p.previous = Some(self.active.clone());
+        }
         p.active = to.to_string();
         p.trial = true;
         p.trial_since_unix = Some(now);
@@ -167,6 +176,15 @@ impl Pointer {
         p
     }
 
+    /// A qué versión volver desde la activa: primero la **última buena** del diario (`last_good`, la
+    /// confirmada), después `previous`; nunca la activa ni una que no esté instalada.
+    pub fn rollback_target(&self, last_good: Option<&str>, installed: &dyn Fn(&str) -> bool) -> Option<String> {
+        [last_good.map(str::to_string), self.previous.clone()]
+            .into_iter()
+            .flatten()
+            .find(|v| v != &self.active && installed(v))
+    }
+
     /// Vuelta atrás a `to` (la anterior o la última buena), sin «a prueba».
     pub fn rolled_back(&self, to: &str) -> Pointer {
         let mut p = self.clone();
@@ -177,9 +195,15 @@ impl Pointer {
         p
     }
 
+    /// Igual que [`Pointer::switched`]: `previous_slot` es siempre una ranura confirmada.
     pub fn slot_switched(&self, slot: &str, now: u64) -> Pointer {
+        if self.updater.trial && self.updater.previous_slot.as_deref() == Some(slot) {
+            return self.slot_rolled_back();
+        }
         let mut p = self.clone();
-        p.updater.previous_slot = Some(self.updater.slot.clone());
+        if !self.updater.trial && self.updater.slot != slot {
+            p.updater.previous_slot = Some(self.updater.slot.clone());
+        }
         p.updater.slot = slot.to_string();
         p.updater.trial = true;
         p.updater.trial_since_unix = Some(now);
@@ -226,6 +250,14 @@ pub struct RollbackRequest {
     pub from: String,
     pub reason: String,
     pub created_unix: u64,
+}
+
+/// Mensaje para el registro del arrancador: un evento (se anota siempre) o un problema (se anota solo
+/// cuando cambia, para no llenar el registro cada medio segundo).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Note {
+    Event(String),
+    Problem(String),
 }
 
 /// Resultado de leer el puntero sin escribir nada.
@@ -355,6 +387,71 @@ impl StateDir {
         Ok(Resolved { pointer, rebuilt: true, why })
     }
 
+    /// Vuelta atrás de la versión activa `p` (la usa el arrancador del actualizador): escribe el puntero y
+    /// `host-rollback.json` (diagnóstico). Devuelve el puntero nuevo.
+    pub fn roll_back_version(
+        &self,
+        p: &Pointer,
+        why: &str,
+        unix: u64,
+        installed: &dyn Fn(&str) -> bool,
+    ) -> Result<Pointer, StateError> {
+        let last_good = self.last_good().ok();
+        let to = p.rollback_target(last_good.as_deref(), installed).ok_or_else(|| {
+            StateError::Invalid(format!(
+                "la versión a prueba {} falla ({why}) pero no hay otra instalada a la que volver",
+                p.active
+            ))
+        })?;
+        let np = self.write_pointer(&p.rolled_back(&to))?;
+        let rec = serde_json::json!({
+            "schema": SCHEMA, "from": p.active, "to": to, "reason": why, "at_unix": unix, "by": "vmshost",
+        });
+        // Solo diagnóstico: si no se puede escribir, la vuelta atrás ya está hecha.
+        let _ = write_json(&self.host_rollback_path(), &rec);
+        Ok(np)
+    }
+
+    /// Tareas del arrancador de `VMSUpdater` (el único, con el instalador, que escribe el puntero): atiende
+    /// las peticiones de vuelta atrás de `state\requests\` (solo si piden la versión que sigue a prueba) y
+    /// vuelve atrás la versión a prueba que nadie confirmó en `confirm_timeout_s`.
+    pub fn updater_duties(&self, unix: u64, confirm_timeout_s: u64, installed: &dyn Fn(&str) -> bool) -> Vec<Note> {
+        let mut notes = Vec::new();
+        let mut pointer = self.read_pointer();
+        for (path, req) in self.read_requests() {
+            match (&req, &pointer) {
+                (Err(e), _) => notes.push(Note::Event(format!("petición ilegible descartada: {e}"))),
+                (Ok(r), Ok(p)) if r.kind == RollbackKind::Version && p.trial && p.active == r.from => {
+                    let why = format!("{} lo pidió: {}", r.service, r.reason);
+                    notes.push(match self.roll_back_version(p, &why, unix, installed) {
+                        Ok(np) => Note::Event(format!("vuelta atrás de {} a {}: {why}", p.active, np.active)),
+                        Err(e) => Note::Problem(format!("no se pudo volver atrás: {e}")),
+                    });
+                    pointer = self.read_pointer();
+                }
+                (Ok(r), _) => notes.push(Note::Event(format!(
+                    "petición de {} sobre {} descartada: ya no es la versión a prueba",
+                    r.service, r.from
+                ))),
+            }
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    notes.push(Note::Problem(format!("no se pudo borrar {}: {e}", path.display())));
+                }
+            }
+        }
+        if let Ok(p) = self.read_pointer() {
+            if trial_expired(p.trial, p.trial_since_unix, unix, confirm_timeout_s) {
+                let why = format!("nadie confirmó {} en {} min", p.active, confirm_timeout_s / 60);
+                notes.push(match self.roll_back_version(&p, &why, unix, installed) {
+                    Ok(np) => Note::Event(format!("vuelta atrás de {} a {}: {why}", p.active, np.active)),
+                    Err(e) => Note::Problem(format!("no se pudo volver atrás: {e}")),
+                });
+            }
+        }
+        notes
+    }
+
     pub fn write_request(&self, req: &RollbackRequest) -> Result<PathBuf, StateError> {
         let path = self.request_path(&req.service);
         write_json(&path, req)?;
@@ -463,6 +560,45 @@ mod tests {
         assert_eq!(v["updater"]["x-u"], 2);
         assert!(v["updated_unix"].as_u64().unwrap() > 1763600000);
         assert!(v.get("trial_since_unix").is_some() && v.get("trial_since").is_none());
+    }
+
+    #[test]
+    fn switching_again_while_on_trial_keeps_the_last_confirmed_as_previous() {
+        // Regresión: 2.0.0 (buena) → 2.1.0 (a prueba) → 2.1.1 (a prueba) → la anterior sigue siendo 2.0.0
+        let p = Pointer::new("2.0.0").switched("2.1.0", 10).switched("2.1.1", 20);
+        assert_eq!((p.active.as_str(), p.previous.as_deref(), p.trial), ("2.1.1", Some("2.0.0"), true));
+        // Cambiar a la misma versión a prueba no deja previous == active
+        let same = Pointer::new("2.0.0").switched("2.1.0", 10).switched("2.1.0", 30);
+        assert_eq!(same.previous.as_deref(), Some("2.0.0"));
+        assert_eq!(same.trial_since_unix, Some(30));
+        // Tras confirmar, el siguiente cambio sí guarda la confirmada
+        let c = Pointer::new("2.0.0").switched("2.1.0", 10).confirmed().switched("2.2.0", 40);
+        assert_eq!(c.previous.as_deref(), Some("2.1.0"));
+        // Volver a la confirmada mientras otra está a prueba es una vuelta atrás (no queda a prueba)
+        let back = Pointer::new("2.0.0").switched("2.1.0", 10).switched("2.0.0", 20);
+        assert_eq!((back.active.as_str(), back.trial, back.previous.as_deref()), ("2.0.0", false, Some("2.1.0")));
+        // Lo mismo para la ranura del actualizador
+        let s = Pointer::new("2.0.0").slot_switched("b", 1).slot_switched("a", 2);
+        assert_eq!((s.updater.slot.as_str(), s.updater.trial), ("a", false));
+        let s = Pointer::new("2.0.0").slot_switched("b", 1).slot_switched("b", 2);
+        assert_eq!(s.updater.previous_slot.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn rollback_prefers_last_good_over_an_unconfirmed_previous() {
+        let installed = |v: &str| ["2.0.0", "2.1.0", "2.1.1"].contains(&v);
+        let mut p = Pointer::new("2.1.1");
+        p.previous = Some("2.1.0".into()); // puntero antiguo (de antes de esta corrección) o editado a mano
+        p.trial = true;
+        assert_eq!(p.rollback_target(Some("2.0.0"), &installed).as_deref(), Some("2.0.0"));
+        // Sin diario, la anterior
+        assert_eq!(p.rollback_target(None, &installed).as_deref(), Some("2.1.0"));
+        // last_good == activa (vuelta atrás manual de una confirmada): la anterior
+        let mut q = Pointer::new("2.1.0");
+        q.previous = Some("2.0.0".into());
+        assert_eq!(q.rollback_target(Some("2.1.0"), &installed).as_deref(), Some("2.0.0"));
+        // Nunca una que no esté instalada
+        assert_eq!(p.rollback_target(Some("1.0.0"), &|v| v == "2.1.1"), None);
     }
 
     #[test]

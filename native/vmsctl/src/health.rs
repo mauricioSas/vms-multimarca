@@ -1,8 +1,11 @@
 //! `vmsctl health wait --timeout 120 [--deep]`: espera a que el puesto esté sano (sale con 0) o falla con
 //! el código 12 y el motivo.
 //!
-//! Comprueba: los servicios instalados están en marcha (SCM) y, según el puesto, `GET /api/health` del
-//! backend (`status` distinto de `down`) y del panel central. Con `--deep` usa
+//! Comprueba: los servicios instalados están en marcha (SCM), **el proceso real de cada uno está sano**
+//! (`logs\status-<Servicio>.json` de `vmsctl run`: en marcha y estable, o «en espera» si no tiene nada que
+//! hacer en este puesto; un servicio en bucle de caídas da 12 aunque el SCM lo vea «Running», porque el SCM
+//! solo ve a `vmshost`) y, según el puesto, `GET /api/health` del backend (`status` distinto de `down`) y
+//! del panel central. Con `--deep` usa
 //! `GET /api/internal/health/deep` con el token interno (PLAN-V2 §2.5 paso 7); si esa ruta aún no existe
 //! en la versión instalada (404), lo dice y usa la normal.
 
@@ -14,6 +17,8 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 use vms_common::layout::DataLayout;
+#[cfg(test)]
+use vms_common::services::{ANALYTICS, HEARTBEAT};
 use vms_common::services::{BACKEND, CENTRAL};
 
 /// GET HTTP/1.1 mínimo (sin dependencias). Devuelve el código y el cuerpo (con o sin «chunked»).
@@ -121,15 +126,28 @@ fn central_check(net: &NetSettings) -> Check {
     }
 }
 
+pub struct WaitOpts {
+    pub timeout: Duration,
+    pub deep: bool,
+    /// Exigir el estado de `vmsctl run` de cada servicio (siempre, salvo pruebas de solo HTTP).
+    pub run_status: bool,
+}
+
+fn run_status_check(data: &DataLayout, service: &str) -> Check {
+    let st = crate::runstatus::read(&crate::runstatus::path_for(data, service));
+    let (ok, detail) = crate::runstatus::evaluate(st.as_ref(), vms_common::state::now_unix());
+    Check { name: format!("{service} (proceso)"), ok, detail }
+}
+
 /// `services`: los servicios del puesto (los que hay que ver en marcha y qué HTTP comprobar).
 pub fn wait(
     scm: Option<&dyn Scm>,
     services: &[&str],
     net: &NetSettings,
     data: &DataLayout,
-    timeout: Duration,
-    deep: bool,
+    opts: &WaitOpts,
 ) -> Result<Outcome, CtlError> {
+    let (timeout, deep) = (opts.timeout, opts.deep);
     let t0 = Instant::now();
     let mut deep_missing = false;
     let mut last: Vec<Check>;
@@ -143,6 +161,11 @@ pub fn wait(
                     Err(e) => (false, e.message),
                 };
                 last.push(Check { name: (*s).to_string(), ok, detail });
+            }
+        }
+        if opts.run_status {
+            for s in services {
+                last.push(run_status_check(data, s));
             }
         }
         if services.contains(&BACKEND) {
@@ -203,6 +226,38 @@ mod tests {
         port
     }
 
+    fn http_only(timeout_s: u64, deep: bool) -> WaitOpts {
+        WaitOpts { timeout: Duration::from_secs(timeout_s), deep, run_status: false }
+    }
+
+    #[test]
+    fn crash_looping_service_fails_with_12_even_if_the_scm_says_running() {
+        // Regresión: VMSAnalytics en bucle de caídas y VMSHeartbeat cayendo daban «sano en 0 s».
+        use crate::runstatus::{Publisher, RunState};
+        let d = tempfile::tempdir().unwrap();
+        let data = DataLayout::new(d.path());
+        let mut scm = crate::scm::fake::FakeScm::default();
+        for name in [ANALYTICS, HEARTBEAT] {
+            let def = vms_common::services::by_name(name).unwrap();
+            let spec = crate::services_cmd::spec_for(def, &vms_common::layout::InstallLayout::new("/pf"), &data);
+            scm.services.insert(name.to_string(), (spec, SvcState::Running));
+        }
+        let mut an = Publisher::new(crate::runstatus::path_for(&data, ANALYTICS), ANALYTICS, Some("2.0.0"));
+        an.crashed("ModuleNotFoundError", RunState::Backoff);
+        let mut hb = Publisher::new(crate::runstatus::path_for(&data, HEARTBEAT), HEARTBEAT, Some("2.0.0"));
+        hb.set(RunState::Idle, "sin VMS_CENTRAL_URL", None);
+        let net = NetSettings::from_map(Default::default());
+        let opts = WaitOpts { timeout: Duration::from_secs(1), deep: false, run_status: true };
+        let e = wait(Some(&scm), &[ANALYTICS, HEARTBEAT], &net, &data, &opts).unwrap_err();
+        assert_eq!(e.exit, vms_common::exit_codes::HEALTH_FAILED);
+        assert!(e.message.contains("VMSAnalytics (proceso)") && e.message.contains("cayó"), "{}", e.message);
+        assert!(!e.message.contains("VMSHeartbeat"), "el latido sin central está en espera: {}", e.message);
+        // Sin estado publicado (vmsctl run no arrancó): tampoco sano
+        std::fs::remove_file(crate::runstatus::path_for(&data, ANALYTICS)).unwrap();
+        let e = wait(Some(&scm), &[ANALYTICS], &net, &data, &opts).unwrap_err();
+        assert!(e.message.contains("aún no publicó"), "{}", e.message);
+    }
+
     #[test]
     fn parses_plain_and_chunked_responses() {
         let (c, b) = parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
@@ -221,13 +276,13 @@ mod tests {
         let body = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\",\"engine\":{\"running\":true}}";
         let port = serve(vec![body]);
         let net = NetSettings::from_map([("VMS_HTTP_PORT".to_string(), port.to_string())].into_iter().collect());
-        let out = wait(None, &[BACKEND], &net, &data, Duration::from_secs(5), false).unwrap();
+        let out = wait(None, &[BACKEND], &net, &data, &http_only(5, false)).unwrap();
         assert_eq!(out.data["checks"][0]["ok"], true);
 
         let down = "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"down\"}";
         let port = serve(vec![down, down, down, down]);
         let net = NetSettings::from_map([("VMS_HTTP_PORT".to_string(), port.to_string())].into_iter().collect());
-        let e = wait(None, &[BACKEND], &net, &data, Duration::from_secs(1), false).unwrap_err();
+        let e = wait(None, &[BACKEND], &net, &data, &http_only(1, false)).unwrap_err();
         assert_eq!(e.exit, vms_common::exit_codes::HEALTH_FAILED);
         assert!(e.message.contains("status=down"), "{}", e.message);
     }
@@ -240,7 +295,7 @@ mod tests {
         std::fs::write(data.secrets_dir().join("internal.token"), "tok").unwrap();
         let port = serve(vec!["HTTP/1.1 404 Not Found\r\n\r\n{}", "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"degraded\"}"]);
         let net = NetSettings::from_map([("VMS_HTTP_PORT".to_string(), port.to_string())].into_iter().collect());
-        let out = wait(None, &[BACKEND], &net, &data, Duration::from_secs(5), true).unwrap();
+        let out = wait(None, &[BACKEND], &net, &data, &http_only(5, true)).unwrap();
         assert_eq!(out.data["deep_unavailable"], true);
         assert!(out.text.contains("no disponible"));
     }

@@ -4,15 +4,21 @@
 //!   su propio Job Object (creado suspendido): si `vmsctl` muere, muere el proceso.
 //! - Copia su salida, línea a línea y **sin credenciales**, a `logs\<servicio>.log` (MediaMTX en
 //!   `logs\engine.log`, que el backend sigue con `vms/engine/logtail.py`), con rotación 10 × 10 MB.
+//!   `engine.log` rota copiando y vaciando (nunca se borra ni se recrea: ver `vms_common::logfile`).
 //! - Parada en 3 escalones: cierra la entrada estándar del proceso (el backend la vigila con
 //!   `VMS_STOP_ON_STDIN_EOF=1`; en POSIX además SIGTERM) → espera `grace` (10 s; 0 para MediaMTX, que no
 //!   necesita parada ordenada) → `TerminateJobObject`.
 //! - Si el proceso cae, lo relanza con espera creciente (1, 2, 5, 10, 30 s). Con `--exit-on-crash`
 //!   (versión a prueba) sale con el código 13 para que `vmshost` cuente la caída.
+//! - Publica su estado real en `logs\status-<Servicio>.json` (`crate::runstatus`): es lo que mira
+//!   `vmsctl health wait`, porque el SCM solo ve a `vmshost`.
+//! - `VMSHeartbeat` sin `VMS_CENTRAL_URL` (sede sin panel central) no se lanza: queda «en espera» (sano) y
+//!   arranca en cuanto se configure, en vez de caer y relanzarse sin fin.
 //! - Para cuando `vmshost` cierra su entrada estándar (`--stop-on-stdin-eof`).
 
 use crate::cli::{Args, CtlError};
 use crate::ctx::Ctx;
+use crate::runstatus::{Publisher, RunState};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -23,7 +29,7 @@ use std::time::{Duration, Instant};
 use vms_common::exit_codes;
 use vms_common::layout::exe_name;
 use vms_common::logfile::RotatingLog;
-use vms_common::services::{Kind, ServiceDef, BACKEND};
+use vms_common::services::{Kind, ServiceDef, BACKEND, HEARTBEAT};
 use vms_common::supervise::Backoff;
 
 pub struct RunSpec {
@@ -40,6 +46,25 @@ pub struct RunSpec {
     /// No arrancar hasta que exista (el YAML del motor lo escribe el backend o el instalador).
     pub wait_for: Option<PathBuf>,
     pub wait_poll: Duration,
+    /// No arrancar mientras esta variable falte en el entorno y en el `.env` (estado «en espera», sano).
+    pub idle_unless: Option<(&'static str, PathBuf)>,
+    pub idle_poll: Duration,
+    /// `logs\status-<Servicio>.json` (None en algunas pruebas).
+    pub status_path: Option<PathBuf>,
+    pub version: Option<String>,
+    /// Rotación copiando y vaciando (`engine.log`).
+    pub copy_truncate: bool,
+}
+
+/// Variable que hace falta para que el servicio tenga algo que hacer en este puesto.
+pub fn required_setting(def: &ServiceDef) -> Option<&'static str> {
+    (def.name == HEARTBEAT).then_some("VMS_CENTRAL_URL")
+}
+
+/// ¿Está `key` en el entorno o en el `.env`, con valor?
+pub fn setting_present(key: &str, env_file: &std::path::Path) -> bool {
+    std::env::var(key).is_ok_and(|v| !v.trim().is_empty())
+        || crate::envfile::read(env_file).get(key).is_some_and(|v| !v.trim().is_empty())
 }
 
 /// Variables de Python que nunca deben llegar al runtime embebido desde fuera.
@@ -95,6 +120,11 @@ pub fn build_spec(def: &ServiceDef, ctx: &Ctx, a: &Args) -> Result<RunSpec, CtlE
         backoff: Backoff::standard(),
         wait_for,
         wait_poll: Duration::from_secs(2),
+        idle_unless: required_setting(def).map(|k| (k, data.env_file())),
+        idle_poll: Duration::from_secs(30),
+        status_path: Some(crate::runstatus::path_for(data, def.name)),
+        version: ctx.own_version().map(str::to_string),
+        copy_truncate: def.kind == Kind::Engine,
     })
 }
 
@@ -225,59 +255,133 @@ fn stop_requested(stop: &Receiver<()>, wait: Duration) -> bool {
     }
 }
 
+/// Estado publicado (si hay ruta) con aviso en el registro si no se puede escribir.
+struct Status(Option<Publisher>);
+
+impl Status {
+    fn set(&mut self, log: &SharedLog, state: RunState, detail: &str, pid: Option<u32>) {
+        if let Some(msg) = self.0.as_mut().and_then(|p| p.set(state, detail, pid)) {
+            event(log, &msg);
+        }
+    }
+    fn crashed(&mut self, log: &SharedLog, detail: &str, state: RunState) {
+        if let Some(msg) = self.0.as_mut().and_then(|p| p.crashed(detail, state)) {
+            event(log, &msg);
+        }
+    }
+    fn refresh(&mut self, log: &SharedLog) {
+        if let Some(msg) = self.0.as_mut().and_then(Publisher::refresh) {
+            event(log, &msg);
+        }
+    }
+}
+
+/// Espera (publicando el estado) hasta que se cumpla `ready` o se pida parar. `true` = parar.
+fn wait_until(
+    stop: &Receiver<()>,
+    poll: Duration,
+    status: &mut Status,
+    log: &SharedLog,
+    ready: impl Fn() -> bool,
+) -> bool {
+    while !ready() {
+        if stop_requested(stop, poll) {
+            return true;
+        }
+        status.refresh(log);
+    }
+    false
+}
+
 /// Bucle del anfitrión. Devuelve el código de salida de `vmsctl`.
 pub fn run(spec: &mut RunSpec, stop: &Receiver<()>) -> i32 {
-    let log: SharedLog = Arc::new(Mutex::new(RotatingLog::standard(&spec.log_path)));
+    let log: SharedLog = Arc::new(Mutex::new(if spec.copy_truncate {
+        RotatingLog::copy_truncate(
+            &spec.log_path,
+            vms_common::logfile::DEFAULT_MAX_BYTES,
+            vms_common::logfile::DEFAULT_BACKUPS,
+        )
+    } else {
+        RotatingLog::standard(&spec.log_path)
+    }));
+    let mut status =
+        Status(spec.status_path.clone().map(|p| Publisher::new(p, &spec.service, spec.version.as_deref())));
     event(&log, &format!("{}: arranco {} (pid {})", spec.service, spec.program.display(), std::process::id()));
+    let code = run_loop(spec, stop, &log, &mut status);
+    if code == exit_codes::OK {
+        status.set(&log, RunState::Stopped, "parado", None);
+    }
+    code
+}
+
+fn run_loop(spec: &mut RunSpec, stop: &Receiver<()>, log: &SharedLog, status: &mut Status) -> i32 {
     loop {
-        if let Some(w) = spec.wait_for.clone() {
-            let mut said = false;
-            while !w.is_file() {
-                if !said {
-                    event(&log, &format!("espero a que exista {}", w.display()));
-                    said = true;
+        if let Some((key, env_file)) = spec.idle_unless.clone() {
+            if !setting_present(key, &env_file) {
+                let why = format!("sin {key}: no hay nada que hacer en este puesto hasta que se configure");
+                event(log, &why);
+                status.set(log, RunState::Idle, &why, None);
+                if wait_until(stop, spec.idle_poll, status, log, || setting_present(key, &env_file)) {
+                    return exit_codes::OK;
                 }
-                if stop_requested(stop, spec.wait_poll) {
+                event(log, &format!("{key} configurada: arranco"));
+            }
+        }
+        if let Some(w) = spec.wait_for.clone() {
+            if !w.is_file() {
+                let why = format!("espero a que exista {}", w.display());
+                event(log, &why);
+                status.set(log, RunState::Waiting, &why, None);
+                if wait_until(stop, spec.wait_poll, status, log, || w.is_file()) {
                     return exit_codes::OK;
                 }
             }
         }
         if !spec.program.is_file() {
-            event(&log, &format!("no existe {}: la instalación está incompleta", spec.program.display()));
+            let why = format!("no existe {}: la instalación está incompleta", spec.program.display());
+            event(log, &why);
+            status.crashed(log, &why, RunState::Failed);
             return exit_codes::WINDOWS_ERROR;
         }
-        let mut proc = match Proc::spawn(spec, &log) {
+        let mut proc = match Proc::spawn(spec, log) {
             Ok(p) => p,
             Err(e) => {
-                event(&log, &format!("no se pudo lanzar {}: {e}", spec.program.display()));
+                let why = format!("no se pudo lanzar {}: {e}", spec.program.display());
+                event(log, &why);
+                status.crashed(log, &why, RunState::Failed);
                 return exit_codes::WINDOWS_ERROR;
             }
         };
         let started = Instant::now();
-        event(&log, &format!("proceso en marcha (pid {})", proc.child.id()));
+        let pid = proc.child.id();
+        event(log, &format!("proceso en marcha (pid {pid})"));
+        status.set(log, RunState::Running, "", Some(pid));
         let code = loop {
             if stop_requested(stop, Duration::from_millis(200)) {
-                proc.stop(spec.grace, &log);
-                event(&log, "parado");
+                proc.stop(spec.grace, log);
+                event(log, "parado");
                 return exit_codes::OK;
             }
             match proc.child.try_wait() {
-                Ok(Some(status)) => break status.code().unwrap_or(-1),
-                Ok(None) => {}
+                Ok(Some(st)) => break st.code().unwrap_or(-1),
+                Ok(None) => status.refresh(log),
                 Err(e) => {
-                    event(&log, &format!("no se pudo consultar el proceso: {e}"));
+                    event(log, &format!("no se pudo consultar el proceso: {e}"));
                     proc.hard_kill();
                     break -1;
                 }
             }
         };
         drop(proc); // en Windows cierra el job: si quedaba algún nieto, muere
-        event(&log, &format!("el proceso terminó con código {code} tras {} s", started.elapsed().as_secs()));
+        let why = format!("el proceso terminó con código {code} tras {} s", started.elapsed().as_secs());
+        event(log, &why);
         if spec.exit_on_crash {
+            status.crashed(log, &why, RunState::Failed);
             return exit_codes::CHILD_EXITED;
         }
+        status.crashed(log, &why, RunState::Backoff);
         let wait = spec.backoff.after_crash(started.elapsed());
-        event(&log, &format!("lo relanzo dentro de {} s", wait.as_secs_f32()));
+        event(log, &format!("lo relanzo dentro de {} s", wait.as_secs_f32()));
         if stop_requested(stop, wait) {
             return exit_codes::OK;
         }
@@ -317,7 +421,16 @@ mod tests {
             backoff: Backoff::new(vec![Duration::from_millis(50)], Duration::from_secs(60)),
             wait_for: None,
             wait_poll: Duration::from_millis(50),
+            idle_unless: None,
+            idle_poll: Duration::from_millis(50),
+            status_path: Some(dir.join("logs").join("status-VMSPrueba.json")),
+            version: Some("2.0.0".into()),
+            copy_truncate: false,
         }
+    }
+
+    fn status_of(s: &RunSpec) -> crate::runstatus::RunStatus {
+        crate::runstatus::read(s.status_path.as_ref().unwrap()).expect("estado publicado")
     }
 
     fn read_log(s: &RunSpec) -> String {
@@ -335,6 +448,59 @@ mod tests {
         let text = read_log(&s);
         assert!(text.contains("rtsp://***:***@10.0.0.1/x VMS_PRUEBA=1"), "{text}");
         assert!(!text.contains("Cl4ve") && text.contains("código 3"), "{text}");
+    }
+
+    #[test]
+    fn status_reports_a_crash_loop_and_a_healthy_child() {
+        // Regresión: health wait daba «sano» con la analítica en bucle de caídas (el SCM solo ve vmshost).
+        let d = tempfile::tempdir().unwrap();
+        let mut s = spec(d.path(), "exit 1");
+        let path = s.status_path.clone().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let h = std::thread::spawn(move || run(&mut s, &rx));
+        std::thread::sleep(Duration::from_millis(600));
+        let st = crate::runstatus::read(&path).unwrap();
+        assert!(st.crashes_unix.len() >= 2, "{st:?}");
+        let (ok, why) = crate::runstatus::evaluate(Some(&st), vms_common::state::now_unix());
+        assert!(!ok, "{why}");
+        tx.send(()).unwrap();
+        assert_eq!(h.join().unwrap(), exit_codes::OK);
+        assert_eq!(crate::runstatus::read(&path).unwrap().state, crate::runstatus::RunState::Stopped);
+
+        let mut s = spec(d.path(), "sleep 30");
+        s.status_path = Some(d.path().join("logs").join("status-Otro.json"));
+        let (tx, rx) = mpsc::channel();
+        let path2 = s.status_path.clone().unwrap();
+        let h = std::thread::spawn(move || run(&mut s, &rx));
+        std::thread::sleep(Duration::from_millis(400));
+        let st = crate::runstatus::read(&path2).unwrap();
+        assert_eq!(st.state, crate::runstatus::RunState::Running);
+        assert!(st.child_pid.is_some() && st.started_unix.is_some() && st.crashes_unix.is_empty());
+        tx.send(()).unwrap();
+        assert_eq!(h.join().unwrap(), exit_codes::OK);
+    }
+
+    #[test]
+    fn heartbeat_without_central_url_idles_and_starts_once_configured() {
+        let d = tempfile::tempdir().unwrap();
+        let env_file = d.path().join(".env");
+        let marks = d.path().join("ran");
+        let mut s = spec(d.path(), &format!("echo x > {}; sleep 30", marks.display()));
+        s.idle_unless = Some(("VMS_PRUEBA_CENTRAL_URL", env_file.clone()));
+        let (tx, rx) = mpsc::channel();
+        let h = std::thread::spawn(move || run(&mut s, &rx));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marks.exists(), "sin la variable no se lanza");
+        let st = crate::runstatus::read(&d.path().join("logs").join("status-VMSPrueba.json")).unwrap();
+        assert_eq!(st.state, crate::runstatus::RunState::Idle);
+        assert!(crate::runstatus::evaluate(Some(&st), vms_common::state::now_unix()).0, "en espera es sano");
+        std::fs::write(&env_file, "VMS_PRUEBA_CENTRAL_URL=https://central.example\n").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(marks.exists(), "arranca en cuanto se configura");
+        tx.send(()).unwrap();
+        assert_eq!(h.join().unwrap(), exit_codes::OK);
+        assert!(super::required_setting(vms_common::services::by_name("VMSHeartbeat").unwrap()).is_some());
+        assert!(super::required_setting(vms_common::services::by_name("VMSBackend").unwrap()).is_none());
     }
 
     #[test]
@@ -412,5 +578,6 @@ mod tests {
         let (_tx, rx) = mpsc::channel();
         assert_eq!(run(&mut s, &rx), exit_codes::WINDOWS_ERROR);
         assert!(read_log(&s).contains("instalación está incompleta"));
+        assert_eq!(status_of(&s).state, crate::runstatus::RunState::Failed);
     }
 }

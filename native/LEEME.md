@@ -5,7 +5,7 @@
 Código Rust de la v2: espacio de trabajo `Cargo.toml` con `common/` (estado, escritura atómica, registros,
 DPAPI, SID y ocultación de credenciales), `vmshost/` (arrancador fijo de los servicios) y `vmsctl/`
 (anfitrión de procesos y configuración del equipo). El visor Tauri vive aparte en `viewer/` (B2). Toolchain
-fijado en `rust-toolchain.toml`. `ci/b1_windows_e2e.py` es la prueba en Windows real del job `b1-windows`.
+fijado en `rust-toolchain.toml`. `ci/b1_windows_e2e.py` es la prueba en Windows real de la pata `windows-latest` del job `b1-plataforma` (`ci/stub_updater/` es un doble de `vms_updater` para esa prueba).
 
 ```
 cargo test --workspace

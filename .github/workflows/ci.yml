@@ -7,7 +7,6 @@
 #   pytest-macos     lo mismo en macOS (arm64)
 #   b1 … b6          un job por bloque: cada bloque rellena SOLO el suyo (B1 ya compila y prueba native/,
 #                    también con clippy para x86_64-pc-windows-msvc, y revisa licencias con cargo-deny)
-#   b1-windows       B1 en windows-latest: servicios reales con vmshost/vmsctl y el runtime embebible
 #   spike-s3         S3: firma TUF con SoftHSM2 (PKCS#11) + verificación con python-tuf 7
 #   spike-s4         S4: servicio de Windows con cuenta virtual, Job Object y vuelta atrás (windows-latest)
 #
@@ -175,8 +174,16 @@ jobs:
 
   # ------------------------------------------------------------------------------------------ bloques
   b1-plataforma:
-    name: "B1 · plataforma Windows (native/)"
-    runs-on: ubuntu-latest
+    # Linux: fmt, clippy (también del código cfg(windows)), cargo test y cargo-deny. Windows (solo si cambia
+    # native/ o a mano): criterio (4) de B1 en Windows real con native/ci/b1_windows_e2e.py.
+    name: "B1 · plataforma Windows (native/) · ${{ matrix.os }}"
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.changes.outputs.native == 'true' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v6
@@ -187,74 +194,70 @@ jobs:
             native/target
           key: cargo-native-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
       - name: Toolchain fijado (native/rust-toolchain.toml) + destino Windows para clippy
+        if: runner.os == 'Linux'
         run: |
           rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
           rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
       - name: cargo fmt / clippy / test
+        if: runner.os == 'Linux'
         working-directory: native
         run: |
           cargo fmt --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
       - name: "clippy del código cfg(windows) (vmshost, vmsctl, common) sin gastar un runner de Windows"
+        if: runner.os == 'Linux'
         working-directory: native
         run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
       - name: Lógica portable de S4 (referencia de vmshost para B1)
+        if: runner.os == 'Linux'
         working-directory: spikes/s4-servicio-windows
         run: cargo test --locked --lib
       - name: cargo-deny (binario precompilado y verificado)
+        if: runner.os == 'Linux'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
       - name: Licencias, crates prohibidos y orígenes (native/deny.toml, PLAN-V2 §9.2)
+        if: runner.os == 'Linux'
         run: cargo deny --manifest-path native/Cargo.toml check licenses bans sources
-
-  b1-windows:
-    # Criterio (4) de B1 (PLAN-V2 §6.2) en Windows real: services install --role store con un payload mínimo,
-    # cuentas virtuales e ImagePath en vmshost, health wait = 0, vuelta atrás por petición, diag sin
-    # secretos, parada sin huérfanos, uninstall limpio y migrate-from-v1. Solo si cambia native/ (o a mano).
-    name: "B1 · Windows real (servicios, vmshost, vmsctl, runtime)"
-    needs: changes
-    if: needs.changes.outputs.native == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: cargo-b1-win-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/rust-toolchain.toml') }}
-      - name: Toolchain fijado (native/rust-toolchain.toml)
+      # ---- Windows real: servicios con vmshost/vmsctl, cuentas virtuales, ACL, DPAPI y runtime embebible
+      - name: Toolchain fijado (Windows)
+        if: runner.os == 'Windows'
         run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
       - name: cargo test en Windows (Job Object, DPAPI, procesos)
+        if: runner.os == 'Windows'
         working-directory: native
         run: cargo test --workspace --locked
       - name: vmshost.exe y vmsctl.exe (release)
+        if: runner.os == 'Windows'
         working-directory: native
         run: cargo build --release --locked -p vmshost -p vmsctl
       - uses: actions/setup-python@v7
+        if: runner.os == 'Windows'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Dependencias del backend (lock de sede con SHA-256) y pytest
+        if: runner.os == 'Windows'
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-vms.txt
           python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0 pytest-timeout==2.4.0
           python -m pip install --no-deps -e .
       - name: pytest en Windows (DPAPI real, MoveFileExW, runtime)
+        if: runner.os == 'Windows'
         run: python -m pytest -q -rs -p no:cacheprovider tests/core/test_winsec.py tests/core/test_atomic.py tests/distribution
-      - name: Runtime embebible mínimo (Python 3.12.10 + requirements-vms.txt) y MediaMTX para Windows
+      - name: Runtime embebible (Python 3.12.10 + locks de sede vms y analytics) y MediaMTX para Windows
+        if: runner.os == 'Windows'
         run: |
-          python -m distribution.runtime.build --out build/runtime --requirements requirements-vms.txt
+          python -m distribution.runtime.build --out build/runtime --requirements requirements-vms.txt --requirements requirements-analytics.txt
           python -m distribution.runtime.build --out build/runtime --verify
           python -m tools.fetch_mediamtx --platform windows_amd64 --dest build/engine
       - name: Instalar, comprobar, romper, migrar y desinstalar (como administrador)
+        if: runner.os == 'Windows'
         run: >
           python native/ci/b1_windows_e2e.py --build native/target/release --runtime build/runtime
           --mediamtx build/engine/mediamtx.exe --out b1-windows.json --logs b1-windows-logs
-      - if: always()
+      - if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: b1-windows

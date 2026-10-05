@@ -9,7 +9,12 @@
 //! 2. Lee el puntero (si falta o está dañado, usa `last_good` del diario en memoria).
 //! 3. Si cambió la versión (o la ranura del actualizador), para el hijo y lanza el nuevo.
 //! 4. Si el hijo cae: espera creciente; si la versión está a prueba y cae 3 veces en 10 min, deja una
-//!    petición de vuelta atrás (servicios sin privilegios) o vuelve atrás la ranura (actualizador).
+//!    petición de vuelta atrás (servicios sin privilegios) o vuelve atrás la ranura (actualizador). Una
+//!    vez dejada la petición, vuelve a la espera creciente (si `VMSUpdater` no la atiende, no se relanza
+//!    cada segundo para siempre) y avisa en el registro si sigue sin atender a los
+//!    [`REQUEST_STALE_S`] segundos.
+//!
+//! La lógica de estado (vuelta atrás, peticiones, plazo) vive en `vms_common::state`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,8 +22,11 @@ use std::time::{Duration, Instant};
 use vms_common::layout::{DataLayout, InstallLayout};
 use vms_common::logfile::RotatingLog;
 use vms_common::services::UPDATER;
-use vms_common::state::{now_unix, trial_expired, Pointer, RollbackKind, RollbackRequest, StateDir, SCHEMA};
+use vms_common::state::{now_unix, trial_expired, Note, Pointer, RollbackKind, RollbackRequest, StateDir, SCHEMA};
 use vms_common::supervise::{Backoff, CrashWindow, TRIAL_CONFIRM_TIMEOUT_S};
+
+/// Una petición de vuelta atrás sin atender durante este tiempo se avisa en el registro.
+pub const REQUEST_STALE_S: u64 = 300;
 
 /// Proceso hijo (`vmsctl run`).
 pub trait Child {
@@ -89,8 +97,8 @@ pub struct Host<L: Launcher> {
     state: StateDir,
     running: Option<Running>,
     next_launch: Option<Instant>,
-    /// Versión a prueba para la que ya se dejó una petición (no se repite en cada vuelta).
-    requested: Option<String>,
+    /// Versión a prueba para la que ya se dejó una petición (no se repite en cada vuelta) y cuándo.
+    requested: Option<(String, u64)>,
     last_problem: String,
     pub launches: u32,
 }
@@ -192,6 +200,7 @@ impl<L: Launcher> Host<L> {
         if !target.trial {
             self.requested = None;
         }
+        self.warn_if_request_is_stale(unix);
         self.supervise_running(now, unix, Some(&target));
         if self.running.is_none() && self.next_launch.is_none_or(|t| now >= t) {
             self.launch(&target, now, unix);
@@ -245,13 +254,14 @@ impl<L: Launcher> Host<L> {
     fn child_exited(&mut self, run: Running, code: i32, now: Instant, unix: u64) {
         let ran = now.saturating_duration_since(run.started);
         self.log(&format!("{} terminó con código {code} tras {} s", run.target.label, ran.as_secs()));
-        if run.target.trial {
+        if run.target.trial && !self.request_pending_for(&run.target.label) {
             if self.cfg.crash_window.record(now) {
                 let why = format!("{} caídas en {} min", self.cfg.crash_window.count(), 10);
                 self.cfg.crash_window.reset();
                 self.cfg.backoff.reset();
                 self.trial_failed(&run.target, &why, unix);
             }
+            // Contar rápido las caídas de la versión a prueba (hasta dejar la petición).
             self.next_launch = Some(now + Duration::from_secs(1));
         } else {
             let wait = self.cfg.backoff.after_crash(ran);
@@ -263,7 +273,7 @@ impl<L: Launcher> Host<L> {
     fn launch(&mut self, target: &Target, now: Instant, unix: u64) {
         if !target.exe.is_file() {
             self.problem(format!("falta {}", target.exe.display()));
-            if target.trial {
+            if target.trial && !self.request_pending_for(&target.label) {
                 // Una versión a prueba sin ejecutable cuenta como caída: así vuelve atrás sola.
                 if self.cfg.crash_window.record(now) {
                     self.cfg.crash_window.reset();
@@ -331,7 +341,7 @@ impl<L: Launcher> Host<L> {
             }
             return;
         }
-        if self.requested.as_deref() == Some(target.label.as_str()) {
+        if self.request_pending_for(&target.label) {
             return;
         }
         let req = RollbackRequest {
@@ -344,7 +354,7 @@ impl<L: Launcher> Host<L> {
         };
         match self.state.write_request(&req) {
             Ok(path) => {
-                self.requested = Some(target.label.clone());
+                self.requested = Some((target.label.clone(), unix));
                 self.log(&format!(
                     "versión a prueba {} falla ({why}): pido la vuelta atrás ({})",
                     target.label,
@@ -355,60 +365,32 @@ impl<L: Launcher> Host<L> {
         }
     }
 
-    /// Solo el `vmshost` de `VMSUpdater`: peticiones de vuelta atrás y plazo de confirmación.
-    fn updater_duties(&mut self, unix: u64) {
-        let requests = self.state.read_requests();
-        let mut pointer = self.state.read_pointer();
-        for (path, req) in requests {
-            match (&req, &pointer) {
-                (Err(e), _) => self.log(&format!("petición ilegible descartada: {e}")),
-                (Ok(r), Ok(p)) if r.kind == RollbackKind::Version && p.trial && p.active == r.from => {
-                    let why = format!("{} lo pidió: {}", r.service, r.reason);
-                    let p = p.clone();
-                    self.rollback_version(&p, &why, unix);
-                    pointer = self.state.read_pointer();
-                }
-                (Ok(r), _) => self.log(&format!(
-                    "petición de {} sobre {} descartada: ya no es la versión a prueba",
-                    r.service, r.from
-                )),
-            }
-            if let Err(e) = std::fs::remove_file(&path) {
-                if e.kind() != io::ErrorKind::NotFound {
-                    self.problem(format!("no se pudo borrar {}: {e}", path.display()));
-                }
-            }
-        }
-        if let Ok(p) = self.state.read_pointer() {
-            if trial_expired(p.trial, p.trial_since_unix, unix, self.cfg.confirm_timeout_s) {
-                let why = format!("nadie confirmó {} en {} min", p.active, self.cfg.confirm_timeout_s / 60);
-                self.rollback_version(&p, &why, unix);
-            }
+    fn request_pending_for(&self, label: &str) -> bool {
+        self.requested.as_ref().is_some_and(|(l, _)| l == label)
+    }
+
+    /// La petición sigue en `state\requests\` mucho después: `VMSUpdater` no está atendiendo.
+    fn warn_if_request_is_stale(&mut self, unix: u64) {
+        let Some((label, at)) = self.requested.clone() else { return };
+        let waited = unix.saturating_sub(at);
+        if waited >= REQUEST_STALE_S && self.state.request_path(&self.cfg.service).is_file() {
+            self.problem(format!(
+                "la petición de vuelta atrás de {label} sigue sin atender desde hace {} min: \
+                 ¿está parado VMSUpdater? (vmsctl services status)",
+                waited / 60
+            ));
         }
     }
 
-    fn rollback_version(&mut self, p: &Pointer, why: &str, unix: u64) {
-        let candidates = [p.previous.clone(), self.state.last_good().ok()];
-        let Some(to) =
-            candidates.into_iter().flatten().find(|v| v != &p.active && self.cfg.install.version_installed(v))
-        else {
-            self.problem(format!(
-                "la versión a prueba {} falla ({why}) pero no hay otra instalada a la que volver",
-                p.active
-            ));
-            return;
-        };
-        let np = p.rolled_back(&to);
-        match self.state.write_pointer(&np) {
-            Ok(_) => {
-                let rec = serde_json::json!({
-                    "schema": SCHEMA, "from": p.active, "to": to, "reason": why, "at_unix": unix,
-                    "by": "vmshost",
-                });
-                let _ = vms_common::atomic_write(&self.state.host_rollback_path(), rec.to_string().as_bytes());
-                self.log(&format!("vuelta atrás de {} a {to}: {why}", p.active));
+    /// Solo el `vmshost` de `VMSUpdater`: peticiones de vuelta atrás y plazo de confirmación.
+    fn updater_duties(&mut self, unix: u64) {
+        let install = self.cfg.install.clone();
+        let notes = self.state.updater_duties(unix, self.cfg.confirm_timeout_s, &|v| install.version_installed(v));
+        for note in notes {
+            match note {
+                Note::Event(m) => self.log(&m),
+                Note::Problem(m) => self.problem(m),
             }
-            Err(e) => self.problem(format!("no se pudo volver atrás a {to}: {e}")),
         }
     }
 
@@ -615,6 +597,59 @@ mod tests {
         backend.tick(t0 + Duration::from_secs(13), 1013);
         let last = launched.borrow().last().unwrap().0.clone();
         assert_eq!(last, e.install.version_vmsctl("2.0.0"));
+    }
+
+    #[test]
+    fn broken_trial_without_updater_backs_off_after_the_request_and_warns() {
+        // Regresión: sin VMSUpdater nadie atiende la petición; antes se relanzaba cada segundo para siempre.
+        let e = env(&["2.0.0", "2.1.0"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        st.write_pointer(&Pointer::new("2.0.0").switched("2.1.0", 1000)).unwrap();
+        let fl = FakeLauncher {
+            scripts: vec![("2.1.0".into(), Script { exit_after_polls: Some(0), code: 13 })],
+            ..Default::default()
+        };
+        let launched = fl.launched.clone();
+        let mut backend = host(&e, "VMSBackend", fl);
+        run_ticks(&mut backend, Instant::now(), 1000, 120);
+        let n = launched.borrow().len();
+        // 3 caídas rápidas hasta la petición y después 1, 2, 5, 10, 30, 30, 30 s…: unas 10, no 120
+        assert!((5..=14).contains(&n), "lanzamientos en 2 min: {n}");
+        assert_eq!(st.read_requests().len(), 1);
+        let log = std::fs::read_to_string(e.data.logs_dir().join("vmshost-VMSBackend.log")).unwrap();
+        assert!(!log.contains("sin atender"), "aún no toca avisar");
+        backend.tick(Instant::now(), 1000 + REQUEST_STALE_S + 5);
+        let log = std::fs::read_to_string(e.data.logs_dir().join("vmshost-VMSBackend.log")).unwrap();
+        assert!(log.contains("sigue sin atender") && log.contains("VMSUpdater"), "{log}");
+    }
+
+    #[test]
+    fn switch_during_trial_then_broken_rolls_back_to_the_confirmed_version() {
+        // Regresión: 2.0.0 (buena) → 2.1.0 (a prueba) → 2.1.1 (a prueba, rota) → vuelve a 2.0.0, no a 2.1.0
+        let e = env(&["2.0.0", "2.1.0", "2.1.1"], &["a"]);
+        let st = e.data.state();
+        st.set_last_good("2.0.0").unwrap();
+        let p = st.write_pointer(&Pointer::new("2.0.0").switched("2.1.0", 1000)).unwrap();
+        st.write_pointer(&p.switched("2.1.1", 1100)).unwrap();
+        let fl = FakeLauncher {
+            scripts: vec![("2.1.1".into(), Script { exit_after_polls: Some(0), code: 13 })],
+            ..Default::default()
+        };
+        let mut backend = host(&e, "VMSBackend", fl);
+        run_ticks(&mut backend, Instant::now(), 1100, 10);
+        let mut updater = host(&e, UPDATER, FakeLauncher::default());
+        updater.tick(Instant::now(), 1111);
+        let p = st.read_pointer().unwrap();
+        assert_eq!((p.active.as_str(), p.trial), ("2.0.0", false), "nunca a la 2.1.0 sin confirmar");
+        // Y si el puntero viejo tenía previous = una versión sin confirmar, manda last_good
+        let mut old = Pointer::new("2.1.1");
+        old.previous = Some("2.1.0".into());
+        old.trial = true;
+        old.trial_since_unix = Some(1);
+        st.write_pointer(&old).unwrap();
+        updater.tick(Instant::now(), 1 + 1800);
+        assert_eq!(st.read_pointer().unwrap().active, "2.0.0");
     }
 
     #[test]

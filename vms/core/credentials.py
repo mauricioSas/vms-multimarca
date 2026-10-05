@@ -159,7 +159,9 @@ class EncryptedFileBackend:
                 try:
                     winsec.migrate_plaintext(key_file)   # clave en claro de la v1 → DPAPI de máquina (solo Windows)
                 except (OSError, winsec.SecretProtectionError) as exc:
-                    log.warning("No se pudo proteger %s con DPAPI (sigue protegida solo por permisos): %s",
+                    # migrate_plaintext no toca el archivo hasta tener el protegido comprobado: la clave
+                    # sigue en claro e intacta y se reintenta en el siguiente arranque.
+                    log.warning("No se pudo proteger %s con DPAPI; sigue en claro (se reintentará al reiniciar): %s",
                                 key_file.name, exc)
                 return key
             if store_file.is_file() and store_file.stat().st_size > 0:

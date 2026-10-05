@@ -78,6 +78,44 @@ def test_logtail_follows_rotation_without_losing_lines(tmp_path: Path) -> None:
     assert seen[-1] == "e"
 
 
+def test_logtail_follows_copy_truncate_rotation_without_losing_lines(tmp_path: Path) -> None:
+    """vmsctl rota engine.log copiando a .1 y vaciando: el archivo es el mismo y encoge."""
+    log = tmp_path / "engine.log"
+    log.write_text("antes\n", encoding="utf-8")
+    seen: list[str] = []
+    t = LogTail(log, seen.append)
+    t.poll()
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("a\nb\n")
+    t.poll()
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("c\n")                                   # sin leer todavía
+    (tmp_path / "engine.log.1").write_bytes(log.read_bytes())   # copia…
+    with open(log, "r+b") as f:                           # …y vaciado del mismo archivo
+        f.truncate(0)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("d\n")
+    t.poll()
+    assert seen == ["a", "b", "c", "d"] and t.rotations == 1
+
+
+def test_logtail_ignores_a_backup_that_does_not_continue_what_was_read(tmp_path: Path) -> None:
+    """Una engine.log.1 que no es la copia de lo leído (p. ej. creada por otro) no se procesa."""
+    log = tmp_path / "engine.log"
+    log.write_text("", encoding="utf-8")
+    seen: list[str] = []
+    t = LogTail(log, seen.append)
+    t.poll()
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("real 1\nreal 2\n")
+    t.poll()
+    (tmp_path / "engine.log.1").write_text("ERR [path cam/main] 401 inventado\n" * 5, encoding="utf-8")
+    with open(log, "r+b") as f:
+        f.truncate(0)
+    t.poll()
+    assert seen == ["real 1", "real 2"]
+
+
 def test_logtail_reads_a_file_that_appears_later_from_the_beginning(tmp_path: Path) -> None:
     log = tmp_path / "engine.log"
     seen: list[str] = []
@@ -217,6 +255,26 @@ def test_engine_config_cli(settings: VmsSettings, app_paths: AppPaths, monkeypat
 
 
 # ----------------------------------------------------------------------------------------------- parada por vmsctl
+def test_backend_stopped_by_vmsctl_exits_0_without_traceback(monkeypatch: pytest.MonkeyPatch,
+                                                            settings: VmsSettings) -> None:
+    """Regresión: la parada por EOF de la entrada estándar acababa en KeyboardInterrupt sin capturar
+    (traceback en VMSBackend.log y código STATUS_CONTROL_C_EXIT)."""
+    import vms.api
+    import vms.api.serve
+    import vms.core.logging_setup as ls
+    import vms.core.settings as st
+
+    def stopped(app: object, s: object) -> bool:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(st, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(vms.api, "create_app", lambda s: object())
+    monkeypatch.setattr(vms.api.serve, "run", stopped)
+    monkeypatch.setattr(ls, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(ls, "setup_audit_log", lambda *a, **k: None)
+    monkeypatch.delenv(vms_main.STOP_ON_STDIN_EOF, raising=False)
+    assert vms_main.main([]) == 0
+
 def test_stdin_eof_simulates_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
     raised = threading.Event()
 

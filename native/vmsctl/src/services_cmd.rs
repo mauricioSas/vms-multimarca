@@ -183,7 +183,9 @@ pub fn install(ctx: &Ctx, p: Platform<'_>, opts: &InstallOpts) -> Result<Outcome
     let mut acl_steps = 0;
     if opts.acl {
         acl::ensure_operators_group()?;
-        let steps = acl::plan(data, Some(install), &services, opts.extra_recordings.as_deref(), &|f| f.is_file());
+        acl::precreate_logs(data, &services).map_err(|e| CtlError::io(&e, &data.logs_dir().display().to_string()))?;
+        let inv = acl::Inventory::scan(data);
+        let steps = acl::plan(data, Some(install), &services, opts.extra_recordings.as_deref(), &inv);
         acl_steps = acl::apply(p.runner, &steps)?;
     }
     // Servicios nuestros que ya no tocan en este puesto (cambio de tipo de puesto): fuera.
@@ -253,8 +255,53 @@ pub fn stop(p: Platform<'_>, only: Option<&[&str]>) -> Result<Outcome, CtlError>
     Ok(Outcome::new(json!({"stopped": names}), format!("Parados: {}", names.join(", "))))
 }
 
+/// Nombre por defecto de la carpeta de datos (`%ProgramData%\VMSMultimarca`).
+const DATA_DIR_NAME: &str = "VMSMultimarca";
+
+/// ¿Se puede borrar `root` entera con `--purge`? Solo si es **nuestra**: se llama `VMSMultimarca` o es la
+/// `DataDir` que anotó el instalador (`registered`), y además tiene una marca de la instalación
+/// (`state\active.json`, o un `.env` con claves `VMS_`). Un `VMS_DATA_DIR` mal puesto (`C:\Users`,
+/// `D:\Datos`…) nunca se borra.
+pub fn purge_guard(root: &Path, registered: Option<&Path>) -> Result<(), CtlError> {
+    let refuse = |why: &str| {
+        Err(CtlError::usage(format!(
+            "no se borra {}: {why}. Si de verdad es la carpeta de datos de VMS Multimarca, bórrala a mano",
+            root.display()
+        )))
+    };
+    if root.components().count() < 3 || root.parent().is_none_or(|p| p.parent().is_none()) {
+        return refuse("la ruta es demasiado corta");
+    }
+    let same = |a: &Path, b: &Path| {
+        let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_ascii_lowercase();
+        norm(a) == norm(b)
+    };
+    let named = root.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(DATA_DIR_NAME));
+    if !named && !registered.is_some_and(|r| same(r, root)) {
+        return refuse("no se llama VMSMultimarca ni es la carpeta de datos que anotó el instalador");
+    }
+    let pointer = DataLayout::new(root).state().pointer_path().is_file();
+    let env = crate::envfile::read(&root.join(".env")).keys().any(|k| k.starts_with("VMS_"));
+    if !pointer && !env {
+        return refuse("no tiene state\\active.json ni un .env de VMS Multimarca");
+    }
+    Ok(())
+}
+
 /// Quita los servicios (y las reglas del firewall). Con `purge`, borra también la carpeta de datos.
 pub fn uninstall(ctx: &Ctx, p: Platform<'_>, purge: bool) -> Result<Outcome, CtlError> {
+    // La DataDir anotada se lee antes de borrar la clave del registro.
+    #[cfg(windows)]
+    let registered: Option<PathBuf> = crate::winreg::get_string(crate::winreg::PRODUCT_KEY, "DataDir")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    #[cfg(not(windows))]
+    let registered: Option<PathBuf> = None;
+    if purge && ctx.data.root.exists() {
+        purge_guard(&ctx.data.root, registered.as_deref())?; // antes de tocar nada
+    }
     let list = installed(p.scm)?;
     let mut removed = Vec::new();
     for def in list.iter().rev() {
@@ -270,9 +317,6 @@ pub fn uninstall(ctx: &Ctx, p: Platform<'_>, purge: bool) -> Result<Outcome, Ctl
     let mut purged = false;
     if purge {
         let root = &ctx.data.root;
-        if root.components().count() < 3 {
-            return Err(CtlError::usage(format!("no se borra {}: la ruta es demasiado corta", root.display())));
-        }
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(|e| CtlError::io(&e, &root.display().to_string()))?;
         }
@@ -319,7 +363,7 @@ mod tests {
         std::fs::create_dir_all(install.version_vmsctl(version).parent().unwrap()).unwrap();
         std::fs::write(install.version_vmsctl(version), b"").unwrap();
         let comp = Component::Version { version: version.into(), root: install.version_dir(version) };
-        let ctx = Ctx::for_tests(&d.path().join("pd"), Some(&install.root), Some(comp));
+        let ctx = Ctx::for_tests(&d.path().join(DATA_DIR_NAME), Some(&install.root), Some(comp));
         Fixture { _d: d, ctx, install }
     }
 
@@ -407,6 +451,42 @@ mod tests {
         assert!(f.ctx.data.root.exists());
         uninstall(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, true).unwrap();
         assert!(!f.ctx.data.root.exists());
+    }
+
+    #[test]
+    fn purge_refuses_folders_that_are_not_ours() {
+        // Regresión: la única protección era «3 componentes o más» (C:\Users o D:\Datos pasaban).
+        let d = tempfile::tempdir().unwrap();
+        let users = d.path().join("Users");
+        std::fs::create_dir_all(users.join("ana").join("Documentos")).unwrap();
+        std::fs::write(users.join("ana").join("Documentos").join("tesis.docx"), b"no tocar").unwrap();
+        let e = purge_guard(&users, None).unwrap_err();
+        assert!(e.message.contains("no se llama VMSMultimarca"), "{}", e.message);
+        // Aunque tenga un .env cualquiera, si no se llama así ni es la del registro, no
+        std::fs::write(users.join(".env"), "VMS_HTTP_PORT=1\n").unwrap();
+        assert!(purge_guard(&users, None).is_err());
+        // Se llama VMSMultimarca pero no tiene ninguna marca nuestra
+        let fake = d.path().join("Datos").join("VMSMultimarca");
+        std::fs::create_dir_all(&fake).unwrap();
+        assert!(purge_guard(&fake, None).unwrap_err().message.contains("active.json"));
+        // La carpeta de datos personalizada que anotó el instalador, con su .env: sí
+        let custom = d.path().join("CCTV-datos");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join(".env"), "VMS_CREDENTIAL_BACKEND=file\n").unwrap();
+        assert!(purge_guard(&custom, Some(&custom)).is_ok());
+        assert!(purge_guard(&custom, None).is_err());
+        // Rutas cortas, nunca
+        assert!(purge_guard(Path::new("/VMSMultimarca"), None).is_err());
+
+        // Y uninstall --purge con un VMS_DATA_DIR ajeno no borra nada (ni siquiera quita servicios)
+        let f = fixture("2.0.0");
+        let mut scm = FakeScm::default();
+        let mut runner = FakeRunner { codes: vec![("show rule".into(), 1)], ..Default::default() };
+        install(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, &opts(Role::Control)).unwrap();
+        let alien = Ctx::for_tests(&users, Some(&f.install.root), None);
+        assert!(uninstall(&alien, Platform { scm: &mut scm, runner: &mut runner }, true).is_err());
+        assert!(users.join("ana").join("Documentos").join("tesis.docx").is_file());
+        assert_eq!(scm.services.len(), 3, "se negó antes de tocar nada");
     }
 
     #[test]

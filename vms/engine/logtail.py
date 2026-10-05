@@ -8,6 +8,10 @@ Este lector la sigue para detectar las contraseñas rechazadas (401) y los error
   (lo normal en Python) impediría a `vmsctl` rotarlo.
 - Detecta la rotación por la identidad del archivo (`st_ino`/`st_dev`, también en Windows) o porque
   encoge, y termina de leer lo que quedaba en `engine.log.1` antes de pasar al nuevo: no se pierden líneas.
+  `vmsctl` rota `engine.log` **copiando y vaciando** (el archivo nunca se borra, así que ningún otro servicio
+  puede recrearlo con líneas falsas): mismo archivo que encoge → lo que faltaba está en `engine.log.1` a
+  partir de la misma posición. Solo se lee si sus bytes justo antes de esa posición son los últimos que ya
+  se leyeron (si no, esa copia no es la continuación de lo leído y se ignora).
 - Solo entrega líneas completas; una línea a medio escribir espera a la siguiente vuelta.
 - Empieza por el final: los errores antiguos (de antes de arrancar el backend) no vuelven a pausar equipos.
 """
@@ -23,6 +27,7 @@ log = logging.getLogger("vms.engine.logtail")
 
 MAX_PENDING = 64 * 1024          # una «línea» sin salto más larga que esto se entrega cortada
 MAX_READ = 4 * 1024 * 1024       # como mucho esto por vuelta (el resto, en la siguiente)
+FINGERPRINT = 64                 # últimos bytes leídos que tienen que coincidir en la copia `.1`
 
 FileId = tuple[int, int]
 
@@ -38,6 +43,7 @@ class LogTail:
         self._id: FileId | None = None
         self._offset = 0
         self._pending = b""
+        self._last = b""            # últimos bytes leídos del archivo actual (huella para la copia .1)
         self._started = False
         self._start_at_end = start_at_end
         self.lines_read = 0
@@ -60,6 +66,28 @@ class LogTail:
             f.seek(offset)
             data = f.read(MAX_READ)
         return data, offset + len(data)
+
+    def _read_range(self, path: Path, start: int, length: int) -> bytes:
+        with open(path, "rb") as f:
+            f.seek(start)
+            return f.read(length)
+
+    def _copied_tail(self, out: list[str]) -> None:
+        """Rotación copiando y vaciando: lo que faltaba está en `engine.log.1` desde `self._offset`."""
+        old = self.path.with_name(self.path.name + ".1")
+        try:
+            size = old.stat().st_size
+            if size > self._offset:
+                start = self._offset - len(self._last)
+                if self._read_range(old, start, len(self._last)) == self._last:
+                    data, _ = self._read_from(old, self._offset)
+                    self._emit(data, out)
+                else:
+                    log.warning("engine.log.1 no continúa lo ya leído de engine.log: se ignora")
+        except OSError:
+            pass
+        if self._pending:
+            self._emit(b"\n", out)
 
     def _rotated_tail(self, out: list[str]) -> None:
         """Lo que quedaba por leer del archivo anterior, si sigue ahí como `engine.log.1`."""
@@ -92,19 +120,29 @@ class LogTail:
             self._id = fid
             self._offset = st.st_size if self._start_at_end else 0
             if self._start_at_end:
+                try:
+                    start = max(0, self._offset - FINGERPRINT)
+                    self._last = self._read_range(self.path, start, self._offset - start)
+                except OSError:
+                    self._last = b""
                 return out
         if fid != self._id or st.st_size < self._offset:
             if self._id is not None:
                 self.rotations += 1
-                self._rotated_tail(out)
+                if fid == self._id:
+                    self._copied_tail(out)      # mismo archivo que encoge: copiado y vaciado
+                else:
+                    self._rotated_tail(out)     # renombrado (`engine-run` en desarrollo)
             self._id = fid
             self._offset = 0
+            self._last = b""
         if st.st_size > self._offset:
             try:
                 data, self._offset = self._read_from(self.path, self._offset)
             except OSError as exc:
                 log.debug("No se pudo leer %s: %s", self.path, exc)
                 return out
+            self._last = (self._last + data)[-FINGERPRINT:]
             self._emit(data, out)
         self.lines_read += len(out)
         return out

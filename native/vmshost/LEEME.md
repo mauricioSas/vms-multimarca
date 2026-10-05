@@ -18,9 +18,14 @@ Qué hace (CONTRATO §13.3):
    y el instalador. El de un servicio con cuenta virtual deja `state\requests\rollback-<Servicio>.json`
    (`{"schema", "service", "kind": "version", "from", "reason", "created_unix"}`); el de `VMSUpdater` la
    atiende solo si `from` sigue siendo la versión activa **a prueba** (una petición vieja o falsa no puede
-   tumbar una versión confirmada), vuelve a `previous` (o a `last_good`), anota
+   tumbar una versión confirmada), vuelve a `last_good` (la confirmada; si no está, a `previous`), anota
    `state\host-rollback.json` y borra la petición. La ranura del actualizador la vuelve atrás él mismo.
-5. Al recibir Stop: cierra la entrada de `vmsctl` (parada ordenada), espera 15 s y termina el job.
+   `previous` es siempre una versión confirmada: cambiar otra vez de versión mientras la activa sigue a
+   prueba conserva el `previous` de antes. Una vez dejada la petición, el servicio vuelve a la espera
+   creciente (si `VMSUpdater` está parado no relanza cada segundo para siempre) y avisa en su registro si
+   la petición sigue sin atender a los 5 min.
+5. Al recibir Stop (o PRESHUTDOWN al apagar Windows; el plazo de 30 s lo fija `vmsctl services install`):
+   cierra la entrada de `vmsctl` (parada ordenada), espera 15 s y termina el job.
 
 Registro: `logs\vmshost-<Servicio>.log` (sin credenciales, rotación 10 × 10 MB).
 
@@ -34,7 +39,9 @@ vmshost show                  puntero resuelto (JSON)
 en desarrollo sin el SCM. La lógica portable está en `src/host.rs` y se prueba con un lanzador falso
 (`cargo test -p vmshost`: puntero ausente o dañado, hijo que cae 3 veces, versión sin confirmar, petición
 falsa, ranura del actualizador rota, parada). La parte de Windows (`src/win.rs`) la prueba el job
-`b1-windows` de CI con servicios reales.
+la pata `windows-latest` del job `b1-plataforma` de CI con servicios reales.
 
-**Referencia:** CONTRATO §13.3. Objetivo de tamaño del plan: < 600 líneas. Hoy son 686 líneas de código (sin
-pruebas, comentarios ni líneas en blanco; 786 con comentarios), sin red ni Python; el estado, los registros y el Job Object viven en `vms-common`.
+**Referencia:** CONTRATO §13.3. Objetivo de tamaño del plan: < 600 líneas. El arrancador en sí (`host.rs` +
+`win.rs`) son 484 líneas de código (sin pruebas, comentarios ni líneas en blanco); con `main.rs` (modo
+consola de desarrollo y lanzador del visor) son 660. Sin red ni Python; el estado (vuelta atrás, peticiones,
+plazo de confirmación), los registros y el Job Object viven en `vms-common`.

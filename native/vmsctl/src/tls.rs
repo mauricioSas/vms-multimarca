@@ -14,8 +14,6 @@ use crate::sys::{system32, Runner};
 use serde_json::json;
 use std::ffi::OsString;
 use std::path::Path;
-use vms_common::services::BACKEND;
-use vms_common::sid::{service_sid, well_known};
 
 pub fn setup(
     ctx: &Ctx,
@@ -71,25 +69,17 @@ pub fn setup(
     ))
 }
 
-/// `backend_installed`: el SID de `NT SERVICE\VMSBackend` solo se puede usar en una ACL si el servicio existe.
-pub fn kiosk_rotate(ctx: &Ctx, runner: &mut dyn Runner, backend_installed: bool) -> Result<Outcome, CtlError> {
+/// Token nuevo con DPAPI de máquina y la **misma** ACL que aplica `vmsctl acl apply`
+/// ([`acl::secret_file_steps`]): hereda de `secrets\` (SYSTEM, Administradores, VMSBackend) y lo lee el
+/// grupo «VMS Operadores».
+pub fn kiosk_rotate(ctx: &Ctx, runner: &mut dyn Runner) -> Result<Outcome, CtlError> {
     let bytes = vms_common::secret::random_bytes(32).map_err(|e| CtlError::io(&e, "generador aleatorio"))?;
     let token = vms_common::secret::b64url(&bytes);
     let path = ctx.data.secrets_dir().join("kiosk.token");
     vms_common::secret::write_secret(&path, token.as_bytes())
         .map_err(|e| CtlError::io(&e, &path.display().to_string()))?;
     let group = acl::ensure_operators_group()?;
-    let mut args = vec![
-        "/inheritance:r".to_string(),
-        "/grant:r".to_string(),
-        format!("*{}:F", well_known::LOCAL_SYSTEM),
-        format!("*{}:F", well_known::ADMINISTRATORS),
-        format!("{}:R", acl::OPERATORS_GROUP),
-    ];
-    if backend_installed {
-        args.push(format!("*{}:R", service_sid(BACKEND)));
-    }
-    let steps = vec![acl::AclStep { path: path.clone(), args }];
+    let steps = acl::secret_file_steps(&ctx.data, "kiosk.token", acl::kiosk_token_readers());
     if cfg!(windows) {
         acl::apply(runner, &steps)?;
     }
@@ -123,11 +113,28 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(d.path(), None, None);
         let mut r = FakeRunner::default();
-        kiosk_rotate(&ctx, &mut r, true).unwrap();
+        kiosk_rotate(&ctx, &mut r).unwrap();
         let a = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
-        kiosk_rotate(&ctx, &mut r, true).unwrap();
+        kiosk_rotate(&ctx, &mut r).unwrap();
         let b = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
         assert_eq!(a.len(), 43);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn kiosk_rotate_and_acl_apply_leave_the_same_acl_on_the_token() {
+        // Regresión: kiosk rotate quitaba la herencia y dejaba al backend en solo lectura; acl apply no.
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(d.path(), None, None);
+        let rotate = acl::secret_file_steps(&ctx.data, "kiosk.token", acl::kiosk_token_readers());
+        let inv = acl::Inventory { secret_files: vec!["kiosk.token".into()], ..Default::default() };
+        let svcs = vms_common::services::Role::Control.services();
+        let plan = acl::plan(&ctx.data, None, &svcs, None, &inv);
+        let from_plan: Vec<&acl::AclStep> = plan.iter().filter(|s| s.path.ends_with("kiosk.token")).collect();
+        assert_eq!(from_plan.len(), rotate.len());
+        for (a, b) in from_plan.iter().zip(rotate.iter()) {
+            assert_eq!(*a, b);
+        }
+        assert_eq!(rotate[0].args, ["/reset"]);
     }
 }

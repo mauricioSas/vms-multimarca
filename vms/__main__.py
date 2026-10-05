@@ -71,7 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     from vms.api.serve import run
 
-    return 0 if run(app, settings) else 3
+    try:
+        ok = run(app, settings)
+    except KeyboardInterrupt:
+        # Parada pedida (Ctrl+C, o vmsctl cerrando la entrada estándar: `install_stdin_eof_stop`). uvicorn ya
+        # paró de forma ordenada («Application shutdown complete»): salida limpia, sin traceback.
+        log.info("Backend parado")
+        return 0
+    return 0 if ok else 3
 
 
 def install_stdin_eof_stop() -> threading.Thread:

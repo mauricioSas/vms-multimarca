@@ -5,6 +5,11 @@
 //! - En Windows, quien lea el registro (el backend sigue `engine.log` con `vms/engine/logtail.py`) puede
 //!   tenerlo abierto justo al rotar: si el renombrado falla, se sigue escribiendo en el actual y se vuelve
 //!   a intentar más tarde. Rust abre los archivos con `FILE_SHARE_DELETE`, así que el escritor no bloquea.
+//! - [`RotatingLog::copy_truncate`] (solo `engine.log`): copia el actual a `x.log.1` y lo vacía, **sin
+//!   borrarlo ni renombrarlo nunca**. Así el archivo que sigue el backend conserva siempre su ACL (solo
+//!   VMSEngine escribe) y ningún otro servicio puede recrearlo en el instante de la rotación para meter
+//!   líneas falsas (un 401 inventado pausaría cámaras). Si `x.log.1` no se puede sustituir (p. ej. alguien
+//!   lo creó antes con otro dueño), no se vacía el actual: no se pierde nada y el lector nunca lee esa copia.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -44,15 +49,31 @@ pub struct RotatingLog {
     file: Option<File>,
     size: u64,
     last_rotate_fail: Option<Instant>,
+    copy_truncate: bool,
 }
 
 impl RotatingLog {
     pub fn new(path: impl Into<PathBuf>, max_bytes: u64, backups: u32) -> Self {
-        Self { path: path.into(), max_bytes: max_bytes.max(1024), backups, file: None, size: 0, last_rotate_fail: None }
+        Self {
+            path: path.into(),
+            max_bytes: max_bytes.max(1024),
+            backups,
+            file: None,
+            size: 0,
+            last_rotate_fail: None,
+            copy_truncate: false,
+        }
     }
 
     pub fn standard(path: impl Into<PathBuf>) -> Self {
         Self::new(path, DEFAULT_MAX_BYTES, DEFAULT_BACKUPS)
+    }
+
+    /// Rotación copiando y vaciando (ver la cabecera del módulo). Al menos una copia (`x.log.1`).
+    pub fn copy_truncate(path: impl Into<PathBuf>, max_bytes: u64, backups: u32) -> Self {
+        let mut log = Self::new(path, max_bytes, backups.max(1));
+        log.copy_truncate = true;
+        log
     }
 
     pub fn path(&self) -> &Path {
@@ -83,7 +104,10 @@ impl RotatingLog {
                 return;
             }
         }
-        self.file = None; // cerrar antes de renombrar (Windows)
+        let copy = self.copy_truncate;
+        if !copy {
+            self.file = None; // cerrar antes de renombrar (Windows)
+        }
         let result = (|| -> io::Result<()> {
             if self.backups == 0 {
                 return fs::remove_file(&self.path);
@@ -98,7 +122,25 @@ impl RotatingLog {
                     fs::rename(&from, self.backup(n + 1))?;
                 }
             }
-            fs::rename(&self.path, self.backup(1))
+            if !copy {
+                return fs::rename(&self.path, self.backup(1));
+            }
+            let first = self.backup(1);
+            if first.exists() {
+                // No se pudo apartar (otro dueño): no se vacía el actual.
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, "la copia .1 sigue ahí"));
+            }
+            let mut tmp = self.path.clone().into_os_string();
+            tmp.push(format!(".rot-{}", std::process::id()));
+            let tmp = PathBuf::from(tmp);
+            fs::copy(&self.path, &tmp)?;
+            if let Err(e) = fs::rename(&tmp, &first) {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+            // Vaciar con un manejador de escritura (el de añadir no basta en Windows); el de añadir sigue
+            // escribiendo al final, que ahora es 0.
+            OpenOptions::new().write(true).open(&self.path)?.set_len(0)
         })();
         match result {
             Ok(()) => {
@@ -168,6 +210,51 @@ mod tests {
         }
         let last = fs::read_to_string(&p).unwrap();
         assert!(last.contains("línea 199"));
+    }
+
+    #[test]
+    fn copy_truncate_never_replaces_the_live_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("engine.log");
+        let mut log = RotatingLog::copy_truncate(&p, 1024, 3);
+        log.write_line("primera").unwrap();
+        #[cfg(unix)]
+        let ino = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&p).unwrap().ino()
+        };
+        for i in 0..100 {
+            log.write_line(&format!("línea {i:03} {}", "x".repeat(40))).unwrap();
+        }
+        assert!(log.backup(1).exists() && log.backup(2).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&p).unwrap().ino(), ino, "engine.log es siempre el mismo archivo");
+        }
+        let all: String = [log.backup(3), log.backup(2), log.backup(1), p.clone()]
+            .iter()
+            .map(|f| fs::read_to_string(f).unwrap_or_default())
+            .collect();
+        assert!(all.contains("línea 099") && fs::read_to_string(&p).unwrap().contains("línea 099"));
+        assert!(fs::metadata(&p).unwrap().len() <= 1024 + 64);
+        assert!(!d.path().read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".rot-")));
+    }
+
+    #[test]
+    fn copy_truncate_keeps_writing_when_the_backup_cannot_be_replaced() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("engine.log");
+        // Una copia .1 que no se puede borrar ni sustituir (aquí, una carpeta no vacía; en Windows, un archivo
+        // de otro dueño): la rotación falla y el actual no se vacía.
+        let mut log = RotatingLog::copy_truncate(&p, 1024, 1);
+        fs::create_dir(log.backup(1)).unwrap();
+        fs::write(log.backup(1).join("x"), b"no vacia").unwrap();
+        for i in 0..60 {
+            log.write_line(&format!("línea {i:03} {}", "x".repeat(40))).unwrap();
+        }
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains("línea 000") && text.contains("línea 059"), "no se vació ni se perdió nada");
     }
 
     #[test]

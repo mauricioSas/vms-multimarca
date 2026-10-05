@@ -118,7 +118,10 @@ fn service_main(_arguments: Vec<OsString>) {
         }
     };
     let mut host = Host::new(cfg, launcher);
-    set(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0, Duration::ZERO);
+    // PRESHUTDOWN en vez de SHUTDOWN (son excluyentes): al apagar Windows, el SCM espera el plazo de
+    // preapagado que fija `vmsctl services install` (30 s) en vez de los pocos segundos de SHUTDOWN, y caben
+    // la parada ordenada de `vmsctl run` (10 s) y la del arrancador (15 s).
+    set(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN, 0, Duration::ZERO);
     host.log(&format!("en marcha (pid {}, vmshost {})", std::process::id(), env!("CARGO_PKG_VERSION")));
     loop {
         host.tick(Instant::now(), now_unix());

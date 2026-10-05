@@ -73,11 +73,8 @@ pub fn rollback(ctx: &Ctx) -> Result<Outcome, CtlError> {
     let install = ctx.install()?;
     let st = ctx.data.state();
     let cur = current(ctx)?;
-    let to = [cur.previous.clone(), st.last_good().ok()]
-        .into_iter()
-        .flatten()
-        .find(|v| v != &cur.active && install.version_installed(v))
-        .ok_or_else(|| {
+    let to =
+        cur.rollback_target(st.last_good().ok().as_deref(), &|v| install.version_installed(v)).ok_or_else(|| {
             CtlError::usage(format!("no hay otra versión instalada a la que volver desde {}", cur.active))
         })?;
     let p = st.write_pointer(&cur.rolled_back(&to))?;
@@ -150,6 +147,18 @@ mod tests {
         assert_eq!(ctx.data.state().last_good().unwrap(), "2.1.0");
         let s = show(&ctx).unwrap();
         assert!(s.text.contains("Versión activa: 2.1.0") && s.text.contains("anterior: 2.0.0"), "{}", s.text);
+    }
+
+    #[test]
+    fn rollback_after_two_switches_on_trial_goes_to_the_confirmed_version() {
+        // Regresión del revisor: switch 2.1.0 → switch 2.1.1 → rollback dejaba 2.1.0 (nunca confirmada)
+        let (_d, ctx) = ctx_with(&["2.0.0", "2.1.0", "2.1.1"], &[]);
+        switch(&ctx, "2.1.0").unwrap();
+        let out = switch(&ctx, "2.1.1").unwrap();
+        assert_eq!(out.data["pointer"]["previous"], "2.0.0");
+        let out = rollback(&ctx).unwrap();
+        assert_eq!(out.data["pointer"]["active"], "2.0.0");
+        assert_eq!(out.data["pointer"]["trial"], false);
     }
 
     #[test]

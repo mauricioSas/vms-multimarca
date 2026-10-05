@@ -27,6 +27,7 @@ mod health;
 mod migrate;
 mod ports;
 mod run;
+mod runstatus;
 mod scm;
 mod services_cmd;
 mod sys;
@@ -197,12 +198,15 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
             let role = role_of(a)?;
             acl::ensure_operators_group()?;
             let install = ctx.install().ok();
+            let services = role.services();
+            acl::precreate_logs(&ctx.data, &services)
+                .map_err(|e| CtlError::io(&e, &ctx.data.logs_dir().display().to_string()))?;
             let steps = acl::plan(
                 &ctx.data,
                 install,
-                &role.services(),
+                &services,
                 a.value("--recordings-dir").map(std::path::Path::new),
-                &|p| p.is_file(),
+                &acl::Inventory::scan(&ctx.data),
             );
             let n = acl::apply(&mut RealRunner, &steps)?;
             Ok(Outcome::new(json!({"steps": n, "role": role.as_str()}), format!("Permisos aplicados ({n} pasos).")))
@@ -220,10 +224,12 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
                 if names.is_empty() {
                     return Err(CtlError::health("no hay servicios de VMS Multimarca instalados"));
                 }
-                health::wait(Some(scm.as_ref()), &names, &net, &ctx.data, timeout, a.has("--deep"))
+                let opts = health::WaitOpts { timeout, deep: a.has("--deep"), run_status: true };
+                health::wait(Some(scm.as_ref()), &names, &net, &ctx.data, &opts)
             } else {
                 let names: Vec<&str> = role_of(a)?.services().iter().map(|d| d.name).collect();
-                health::wait(None, &names, &net, &ctx.data, timeout, a.has("--deep"))
+                let opts = health::WaitOpts { timeout, deep: a.has("--deep"), run_status: true };
+                health::wait(None, &names, &net, &ctx.data, &opts)
             }
         }
         ("version", "show") | ("version", "") => version::show(ctx),
@@ -249,13 +255,7 @@ fn dispatch(a: &Args, ctx: &Ctx) -> CtlResult {
                 a.has("--import-root"),
             )
         }
-        ("kiosk", "rotate") => {
-            let backend = real_scm(false)
-                .and_then(|s| s.query(vms_common::services::BACKEND))
-                .map(|i| i.is_some())
-                .unwrap_or(false);
-            tls::kiosk_rotate(ctx, &mut RealRunner, backend)
-        }
+        ("kiosk", "rotate") => tls::kiosk_rotate(ctx, &mut RealRunner),
         ("diag", "bundle") => {
             let out = PathBuf::from(need(a, "--out", "<archivo.zip>")?);
             let services = real_scm(false).and_then(|s| services_cmd::summary(s.as_ref())).unwrap_or(json!(null));

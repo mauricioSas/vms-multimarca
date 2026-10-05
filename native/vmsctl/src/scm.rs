@@ -62,6 +62,8 @@ pub mod win {
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
     const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+    /// Preapagado: parada ordenada del proceso (10 s) + la del arrancador (15 s) + margen.
+    const PRESHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
     const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
     const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
 
@@ -174,6 +176,8 @@ pub mod win {
             })
             .map_err(|e| err(e, "acciones de recuperación"))?;
             svc.set_failure_actions_on_non_crash_failures(true).map_err(|e| err(e, "recuperación ante fallos"))?;
+            // vmshost acepta PRESHUTDOWN: plazo para la parada ordenada al apagar el equipo.
+            svc.set_preshutdown_timeout(PRESHUTDOWN_TIMEOUT).map_err(|e| err(e, "plazo de preapagado"))?;
             let env: Vec<String> = spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
             crate::winreg::set_multi(&crate::winreg::service_key(&spec.name), "Environment", &env)
                 .map_err(|e| CtlError::io(&e, &format!("variables de entorno de {}", spec.name)))?;

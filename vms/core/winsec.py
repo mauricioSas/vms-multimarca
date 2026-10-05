@@ -11,8 +11,11 @@ Archivos de `secrets\\` (`secret.key`, `credentials.enc`, `internal.token`, `kio
   fuera del equipo (un respaldo, un disco robado) no sirve.
 - No se usa DPAPI-NG con `SID=`: es para grupos de un dominio de AD y los PC de tienda no están en dominio.
 - Fuera de Windows (desarrollo) no hay DPAPI: se escribe en claro con permisos 0600, como en la v1.
-- En SSD el borrado seguro del archivo en claro **no** está garantizado (se sobrescribe antes de
-  sustituirlo, pero la controladora puede conservar copias): se documenta.
+- La migración nunca toca el archivo en claro hasta tener el protegido comprobado: se protege, se
+  comprueba que DPAPI lo devuelve igual y se sustituye con `atomic_write` (un fallo o un corte de luz
+  deja el archivo en claro intacto y se reintenta en el siguiente arranque). No se intenta un «borrado
+  seguro» del contenido en claro: en SSD no hay garantía (la controladora conserva copias) y sobrescribir
+  antes de sustituir abría una ventana en la que se perdía la clave.
 
 Sin dependencias: `ctypes` sobre `crypt32.dll`.
 """
@@ -21,7 +24,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -139,20 +141,14 @@ def write_secret(path: Path, data: bytes) -> None:
     restrict_permissions(path)
 
 
-def _overwrite_in_place(path: Path) -> None:
-    """Sobrescribe el contenido en claro antes de sustituir el archivo (en SSD no hay garantía)."""
-    try:
-        size = path.stat().st_size
-        with open(path, "r+b") as f:
-            f.write(os.urandom(size))
-            f.flush()
-            os.fsync(f.fileno())
-    except OSError as exc:
-        log.warning("No se pudo sobrescribir %s antes de protegerlo: %s", path.name, exc)
-
-
 def migrate_plaintext(path: Path) -> bool:
-    """Si `path` es un secreto en claro de la v1 y hay DPAPI, lo protege. True si lo migró."""
+    """Si `path` es un secreto en claro de la v1 y hay DPAPI, lo protege. True si lo migró.
+
+    Orden seguro: (1) proteger en memoria, (2) comprobar que DPAPI devuelve el mismo secreto, (3) sustituir
+    el archivo con `atomic_write_bytes` (temporal + fsync + cambio de nombre atómico) y (4) releer el archivo
+    nuevo. Si (1)-(3) fallan, el archivo en claro sigue intacto. Si (4) no cuadra, se vuelve a escribir el
+    secreto en claro (lo tenemos en memoria) y se lanza el error: nunca se queda sin clave.
+    """
     path = Path(path)
     if not dpapi_available() or not path.is_file():
         return False
@@ -160,9 +156,17 @@ def migrate_plaintext(path: Path) -> bool:
     protected, payload = parse(raw)
     if protected:
         return False
-    blob = encode_protected(protect(payload))
-    _overwrite_in_place(path)
-    atomic_write_bytes(path, blob)
+    blob = protect(payload)
+    if unprotect(blob) != payload:
+        raise SecretProtectionError(f"DPAPI no devolvió el mismo contenido al proteger {path.name}; se deja en claro")
+    atomic_write_bytes(path, encode_protected(blob))
+    try:
+        ok = read_secret(path) == payload
+    except (OSError, SecretProtectionError):
+        ok = False
+    if not ok:
+        atomic_write_bytes(path, raw)
+        raise SecretProtectionError(f"{path.name} no se pudo releer tras protegerlo; se restauró en claro")
     log.info("Secreto %s protegido con DPAPI de máquina (migración desde la v1)", path.name)
     return True
 
