@@ -145,9 +145,13 @@ def install_stop_handlers(stop: threading.Event) -> None:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handler)
     if os.environ.get("VMS_STOP_ON_STDIN_EOF") == "1":
+        from vms.core.stdin_stop import private_stdin
+
+        stdin = private_stdin()   # en Windows, separada del STD_INPUT_HANDLE (ver vms/core/stdin_stop.py)
+
         def watch() -> None:
             try:
-                while sys.stdin.buffer.read(4096):
+                while stdin is not None and stdin.read(4096):
                     pass
             except (OSError, ValueError):
                 pass

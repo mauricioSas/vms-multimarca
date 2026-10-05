@@ -250,7 +250,7 @@ jobs:
           python -m pip install --no-deps -e .
       - name: pytest en Windows (DPAPI real, MoveFileExW, runtime)
         if: runner.os == 'Windows'
-        run: python -m pytest -q -rs -p no:cacheprovider tests/core/test_winsec.py tests/core/test_atomic.py tests/distribution
+        run: python -m pytest -q -rs -p no:cacheprovider tests/core/test_winsec.py tests/core/test_atomic.py tests/core/test_stdin_stop.py tests/distribution
       - name: Runtime embebible (Python 3.12.10 + locks de sede vms y analytics) y MediaMTX para Windows
         if: runner.os == 'Windows'
         run: |

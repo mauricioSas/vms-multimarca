@@ -84,9 +84,12 @@ def main(argv: list[str] | None = None) -> int:
 def install_stdin_eof_stop() -> threading.Thread:
     """Cuando se cierra la entrada estándar (vmsctl pide la parada), simula Ctrl+C: uvicorn para de forma
     ordenada (cierra conexiones, para el latido y el motor) igual que en una consola."""
+    from vms.core.stdin_stop import private_stdin
+
+    stdin = private_stdin()       # en Windows, separada del STD_INPUT_HANDLE (ver vms/core/stdin_stop.py)
+
     def watch() -> None:
         try:
-            stdin = sys.stdin.buffer if sys.stdin is not None else None
             while stdin is not None and stdin.read(4096):
                 pass
         except (OSError, ValueError):
