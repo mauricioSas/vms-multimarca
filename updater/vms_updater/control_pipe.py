@@ -66,8 +66,13 @@ def handle_request(engine: Engine, req: Any) -> dict[str, Any]:
             ttl = int(req.get("ttl_s") or 3600)
             if not owner:
                 return {"ok": False, "error": "bad_request", "message_es": "Falta «owner»"}
-            with engine._op:   # no se concede mientras haya una actualización en curso
+            # No se concede mientras haya una actualización en curso (y no se espera a que acabe: «busy»)
+            if not engine._op.acquire(blocking=False):
+                return {"ok": False, "error": "busy", "message_es": "Hay una actualización en curso"}
+            try:
                 ok = engine.lock.acquire(owner, ttl)
+            finally:
+                engine._op.release()
             return {"ok": True} if ok else {"ok": False, "error": "busy"}
         if cmd == "unlock":
             owner = str(req.get("owner") or "")[:64]
@@ -127,18 +132,23 @@ class UnixControlServer:
                 continue
             except OSError:
                 break
-            with conn:
-                conn.settimeout(10)
-                data = b""
-                try:
-                    while b"\n" not in data and len(data) < MAX_MESSAGE:
-                        chunk = conn.recv(4096)
-                        if not chunk:
-                            break
-                        data += chunk
-                    conn.sendall(_encode(self.handler(_decode(data))))
-                except OSError as exc:
-                    log.debug("Conexión de control cortada: %s", exc)
+            # Una conexión por hilo: un «status» no espera a que termine un «check» largo
+            threading.Thread(target=self._serve, args=(conn,), name="updater-control-conn", daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(10)
+            data = b""
+            try:
+                while b"\n" not in data and len(data) < MAX_MESSAGE:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                conn.settimeout(None)
+                conn.sendall(_encode(self.handler(_decode(data))))
+            except OSError as exc:
+                log.debug("Conexión de control cortada: %s", exc)
 
     def stop(self) -> None:
         self._stop.set()
@@ -223,24 +233,30 @@ class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
                 log.error("CreateNamedPipeW falló (%d)", ctypes.get_last_error())
                 return
             first = False
-            try:
-                ok = connect(h, None) or ctypes.get_last_error() == 535   # ERROR_PIPE_CONNECTED
-                if not ok or self._stop.is_set():
-                    continue
-                buf = ctypes.create_string_buffer(MAX_MESSAGE)
-                n = wintypes.DWORD()
-                data = b""
-                while b"\n" not in data and len(data) < MAX_MESSAGE:
-                    if not read(h, buf, MAX_MESSAGE, ctypes.byref(n), None) or n.value == 0:
-                        break
-                    data += buf.raw[: n.value]
-                out = _encode(self.handler(_decode(data)))
-                written = wintypes.DWORD()
-                write(h, out, len(out), ctypes.byref(written), None)
-                k32.FlushFileBuffers(h)
-                k32.DisconnectNamedPipe(h)
-            finally:
+            ok = connect(h, None) or ctypes.get_last_error() == 535   # ERROR_PIPE_CONNECTED
+            if not ok or self._stop.is_set():
                 k32.CloseHandle(h)
+                continue
+
+            def serve(h: Any = h) -> None:
+                try:
+                    buf = ctypes.create_string_buffer(MAX_MESSAGE)
+                    n = wintypes.DWORD()
+                    data = b""
+                    while b"\n" not in data and len(data) < MAX_MESSAGE:
+                        if not read(h, buf, MAX_MESSAGE, ctypes.byref(n), None) or n.value == 0:
+                            break
+                        data += buf.raw[: n.value]
+                    out = _encode(self.handler(_decode(data)))
+                    written = wintypes.DWORD()
+                    write(h, out, len(out), ctypes.byref(written), None)
+                    k32.FlushFileBuffers(h)
+                    k32.DisconnectNamedPipe(h)
+                finally:
+                    k32.CloseHandle(h)
+
+            # Una conexión por hilo (la siguiente instancia de la tubería se crea en seguida)
+            threading.Thread(target=serve, name="updater-pipe-conn", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()

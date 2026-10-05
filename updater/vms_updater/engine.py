@@ -709,6 +709,12 @@ class Engine:
         cur = slots.get(ptr.updater.slot) if isinstance(slots, dict) else None
         if isinstance(cur, dict) and cur.get("sha256") == ref.sha256:
             return None
+        if cur is None and ref.version == __version__:
+            # Ranura puesta por el instalador sin slots.json: ya es este actualizador. Se anota y no se reinstala.
+            slots = slots if isinstance(slots, dict) else {}
+            slots[ptr.updater.slot] = {"version": ref.version, "sha256": ref.sha256}
+            atomic_write_json(self._slots_file(), slots)
+            return None
         key = f"updater-{ref.version}-{ref.sha256[:12]}"
         if self.blacklist.contains(key):
             return None

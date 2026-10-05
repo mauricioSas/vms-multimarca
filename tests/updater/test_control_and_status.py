@@ -42,6 +42,40 @@ def test_status_check_hold_rollback_lock(site: Site) -> None:
     assert handle_request(eng, {"cmd": "hold", "on": "sí"})["error"] == "bad_request"
 
 
+def test_lock_is_busy_during_an_update_and_status_stays_responsive(site: Site) -> None:
+    import tempfile
+    import threading
+    import time
+
+    eng = site.engine()
+    started, release = threading.Event(), threading.Event()
+
+    def long_update() -> None:            # simula una actualización en curso (tiene el cerrojo interno)
+        with eng._op:
+            started.set()
+            release.wait(10)
+
+    th = threading.Thread(target=long_update)
+    th.start()
+    started.wait(5)
+    try:
+        assert handle_request(eng, {"cmd": "lock", "owner": "installer", "ttl_s": 60})["error"] == "busy"
+        if sys.platform != "win32":
+            sock = Path(tempfile.mkdtemp(prefix="vmsu-", dir="/tmp")) / "c.sock"
+            srv = UnixControlServer(sock, lambda req: handle_request(eng, req))
+            srv.start()
+            try:
+                t0 = time.monotonic()
+                assert unix_request(sock, {"cmd": "status"}, timeout=5)["ok"]
+                assert time.monotonic() - t0 < 2
+            finally:
+                srv.stop()
+    finally:
+        release.set()
+        th.join()
+    assert handle_request(eng, {"cmd": "lock", "owner": "installer", "ttl_s": 60}) == {"ok": True}
+
+
 def test_manual_rollback_warns_and_restores_config_from_backup(site: Site) -> None:
     site.factory.release("2.1.0", comps=("app",))
     before = site.config_bytes()
