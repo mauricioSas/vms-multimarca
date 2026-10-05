@@ -84,6 +84,38 @@ def test_hikvision_by_build_date_and_dahua_by_version() -> None:
     assert adv.firmware_build_date("V5.5.800 build 210628") == datetime(2021, 6, 28).date()
 
 
+def test_dahua_real_firmware_format_and_dhi_prefix() -> None:
+    """Regresión (revisión B6): el formato real de Dahua («…,build:AAAA-MM-DD», como el mock de tools/mocks) y el
+    `deviceType` con prefijo «DHI-»."""
+    t = adv.version_table().table
+
+    def verdicts(model: str, fw: str, fw_date: str = "") -> list[str]:
+        return [m.verdict for m in adv.evaluate(t, "dahua", model, fw, fw_date) if "CVE-2021-33044" in m.advisory.cves]
+
+    # justo la versión corregida → ok (antes daba «probably_vulnerable»)
+    assert verdicts("IPC-HFW5442E-ZE", "2.820.0000000.18.R,build:2021-07-05") == ["ok"]
+    # el mismo número de versión con un build anterior → afectado
+    assert verdicts("IPC-HFW5442E-ZE", "2.820.0000000.18.R,build:2021-07-04") == ["probably_vulnerable"]
+    # «DHI-» delante del modelo (deviceType real) → se detecta (antes, falso negativo de un CVE de KEV)
+    assert verdicts("DHI-IPC-HFW5442E-ZE", "2.800.0000000.25.R,build:2021-03-04") == ["probably_vulnerable"]
+    assert verdicts("DH-IPC-HFW5442E-ZE", "2.840.0000000.1.R,build:2022-01-01") == ["ok"]
+    # misma versión sin build: no se sabe → desconocido (nunca «ok»); con la fecha aparte sí se compara
+    assert verdicts("IPC-HFW5442E-ZE", "2.820.0000000.18.R") == ["unknown"]
+    assert verdicts("IPC-HFW5442E-ZE", "2.820.0000000.18.R", "2021-07-05") == ["ok"]
+    assert adv.dahua_version_tuple("4.001.0000000.1,build:2021-06-04") == ((4, 1, 0, 1, 210604), True)
+    assert adv.normalize_model("dahua", "DHI-NVR4104HS") == "NVR4104HS"
+    assert adv.normalize_model("hikvision", "DHI-X") == "DHI-X"
+
+
+def test_advisory_without_fixed_version_is_never_ok() -> None:
+    """Regresión (revisión B6): sin versión corregida verificada el veredicto es «Desconocido», también para un
+    firmware moderno (antes, todo build ≥ 2018 daba «Sin CVE conocidos»)."""
+    t = adv.version_table().table
+    ms = [m for m in adv.evaluate(t, "hikvision", "DS-2CD2043G2-I", "V5.7.15 build 240101")
+          if "CVE-2017-7921" in m.advisory.cves]
+    assert ms and all(m.verdict == "unknown" for m in ms)
+
+
 def test_password_analysis_is_local() -> None:
     assert password_weakness("12345", "admin") and password_weakness("admin", "admin")
     assert password_weakness("Tienda37", "tienda37")

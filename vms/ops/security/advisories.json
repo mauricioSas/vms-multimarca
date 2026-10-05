@@ -37,7 +37,7 @@
       "epss": null,
       "vendor_advisory_url": "",
       "reviewed": "2026-10-05",
-      "notes_es": "Autenticación incorrecta en firmware antiguos de cámaras Hikvision (2014-2017). La tabla aún no tiene la versión corregida verificada: el resultado es «Desconocido» si el firmware es anterior a 2018. Actualiza el firmware a la última versión del fabricante."
+      "notes_es": "Autenticación incorrecta en firmware antiguos de cámaras Hikvision (2014-2017). La tabla aún no tiene la versión corregida verificada: el resultado es «Desconocido» sea cual sea el firmware. Actualiza el firmware a la última versión del fabricante."
     },
     {
       "id": "ADV-2026-003",
