@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 from pydantic import ValidationError
 
 from .atomic import atomic_write_text
-from .config_migrations import migrate, newer_than_supported
+from .config_migrations import NewerConfigError, document_version, migrate, newer_than_supported
 from .models import CONFIG_VERSION, AppConfig, User
 from .paths import restrict_permissions
 
@@ -38,15 +38,23 @@ class ConfigStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.backup_path = self.path.with_name(self.path.name + ".bak")
+        # Solo lectura (CONTRATO §13.8): config.json de una versión más nueva. Nunca se guarda encima.
+        self.read_only_version: int | None = None
+
+    @property
+    def read_only(self) -> bool:
+        return self.read_only_version is not None
 
     def _read(self, path: Path) -> tuple[AppConfig, list[str]]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             if newer_than_supported(data):
                 # Escrito por una versión más nueva (p. ej. tras un rollback que no restauró el respaldo).
-                # Se carga conservando lo desconocido; el modo solo lectura lo completa B4 (CONTRATO §13.7).
-                log.warning("config.json es de la versión %s y este programa entiende hasta la %s",
+                # Se carga conservando lo desconocido y en SOLO LECTURA: save() se niega (B4, §13.8).
+                log.warning("config.json es de la versión %s y este programa entiende hasta la %s: solo lectura",
                             data.get("version"), CONFIG_VERSION)
+                if path == self.path:
+                    self.read_only_version = document_version(data)
             else:
                 data, applied = migrate(data)
                 if applied:
@@ -99,6 +107,9 @@ class ConfigStore:
                 except (OSError, ValueError) as exc2:
                     log.error("La copia de seguridad también está dañada: %s", exc2)
             return AppConfig(), msg + "No había copia válida: se empieza con una configuración vacía."
+        if self.read_only_version is not None:
+            return cfg, (f"La configuración es de una versión más nueva ({self.read_only_version}) que este "
+                         f"programa ({CONFIG_VERSION}): está en solo lectura y no se guardará ningún cambio.")
         if problems:
             keep = self._stamp_name("original")
             shutil.copy2(self.path, keep)
@@ -107,6 +118,10 @@ class ConfigStore:
         return cfg, None
 
     def save(self, cfg: AppConfig) -> None:
+        if self.read_only_version is not None:
+            raise NewerConfigError(self.read_only_version, CONFIG_VERSION)
+        if cfg.version > CONFIG_VERSION:
+            raise NewerConfigError(cfg.version, CONFIG_VERSION)
         text = cfg.model_dump_json(indent=2)
         if self.path.exists():
             try:
