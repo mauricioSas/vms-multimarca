@@ -267,10 +267,10 @@ jobs:
       - run: python -m tools.fetch_mediamtx
       - name: "mypy --strict en vms/vendors (PLAN-V2 §4.1)"
         run: mypy --strict vms/vendors
-      - name: "Batería de contrato, drivers y madurez (tests/vendors)"
-        run: python -m pytest tests/vendors -q -rs -p no:cacheprovider
-      - name: "Matriz de simuladores (tests/compat: MediaMTX + ffmpeg + mocks)"
-        run: python -m pytest tests/compat -q -rs -p no:cacheprovider
+      - name: "Batería de contrato, drivers, madurez y matriz de simuladores (cobertura de vms/vendors ≥ 85 %)"
+        run: >
+          python -m pytest tests/vendors tests/compat -q -rs -p no:cacheprovider
+          --cov=vms/vendors --cov-report=term --cov-fail-under=85
       - name: "Sin presets duplicados en JS (criterio 3 de B5)"
         run: "! grep -nE 'presetPaths|Streaming/Channels|realmonitor|/unicast/|Preview_|media\\.smp|axis-media' vms/web/static/js/*.js"
 
