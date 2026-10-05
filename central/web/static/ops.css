@@ -1,0 +1,16 @@
+/* «Tiendas con problemas hoy» (panel central, B6). Usa las variables de app.css. */
+.ops-intro { margin: 0 0 12px; max-width: 900px; }
+.ops-date { display: inline-flex; gap: 6px; align-items: center; color: var(--text-2); }
+.ops-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.ops-row label { display: inline-flex; flex-direction: column; gap: 4px; color: var(--text-2); font-size: 13px; }
+.badge.critical { color: var(--bad); background: var(--bad-bg); }
+.badge.warning { color: var(--warn); background: var(--warn-bg); }
+.badge.nodata { color: var(--idle); background: var(--idle-bg); }
+.ops-problems { margin: 0; padding-left: 18px; }
+.ops-problems li { margin: 2px 0; }
+.ops-check { width: 18px; height: 18px; }
+@media print {
+  .topbar, .page-head .btn, .page-head .ops-date, .ops-counts, .ops-check { display: none !important; }
+  .card { border: 0; padding: 0; }
+  body { background: #fff; color: #000; }
+}

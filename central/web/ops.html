@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiendas con problemas · Panel central</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/ops.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/ops.js" defer></script>
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main>
+  <div class="page-head">
+    <h1>Tiendas con problemas</h1>
+    <span class="sub" id="updated"></span>
+    <span class="spacer"></span>
+    <label class="ops-date">Día <input type="date" id="day"></label>
+    <button class="btn" id="refresh" type="button">Actualizar</button>
+    <a class="btn" id="csv" href="/api/ops/problems.csv" download>Descargar CSV</a>
+    <button class="btn" id="print" type="button">Imprimir o guardar en PDF</button>
+  </div>
+  <p class="muted ops-intro">Una fila por tienda, de más grave a menos. Los datos llegan con el latido de cada tienda
+    (informe de salud del día): imagen de las cámaras, huecos de grabación, hora, disco y previsión de días de grabación.
+    No incluye imágenes.</p>
+  <div id="error" class="msg" role="alert"></div>
+  <section class="tiles" id="tiles" aria-label="Resumen"></section>
+  <section class="card">
+    <h2>Estado por tienda</h2>
+    <div class="table-wrap" id="table"></div>
+  </section>
+  <section class="card ops-counts">
+    <h2>Conteos para Excel</h2>
+    <p class="muted">Entradas, salidas y cola media y máxima por hora o por día de las tiendas marcadas arriba (o de
+      todas si no marcas ninguna). Archivo CSV con «;» y coma decimal.</p>
+    <div class="ops-row">
+      <label>Desde <input type="date" id="c-from"></label>
+      <label>Hasta <input type="date" id="c-to"></label>
+      <label>Agrupar por
+        <select id="c-bucket"><option value="day">día</option><option value="hour">hora</option></select>
+      </label>
+      <button class="btn primary" id="c-download" type="button">Descargar conteos</button>
+    </div>
+  </section>
+</main>
+</body>
+</html>
