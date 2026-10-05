@@ -239,7 +239,8 @@ async def test_heartbeat_endpoint(admin_client: httpx.AsyncClient, client_factor
     assert all("token" not in t and "sha256" not in t for t in listing)
 
     store = client_factory("100.64.0.5")  # la sede no usa cookie ni CSRF: usa su token
-    assert (await _heartbeat(store, token, "site-new-005", temperature_c=48.5)).status_code == 204
+    r = await _heartbeat(store, token, "site-new-005", temperature_c=48.5)
+    assert r.status_code == 200 and r.json() == {"directive": None}   # el panel no pide nada a esta sede
     with psycopg.connect(seeded_dsn) as c:
         site = c.execute("SELECT name, code, timezone FROM sites WHERE site_id='site-new-005'").fetchone()
         hb = c.execute("SELECT hostname, status, payload->>'temperature_c', now() - last_seen < interval '1 min' "

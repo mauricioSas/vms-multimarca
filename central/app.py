@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +56,7 @@ from vms.core.rtsp import redact
 from . import db
 from .extensions import CentralDeps, extension_builders
 from .heartbeat import MAX_PAYLOAD_BYTES, HeartbeatIn, record_heartbeat
+from .updates import directive_for
 from .security import (FailureLimiter, Session, SessionStore, SiteTokenStore, hash_password,
                        hash_password_async, verify_password_async)
 from .settings import CentralSettings
@@ -476,7 +478,7 @@ def create_app(settings: CentralSettings, *, pool: AsyncConnectionPool[Any] | No
         return Response(status_code=204)
 
     # ------------------------------------------------------------------ latido HTTP
-    @app.post("/api/heartbeat", status_code=204)
+    @app.post("/api/heartbeat")
     async def heartbeat(request: Request) -> Response:
         ip = _client_ip(request, settings.trusted_proxies)
         wait = token_limiter.retry_after(ip)
@@ -509,13 +511,18 @@ def create_app(settings: CentralSettings, *, pool: AsyncConnectionPool[Any] | No
         try:
             async with pool.connection(timeout=5) as c:
                 await record_heartbeat(c, body.site, body.payload)
+                # Lo que pide el panel a esta sede viaja en la respuesta (CONTRATO §15.6): el agente lo entrega
+                # al actualizador. `payload.update` (lo que informa la sede) se copia en `site_versions`.
+                reported = (body.payload.model_extra or {}).get("update")
+                directive = await directive_for(c, site_id, now_fn(), reported if isinstance(reported, dict)
+                                                else None)
         except PoolTimeout as exc:
             raise DbUnavailable("La base de datos central no responde") from exc
         except PgError as exc:
             log.error("No se pudo guardar el latido de %s: %s", site_id, redact(str(exc)))
             raise DbUnavailable("No se pudo guardar el latido") from exc
         log.debug("Latido de %s guardado (%s)", site_id, body.payload.status)
-        return Response(status_code=204)
+        return JSONResponse({"directive": jsonable_encoder(directive)})
 
     # ------------------------------------------------------------------ sedes
     @app.get("/api/sites")

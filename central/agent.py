@@ -44,6 +44,7 @@ from vms.core.models import Site
 from vms.core.paths import AppPaths
 from vms.core.rtsp import redact
 
+from .directive import deliver as deliver_directive
 from .heartbeat import HeartbeatPayload, SiteInfo
 from .settings import AgentSettings, load_agent_settings
 
@@ -271,6 +272,7 @@ class HeartbeatAgent:
                 if r.status_code in (200, 204):
                     self.sent += 1
                     log.debug("Latido enviado (%s)", payload.status)
+                    await self._deliver_directive(r)
                     return True
                 if r.status_code in (401, 403):
                     log.error("La central rechazó el latido (HTTP %s): revisa VMS_SITE_TOKEN y VMS_SITE_ID",
@@ -294,6 +296,20 @@ class HeartbeatAgent:
                 log.warning("Latido no entregado (%s); se intentará en el siguiente ciclo", reason)
         self.failures += 1
         return False
+
+    async def _deliver_directive(self, r: httpx.Response) -> None:
+        """Lo que pide el panel (respuesta del latido, CONTRATO §15.6) va al actualizador por su tubería. Un
+        204 (central antigua) no trae directiva: no se toca la que hubiera."""
+        if r.status_code != 200:
+            return
+        try:
+            body = r.json()
+        except ValueError:
+            log.warning("Respuesta del latido no válida: se ignora")
+            return
+        if not isinstance(body, dict) or "directive" not in body:
+            return
+        await asyncio.to_thread(deliver_directive, body["directive"], self.paths.updater_data)
 
     async def run_once(self) -> bool:
         site, payload = await self.collect()

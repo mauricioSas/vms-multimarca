@@ -206,6 +206,17 @@ class UpdaterSlot(_Model):
     trial_since_unix: int | None = None
 
 
+# Nombre de carpeta de versión válido: el mismo criterio que `vms_common::state::validate_version` (Rust).
+VERSION_DIR_RE = re.compile(r"^(?!\.)[A-Za-z0-9._+-]{1,64}$")
+
+
+def check_version_dir(v: str) -> str:
+    """Lanza ValueError si `v` no puede ser una carpeta de `versions\\` (vacía, «..», separadores…)."""
+    if not VERSION_DIR_RE.match(v) or ".." in v:
+        raise ValueError(f"versión no válida: «{v[:80]}» (solo letras, números, «.», «-», «_» y «+»)")
+    return v
+
+
 class ActivePointer(_Model):
     """`state\\active.json`. Tiempos en segundos Unix (UTC)."""
 
@@ -219,6 +230,16 @@ class ActivePointer(_Model):
     # Servicios que reinicia el último cambio de versión. `vmshost` solo relanza por un cambio del puntero a
     # los que estén aquí (o a todos si falta); los demás siguen en su carpeta (CONTRATO §13.3-§13.4).
     restart: list[str] | None = None
+
+    @field_validator("active")
+    @classmethod
+    def _active(cls, v: str) -> str:
+        return check_version_dir(v)
+
+    @field_validator("previous")
+    @classmethod
+    def _previous(cls, v: str | None) -> str | None:
+        return None if v is None else check_version_dir(v)
 
     def dump(self) -> dict[str, Any]:
         d = self.model_dump(by_alias=True, mode="json")
@@ -300,6 +321,7 @@ class PublicStatus(_Model):
     updated: str | None = None
     updater_version: str | None = None
     paused_at: str | None = None          # solo con VMS_UPDATER_PAUSE_AT (pruebas de corte de luz)
+    control_error: str | None = None      # la tubería de control no se pudo crear (otro proceso tiene el nombre)
 
     def dump(self) -> dict[str, Any]:
         return self.model_dump(by_alias=True, mode="json")

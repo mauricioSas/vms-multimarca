@@ -30,6 +30,11 @@ log = logging.getLogger(__name__)
 # Lo que necesita el proceso de una tienda (analítica + latido directo). Nada de DELETE.
 SITE_TABLES = ("sites", "site_cameras", "analytics_rules", "line_counts_minute", "zone_occupancy_minute",
                "queue_alerts", "site_heartbeats")
+# `site_versions` (0003): la tienda INFORMA su versión y lee lo que pide el panel (latido directo, CONTRATO §15.6),
+# pero no puede cambiar lo que pide el panel (canal, retener, ventana, volver atrás): permisos por columna.
+VERSION_TABLE = "site_versions"
+VERSION_REPORT_COLUMNS = ("site_id", "installed", "update_state", "last_result", "message_es", "available",
+                          "reported_at", "reported_channel", "reported_hold", "reported_window", "skipped")
 
 
 class SiteRoleError(Exception):
@@ -64,6 +69,10 @@ def create_site_role(conn: psycopg.Connection[Any], site_id: str, password: str 
                                  "PASSWORD {}").format(ident, sql.Literal(password)))
         conn.execute(sql.SQL("GRANT SELECT, INSERT, UPDATE ON {} TO {}").format(
             sql.SQL(", ").join(sql.Identifier(t) for t in SITE_TABLES), ident))
+        if conn.execute("SELECT to_regclass(%s)", (VERSION_TABLE,)).fetchone()[0] is not None:
+            cols = sql.SQL(", ").join(sql.Identifier(c) for c in VERSION_REPORT_COLUMNS)
+            conn.execute(sql.SQL("GRANT SELECT, INSERT ({c}), UPDATE ({c}) ON {t} TO {r}").format(
+                c=cols, t=sql.Identifier(VERSION_TABLE), r=ident))
         conn.execute("INSERT INTO site_db_roles (role_name, site_id) VALUES (%s, %s) "
                      "ON CONFLICT (role_name) DO UPDATE SET site_id = EXCLUDED.site_id", (role, site_id))
     log.info("Rol de tienda %s para %s %s", role, site_id, "actualizado" if exists else "creado")
@@ -81,6 +90,11 @@ def revoke_site_role(conn: psycopg.Connection[Any], site_id: str) -> bool:
             return False
         conn.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(
             sql.SQL(", ").join(sql.Identifier(t) for t in SITE_TABLES), ident))
+        if conn.execute("SELECT to_regclass(%s)", (VERSION_TABLE,)).fetchone()[0] is not None:
+            cols = sql.SQL(", ").join(sql.Identifier(c) for c in VERSION_REPORT_COLUMNS)
+            conn.execute(sql.SQL("REVOKE ALL ({c}) ON {t} FROM {r}").format(
+                c=cols, t=sql.Identifier(VERSION_TABLE), r=ident))
+            conn.execute(sql.SQL("REVOKE ALL ON {t} FROM {r}").format(t=sql.Identifier(VERSION_TABLE), r=ident))
         conn.execute(sql.SQL("DROP ROLE {}").format(ident))
         conn.execute("DELETE FROM site_db_roles WHERE role_name = %s", (role,))
     return True

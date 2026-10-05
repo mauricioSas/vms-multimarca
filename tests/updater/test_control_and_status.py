@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from vms_updater.control_pipe import UnixControlServer, handle_request, unix_request
+from vms_updater.control_pipe import UnixControlServer, handle_request
+from vms_updater.pipe_client import unix_request
 from vms_updater.heartbeat import payload_update
 from vms_updater.state_files import Blacklist
 
@@ -73,7 +74,7 @@ def test_lock_is_busy_during_an_update_and_status_stays_responsive(site: Site) -
         assert handle_request(eng, {"cmd": "lock", "owner": "installer", "ttl_s": 60})["error"] == "busy"
         if sys.platform != "win32":
             sock = Path(tempfile.mkdtemp(prefix="vmsu-", dir="/tmp")) / "c.sock"
-            srv = UnixControlServer(sock, lambda req: handle_request(eng, req))
+            srv = UnixControlServer(sock, lambda req, caller: handle_request(eng, req, caller))
             srv.start()
             try:
                 t0 = time.monotonic()
@@ -105,7 +106,7 @@ def test_unix_socket_server_round_trip_and_permissions(site: Site) -> None:
     eng = site.engine()
     # macOS limita la ruta de un socket Unix a ~104 caracteres: la carpeta temporal de pytest es más larga
     sock = Path(tempfile.mkdtemp(prefix="vmsu-", dir="/tmp")) / "control.sock"
-    srv = UnixControlServer(sock, lambda req: handle_request(eng, req))
+    srv = UnixControlServer(sock, lambda req, caller: handle_request(eng, req, caller))
     srv.start()
     try:
         assert (sock.stat().st_mode & 0o777) == 0o600
@@ -150,32 +151,49 @@ def test_windows_named_pipe_round_trip_and_acl(site: Site) -> None:  # pragma: n
     import time
     import uuid
 
-    from vms_updater.control_pipe import WindowsPipeServer, pipe_request
+    from vms_updater.control_pipe import WindowsPipeServer
+    from vms_updater.pipe_client import ServerNotTrusted, current_user_sid, pipe_request
 
+    me = frozenset({current_user_sid()})        # el servidor de la prueba no es SYSTEM: se confía en el runner
     eng = site.engine()
     name = r"\\.\pipe\VMSMultimarca.updater.prueba-" + uuid.uuid4().hex[:8]
-    srv = WindowsPipeServer(lambda req: handle_request(eng, req), name=name)
+    srv = WindowsPipeServer(lambda req, caller: handle_request(eng, req, caller), name=name,
+                            restricted_sids=frozenset())
     srv.start()
     try:
         deadline = time.monotonic() + 10
         while True:
             try:
-                r = pipe_request({"cmd": "status"}, name=name)
+                r = pipe_request({"cmd": "status"}, name=name, trusted_sids=me)
                 break
             except FileNotFoundError:
                 assert time.monotonic() < deadline, "la tubería no apareció"
                 time.sleep(0.05)
         assert r["ok"] and "journal" in r
-        assert pipe_request({"cmd": "lock", "owner": "installer", "ttl_s": 30}, name=name) == {"ok": True}
+        assert pipe_request({"cmd": "lock", "owner": "installer", "ttl_s": 30}, name=name, trusted_sids=me) == \
+            {"ok": True}
+        # sin confiar en la cuenta del servidor (no es SYSTEM), el cliente no envía nada (suplantación)
+        with pytest.raises(ServerNotTrusted):
+            pipe_request({"cmd": "status"}, name=name, trusted_sids=frozenset({"S-1-5-18"}))
     finally:
         srv.stop()
+    # un cliente identificado como cuenta de latido solo puede entregar la directiva
+    hb = r"\\.\pipe\VMSMultimarca.updater.latido-" + uuid.uuid4().hex[:8]
+    srv3 = WindowsPipeServer(lambda req, caller: handle_request(eng, req, caller), name=hb, restricted_sids=me)
+    srv3.start()
+    try:
+        time.sleep(0.5)
+        assert pipe_request({"cmd": "rollback"}, name=hb, trusted_sids=me)["error"] == "forbidden"
+        assert pipe_request({"cmd": "directive", "directive": {"check": True}}, name=hb, trusted_sids=me)["ok"]
+    finally:
+        srv3.stop()
     # con una ACL que solo deja entrar a SYSTEM, el administrador de la prueba no puede abrirla
     closed = r"\\.\pipe\VMSMultimarca.updater.solo-system-" + uuid.uuid4().hex[:8]
-    srv2 = WindowsPipeServer(lambda req: {"ok": True}, name=closed, sddl="D:P(A;;GA;;;SY)")
+    srv2 = WindowsPipeServer(lambda req, caller: {"ok": True}, name=closed, sddl="D:P(A;;GA;;;SY)")
     srv2.start()
     try:
         time.sleep(0.5)
         with pytest.raises(PermissionError):
-            pipe_request({"cmd": "status"}, name=closed)
+            pipe_request({"cmd": "status"}, name=closed, trusted_sids=me)
     finally:
         srv2._stop.set()

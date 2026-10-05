@@ -87,6 +87,11 @@ class AppPaths:
     def analytics_dir(self) -> Path:
         return self.base / "analytics"
 
+    @property
+    def updater_data(self) -> Path:
+        """`<datos>\\updater` (la escribe solo `VMSUpdater`; en desarrollo, su socket de control `control.sock`)."""
+        return self.base / "updater"
+
     def ensure(self) -> "AppPaths":
         for p in (self.config_dir, self.secrets_dir, self.logs_dir, self.mediamtx_dir, self.analytics_dir):
             p.mkdir(parents=True, exist_ok=True)

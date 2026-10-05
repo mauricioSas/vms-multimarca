@@ -215,7 +215,12 @@ def test_keyring_rules(tmp_path: Path) -> None:
     # archivo de claves está versionado
     from tools.release.keys import DEFAULT_DIR
     assert not str(DEFAULT_DIR.resolve()).startswith(str(ROOT))
-    assert not [p for p in ROOT.glob("*/**/*.pem") if ".tmp" not in p.parts and "node_modules" not in p.parts]
+    tracked = subprocess.run(["git", "ls-files", "--", "*.pem"], cwd=ROOT, capture_output=True, text=True)
+    if tracked.returncode == 0:
+        assert tracked.stdout.split() == []
+    else:   # sin git (paquete de fuentes): todo el árbol menos entornos y temporales
+        skip = {".tmp", "node_modules", ".venv", "venv", ".git"}
+        assert not [p for p in ROOT.glob("*/**/*.pem") if not skip & set(p.relative_to(ROOT).parts)]
 
 
 def test_repo_and_keyring_env_cannot_mix(tmp_path: Path, keyring: Keyring) -> None:

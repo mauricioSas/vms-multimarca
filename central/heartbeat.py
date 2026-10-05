@@ -183,6 +183,10 @@ def record_heartbeat_sync(conn: psycopg.Connection[Any], site: SiteInfo, payload
 
 
 # =========================================================================== emisor directo (§7.2)
+class _NoDirective(Exception):
+    """El latido se guardó pero no se pudo leer la directiva del panel (se reintenta en el siguiente)."""
+
+
 class HeartbeatSender:
     """Tarea en segundo plano que escribe el latido de esta sede en la PostgreSQL central.
 
@@ -193,8 +197,11 @@ class HeartbeatSender:
 
     def __init__(self, dsn: str, site: Site | Callable[[], Site], interval_s: int,
                  collect: Callable[[], Awaitable[dict[str, Any]]], *,
-                 connect_timeout: float = 10.0) -> None:
+                 connect_timeout: float = 10.0,
+                 deliver: Callable[[dict[str, Any] | None], Any] | None = None) -> None:
+        """`deliver`: entrega lo que pide el panel (`central.directive.deliver`) igual que el agente HTTP."""
         self._dsn = dsn
+        self._deliver = deliver
         self._site = site
         self._interval = max(1, int(interval_s))
         self._collect = collect
@@ -250,7 +257,13 @@ class HeartbeatSender:
             site = SiteInfo(id=cur.id, name=cur.name, code=cur.code, timezone=cur.timezone)
             # psycopg síncrono en un hilo: el backend corre en el bucle Proactor de Windows (lo necesita
             # para lanzar MediaMTX) y psycopg asíncrono no funciona con ese bucle.
-            await asyncio.to_thread(self._write, site, payload)
+            try:
+                directive = await asyncio.to_thread(self._write, site, payload)
+            except _NoDirective:
+                pass   # el latido sí se guardó; la directiva se reintenta en el siguiente
+            else:
+                if self._deliver is not None:
+                    await asyncio.to_thread(self._deliver, directive)
         except Exception as exc:  # nunca se propaga: el latido no debe tumbar el backend
             self.failures += 1
             self.last_error = redact(str(exc))[:500]
@@ -260,10 +273,26 @@ class HeartbeatSender:
         self.last_error = ""
         return True
 
-    def _write(self, site: SiteInfo, payload: HeartbeatPayload) -> None:
+    def _write(self, site: SiteInfo, payload: HeartbeatPayload) -> dict[str, Any] | None:
+        """Guarda el latido y devuelve lo que pide el panel a esta sede (como la respuesta de `POST
+        /api/heartbeat`). Sin la migración 0003 o sin permiso sobre `site_versions`, no hay directiva."""
         with psycopg.connect(self._dsn, connect_timeout=int(self._connect_timeout),
                              application_name="vms-heartbeat") as conn:
             record_heartbeat_sync(conn, site, payload)
+            conn.commit()   # el latido queda guardado aunque falle la lectura de la directiva
+            if self._deliver is None:
+                return None
+            from datetime import timezone
+
+            from .updates import directive_for_sync
+            reported = (payload.model_extra or {}).get("update")
+            try:
+                with conn.transaction():
+                    return directive_for_sync(conn, site.id, datetime.now(timezone.utc),
+                                              reported if isinstance(reported, dict) else None)
+            except psycopg.Error as exc:
+                log.warning("No se pudo leer lo que pide el panel a la sede %s: %s", site.id, redact(str(exc))[:200])
+                raise _NoDirective() from exc
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()

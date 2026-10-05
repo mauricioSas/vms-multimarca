@@ -20,7 +20,22 @@ pub struct SvcSpec {
     pub delayed: bool,
     /// Variables del bloque `Environment` del servicio (p. ej. `VMS_DATA_DIR`).
     pub env: Vec<(String, String)>,
+    /// Privilegios que conserva el proceso (`SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO`): el SCM quita del token
+    /// todos los demás. `None` = los de la cuenta (solo `VMSUpdater`, que es LocalSystem). Ver
+    /// [`VIRTUAL_PRIVILEGES`].
+    pub privileges: Option<Vec<String>>,
 }
+
+/// Privilegios de los servicios con cuenta virtual (`NT SERVICE\<Servicio>`). Por defecto una cuenta virtual
+/// tiene, entre otros, `SeImpersonatePrivilege` y `SeCreateGlobalPrivilege`: con el primero, un proceso
+/// comprometido puede hacerse SYSTEM (técnicas «potato»). Ninguno de nuestros procesos los necesita:
+/// - `SeChangeNotifyPrivilege`: recorrer carpetas sin permiso en las intermedias (Windows lo exige siempre);
+/// - `SeIncreaseWorkingSetPrivilege`: ajustar la memoria de trabajo (lo usan OpenVINO y el runtime de Go).
+///
+/// `VMSUpdater` (LocalSystem) no se limita: instala versiones, cambia permisos y servicios, y para eso necesita
+/// los privilegios de SYSTEM (copias de seguridad, restaurar, dueño de archivos); limitarlo no cambiaría quién
+/// es. Sí usa `SeImpersonatePrivilege` para identificar al cliente de su tubería de control.
+pub const VIRTUAL_PRIVILEGES: [&str; 2] = ["SeChangeNotifyPrivilege", "SeIncreaseWorkingSetPrivilege"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +93,30 @@ pub mod win {
         match e {
             windows_service::Error::Winapi(io) => io.raw_os_error(),
             _ => None,
+        }
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn ChangeServiceConfig2W(service: *mut std::ffi::c_void, level: u32, info: *const std::ffi::c_void) -> i32;
+    }
+
+    /// `SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO` (6): el token del servicio solo conserva `privs`.
+    fn set_required_privileges(svc: &windows_service::service::Service, privs: &[String]) -> std::io::Result<()> {
+        #[repr(C)]
+        struct RequiredPrivileges {
+            pmsz_required_privileges: *mut u16,
+        }
+        let mut multi: Vec<u16> = super::multi_sz(privs);
+        let info = RequiredPrivileges { pmsz_required_privileges: multi.as_mut_ptr() };
+        // SAFETY: `info` apunta a una cadena múltiple terminada en doble NUL que vive hasta el final de la llamada.
+        let ok = unsafe {
+            ChangeServiceConfig2W(svc.raw_handle(), 6, &info as *const RequiredPrivileges as *const std::ffi::c_void)
+        };
+        if ok == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
         }
     }
 
@@ -178,6 +217,10 @@ pub mod win {
             svc.set_failure_actions_on_non_crash_failures(true).map_err(|e| err(e, "recuperación ante fallos"))?;
             // vmshost acepta PRESHUTDOWN: plazo para la parada ordenada al apagar el equipo.
             svc.set_preshutdown_timeout(PRESHUTDOWN_TIMEOUT).map_err(|e| err(e, "plazo de preapagado"))?;
+            if let Some(privs) = &spec.privileges {
+                set_required_privileges(&svc, privs)
+                    .map_err(|e| CtlError::io(&e, &format!("privilegios de {}", spec.name)))?;
+            }
             let env: Vec<String> = spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
             crate::winreg::set_multi(&crate::winreg::service_key(&spec.name), "Environment", &env)
                 .map_err(|e| CtlError::io(&e, &format!("variables de entorno de {}", spec.name)))?;
@@ -208,6 +251,37 @@ pub mod win {
                 Err(e) => Err(err(e, &format!("no se pudo parar {name}"))),
             }
         }
+    }
+}
+
+/// Cadena múltiple de Windows (`REG_MULTI_SZ`): cada texto en UTF-16 terminado en NUL y un NUL final.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn multi_sz(items: &[String]) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for s in items {
+        out.extend(s.encode_utf16());
+        out.push(0);
+    }
+    out.push(0);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multi_sz_is_double_nul_terminated() {
+        let m = multi_sz(&["Ab".to_string(), "C".to_string()]);
+        assert_eq!(m, vec![b'A' as u16, b'b' as u16, 0, b'C' as u16, 0, 0]);
+        assert_eq!(multi_sz(&[]), vec![0]);
+    }
+
+    #[test]
+    fn virtual_services_never_keep_impersonation() {
+        assert!(!VIRTUAL_PRIVILEGES.contains(&"SeImpersonatePrivilege"));
+        assert!(!VIRTUAL_PRIVILEGES.contains(&"SeCreateGlobalPrivilege"));
+        assert!(VIRTUAL_PRIVILEGES.contains(&"SeChangeNotifyPrivilege"));
     }
 }
 

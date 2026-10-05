@@ -147,24 +147,7 @@ async def list_site_versions(conn: AsyncConnection[Any], now: datetime, site_id:
     return [site_out(r, now) for r in await _fetch(conn, _LIST_SQL, {"site_id": site_id})]
 
 
-async def directive_for(conn: AsyncConnection[Any], site_id: str, now: datetime,
-                        reported: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Lo que el panel pide a una sede, para la respuesta del latido: `{"update": {...}}` o None.
-
-    Solo lleva lo que el panel fijó de forma explícita: `channel`, `hold` y `window` aparecen únicamente si
-    un administrador los cambió; si no, la tienda sigue con lo suyo (lo que puso el instalador). Si no hay
-    nada pedido, devuelve None.
-
-    Si llega `reported` (= `payload.update` del latido), se copia en las columnas `reported_*` y nunca en las
-    de petición. Pensado para que lo llame el manejador de `POST /api/heartbeat` (petición al arquitecto,
-    CONTRATO §12)."""
-    if reported:
-        clean = {k: reported.get(k) for k in REPORTED if k in reported}
-        ch = clean.get("channel")
-        win = clean.get("window")
-        skipped = clean.get("skipped")
-        await conn.execute(
-            """INSERT INTO site_versions (site_id, installed, update_state, last_result, message_es, available,
+_REPORT_SQL = """INSERT INTO site_versions (site_id, installed, update_state, last_result, message_es, available,
                                           reported_at, reported_channel, reported_hold, reported_window, skipped)
                VALUES (%(site_id)s, %(installed)s, %(state)s, %(last_result)s, %(message_es)s, %(available)s, %(now)s,
                        %(r_channel)s, %(r_hold)s, %(r_window)s, %(skipped)s)
@@ -172,20 +155,33 @@ async def directive_for(conn: AsyncConnection[Any], site_id: str, now: datetime,
                    update_state = EXCLUDED.update_state, last_result = EXCLUDED.last_result,
                    message_es = EXCLUDED.message_es, available = EXCLUDED.available, reported_at = EXCLUDED.reported_at,
                    reported_channel = EXCLUDED.reported_channel, reported_hold = EXCLUDED.reported_hold,
-                   reported_window = EXCLUDED.reported_window, skipped = EXCLUDED.skipped""",
-            {"site_id": site_id, "installed": str(clean.get("installed") or "")[:40],
-             "state": str(clean.get("state") or "unknown")[:40], "last_result": str(clean.get("last_result") or "none")[:40],
-             "message_es": str(clean.get("message_es") or "")[:500],
-             "available": (str(clean["available"])[:40] if clean.get("available") else None), "now": now,
-             "r_channel": ch if isinstance(ch, str) and _CHANNEL_OK.match(ch) else None,
-             "r_hold": clean["hold"] if isinstance(clean.get("hold"), bool) else None,
-             "r_window": win if isinstance(win, str) and WINDOW_RE.match(win) else None,
-             "skipped": [str(v)[:40] for v in skipped[:20] if VERSION_RE.match(str(v))]
-                        if isinstance(skipped, list) else []})
-    rows = await _fetch(conn, "SELECT * FROM site_versions WHERE site_id = %(site_id)s", {"site_id": site_id})
-    if not rows:
+                   reported_window = EXCLUDED.reported_window, skipped = EXCLUDED.skipped"""
+_ROW_SQL = "SELECT * FROM site_versions WHERE site_id = %(site_id)s"
+# Columnas que una sede puede escribir con su rol de PostgreSQL (latido directo): solo lo que INFORMA.
+REPORTED_COLUMNS = ("site_id", "installed", "update_state", "last_result", "message_es", "available", "reported_at",
+                    "reported_channel", "reported_hold", "reported_window", "skipped")
+
+
+def _report_params(site_id: str, now: datetime, reported: dict[str, Any]) -> dict[str, Any]:
+    clean = {k: reported.get(k) for k in REPORTED if k in reported}
+    ch = clean.get("channel")
+    win = clean.get("window")
+    skipped = clean.get("skipped")
+    return {"site_id": site_id, "installed": str(clean.get("installed") or "")[:40],
+            "state": str(clean.get("state") or "unknown")[:40], "last_result": str(clean.get("last_result") or "none")[:40],
+            "message_es": str(clean.get("message_es") or "")[:500],
+            "available": (str(clean["available"])[:40] if clean.get("available") else None), "now": now,
+            "r_channel": ch if isinstance(ch, str) and _CHANNEL_OK.match(ch) else None,
+            "r_hold": clean["hold"] if isinstance(clean.get("hold"), bool) else None,
+            "r_window": win if isinstance(win, str) and WINDOW_RE.match(win) else None,
+            "skipped": [str(v)[:40] for v in skipped[:20] if VERSION_RE.match(str(v))]
+                       if isinstance(skipped, list) else []}
+
+
+def directive_from_row(r: dict[str, Any] | None, now: datetime) -> dict[str, Any] | None:
+    """`{"update": {...}}` a partir de la fila de `site_versions` (None si el panel no pide nada)."""
+    if not r:
         return None
-    r = rows[0]
     out: dict[str, Any] = {}
     if r.get("channel") is not None:
         out["channel"] = r["channel"]
@@ -211,6 +207,36 @@ async def directive_for(conn: AsyncConnection[Any], site_id: str, now: datetime,
     out.setdefault("check", False)
     out.setdefault("rollback_to", None)
     return {"update": out}
+
+
+async def directive_for(conn: AsyncConnection[Any], site_id: str, now: datetime,
+                        reported: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Lo que el panel pide a una sede, para la respuesta del latido: `{"update": {...}}` o None.
+
+    Solo lleva lo que el panel fijó de forma explícita: `channel`, `hold` y `window` aparecen únicamente si
+    un administrador los cambió; si no, la tienda sigue con lo suyo (lo que puso el instalador). Si no hay
+    nada pedido, devuelve None.
+
+    Si llega `reported` (= `payload.update` del latido), se copia en las columnas `reported_*` y nunca en las
+    de petición. La llaman el manejador de `POST /api/heartbeat` (agente HTTP) y, con `directive_for_sync`, el
+    latido directo a PostgreSQL: los dos entregan lo mismo a la tienda."""
+    if reported:
+        await conn.execute(_REPORT_SQL, _report_params(site_id, now, reported))
+    rows = await _fetch(conn, _ROW_SQL, {"site_id": site_id})
+    return directive_from_row(rows[0] if rows else None, now)
+
+
+def directive_for_sync(conn: Any, site_id: str, now: datetime,
+                       reported: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """`directive_for` con una conexión síncrona de psycopg (latido directo desde el backend, en un hilo)."""
+    from psycopg.rows import dict_row
+
+    if reported:
+        conn.execute(_REPORT_SQL, _report_params(site_id, now, reported))
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_ROW_SQL, {"site_id": site_id})
+        row = cur.fetchone()
+    return directive_from_row(dict(row) if row else None, now)
 
 
 def build_router(deps: CentralDeps) -> APIRouter:

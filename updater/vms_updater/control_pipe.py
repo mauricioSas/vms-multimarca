@@ -1,8 +1,15 @@
 """Control local del actualizador (CONTRATO §15.2): tubería `\\\\.\\pipe\\VMSMultimarca.updater`.
 
-- **ACL:** solo SYSTEM y Administradores (`D:P(A;;GA;;;SY)(A;;GA;;;BA)`). Un administrador en una sesión
-  normal tiene el token filtrado por UAC (Administradores como «solo denegar»), así que tiene que **elevar**.
-  Además `PIPE_REJECT_REMOTE_CLIENTS`: nada desde la red. No hay TCP.
+- **ACL:** SYSTEM y Administradores (todo) y, solo para entregar la directiva del panel central, las cuentas
+  de servicio que mandan el latido (`NT SERVICE\\VMSHeartbeat` y `NT SERVICE\\VMSBackend`), con los derechos
+  justos de cliente (sin `FILE_CREATE_PIPE_INSTANCE`: no pueden crear instancias del servidor). Un
+  administrador en una sesión normal tiene el token filtrado por UAC, así que tiene que **elevar**. Además
+  `PIPE_REJECT_REMOTE_CLIENTS`: nada desde la red. No hay TCP.
+- **Quién llama:** el servidor identifica la cuenta del cliente (el cliente abre con `SECURITY_IDENTIFICATION`)
+  y las cuentas de latido solo pueden usar `status` y `directive` (`DIRECTIVE_ONLY`).
+- **Suplantación:** la primera instancia se crea con `FILE_FLAG_FIRST_PIPE_INSTANCE`; si otro proceso ya tiene
+  el nombre, se reintenta y el problema se ve en `public-status.json` (nunca se queda callado). El cliente
+  (`pipe_client.py`) comprueba que al otro lado está SYSTEM antes de enviar nada.
 - Mensajes JSON de una línea (UTF-8), una petición y una respuesta por conexión.
 - En macOS/Linux (desarrollo y pruebas) el mismo protocolo va por un socket Unix `updater/control.sock`
   con permisos 0600.
@@ -19,22 +26,54 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from ._atomic import atomic_write_json
 from .engine import Engine
+from .models import CentralDirective
+from .pipe_client import CLIENT_ACCESS, request as client_request, service_sid
 from .state_files import read_local_config, write_local_config
 
 log = logging.getLogger("vms_updater.pipe")
 
 PIPE_NAME = r"\\.\pipe\VMSMultimarca.updater"
-PIPE_SDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+# Servicios que entregan la directiva del panel central (latido por agente HTTP o directo desde el backend)
+HEARTBEAT_SERVICES = ("VMSHeartbeat", "VMSBackend")
+DIRECTIVE_ONLY = frozenset({"status", "directive"})
+PIPE_SDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)" + "".join(f"(A;;0x{CLIENT_ACCESS:x};;;{service_sid(s)})"
+                                                   for s in HEARTBEAT_SERVICES)
 MAX_MESSAGE = 64 * 1024
+FIRST_INSTANCE_RETRY_S = 5.0
+
+Caller = str   # «admin» (SYSTEM, Administradores, socket Unix 0600) o «heartbeat» (solo DIRECTIVE_ONLY)
 
 
 # --------------------------------------------------------------------------- protocolo
-def handle_request(engine: Engine, req: Any) -> dict[str, Any]:
+def handle_request(engine: Engine, req: Any, caller: Caller = "admin") -> dict[str, Any]:
     if not isinstance(req, dict):
         return {"ok": False, "error": "bad_request", "message_es": "La petición tiene que ser un objeto JSON"}
     cmd = req.get("cmd")
+    if caller != "admin" and cmd not in DIRECTIVE_ONLY:
+        log.warning("Orden «%s» rechazada: la cuenta del latido solo puede entregar la directiva", cmd)
+        return {"ok": False, "error": "forbidden", "message_es": "Esta cuenta solo puede entregar la directiva"}
     try:
+        if cmd == "directive":
+            raw = req.get("directive")
+            if raw is None:
+                engine.layout.directive_file.unlink(missing_ok=True)   # el panel ya no pide nada
+                return {"ok": True}
+            try:
+                d = CentralDirective.model_validate(raw)
+            except ValidationError:
+                return {"ok": False, "error": "bad_request", "message_es": "Directiva del panel no válida"}
+            if d.rollback_to not in (None, "previous"):   # «previous» = la anterior (el panel no la conoce)
+                from .versioning import Version
+                try:
+                    Version.parse(str(d.rollback_to))
+                except ValueError:
+                    return {"ok": False, "error": "bad_request", "message_es": "Versión no válida en la directiva"}
+            atomic_write_json(engine.layout.directive_file, d.model_dump(mode="json"))
+            return {"ok": True}
         if cmd == "status":
             st = engine.status.read().dump()
             j = engine.journal.read()
@@ -105,7 +144,9 @@ def _encode(resp: dict[str, Any]) -> bytes:
 
 # --------------------------------------------------------------------------- servidor POSIX (desarrollo)
 class UnixControlServer:
-    def __init__(self, path: Path, handler: Callable[[Any], dict[str, Any]]) -> None:
+    """Socket 0600 del propio usuario del actualizador: quien conecta es «admin» (solo desarrollo)."""
+
+    def __init__(self, path: Path, handler: Callable[[Any, Caller], dict[str, Any]]) -> None:
         self.path = Path(path)
         self.handler = handler
         self._sock: socket.socket | None = None
@@ -154,7 +195,7 @@ class UnixControlServer:
                         break
                     data += chunk
                 conn.settimeout(None)
-                conn.sendall(_encode(self.handler(_decode(data))))
+                conn.sendall(_encode(self.handler(_decode(data), "admin")))
             except OSError as exc:
                 log.debug("Conexión de control cortada: %s", exc)
 
@@ -170,28 +211,17 @@ class UnixControlServer:
             pass
 
 
-def unix_request(path: Path, req: dict[str, Any], timeout: float = 600.0) -> dict[str, Any]:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(timeout)
-        s.connect(str(path))
-        s.sendall(_encode(req))
-        data = b""
-        while b"\n" not in data:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            data += chunk
-    resp = _decode(data)
-    return resp if isinstance(resp, dict) else {"ok": False, "error": "bad_response"}
-
-
 # --------------------------------------------------------------------------- servidor Windows
 class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
-    def __init__(self, handler: Callable[[Any], dict[str, Any]], name: str = PIPE_NAME,
-                 sddl: str = PIPE_SDDL) -> None:
+    def __init__(self, handler: Callable[[Any, Caller], dict[str, Any]], name: str = PIPE_NAME,
+                 sddl: str = PIPE_SDDL, on_problem: Callable[[str], None] | None = None,
+                 restricted_sids: frozenset[str] | None = None) -> None:
         self.handler = handler
         self.name = name
         self.sddl = sddl
+        self.on_problem = on_problem or (lambda msg: None)
+        self.restricted_sids = restricted_sids if restricted_sids is not None else \
+            frozenset(service_sid(s) for s in HEARTBEAT_SERVICES)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -238,8 +268,18 @@ class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
             h = create(self.name, 3 | (0x00080000 if first else 0), 0x8, 255, MAX_MESSAGE, MAX_MESSAGE, 0,
                        ctypes.byref(sa))
             if h == invalid or h is None:
-                log.error("CreateNamedPipeW falló (%d)", ctypes.get_last_error())
-                return
+                err = ctypes.get_last_error()
+                # 5 (acceso denegado) o 231 (ocupada) con la primera instancia: OTRO proceso tiene el nombre.
+                # Se reintenta y se deja visible; nunca se renuncia en silencio.
+                msg = (f"No se pudo abrir el control del actualizador (error {err}): otro programa ocupa su "
+                       "tubería. Reinicia el equipo; si sigue, avisa a soporte." if first else
+                       f"No se pudo abrir una conexión de control del actualizador (error {err})")
+                log.error(msg)
+                self.on_problem(msg)
+                self._stop.wait(FIRST_INSTANCE_RETRY_S)
+                continue
+            if first:
+                self.on_problem("")
             first = False
             ok = connect(h, None) or ctypes.get_last_error() == 535   # ERROR_PIPE_CONNECTED
             if not ok or self._stop.is_set():
@@ -255,7 +295,12 @@ class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
                         if not read(h, buf, MAX_MESSAGE, ctypes.byref(n), None) or n.value == 0:
                             break
                         data += buf.raw[: n.value]
-                    out = _encode(self.handler(_decode(data)))
+                    try:
+                        caller: Caller = "heartbeat" if client_sid(h) in self.restricted_sids else "admin"
+                    except OSError as exc:
+                        log.warning("No se pudo identificar al cliente de la tubería: %s", exc)
+                        caller = "heartbeat"         # en la duda, lo mínimo
+                    out = _encode(self.handler(_decode(data), caller))
                     written = wintypes.DWORD()
                     write(h, out, len(out), ctypes.byref(written), None)
                     k32.FlushFileBuffers(h)
@@ -277,29 +322,48 @@ class WindowsPipeServer:  # pragma: no cover - solo Windows (job B4 de CI)
             self._thread.join(timeout=3)
 
 
-def pipe_request(req: dict[str, Any], name: str = PIPE_NAME) -> dict[str, Any]:  # pragma: no cover - Windows
-    with open(name, "r+b", buffering=0) as f:
-        f.write(_encode(req))
-        data = b""
-        while b"\n" not in data:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            data += chunk
-    resp = _decode(data)
-    return resp if isinstance(resp, dict) else {"ok": False, "error": "bad_response"}
+def client_sid(h: Any) -> str:  # pragma: no cover - Windows
+    """Cuenta del cliente conectado a la instancia `h` (se suplanta un momento solo para leer su token)."""
+    if sys.platform != "win32":
+        raise OSError("Solo en Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    from .pipe_client import token_user_sid, win_api
+
+    k32, adv = win_api()
+    adv.ImpersonateNamedPipeClient.argtypes = [wintypes.HANDLE]
+    adv.OpenThreadToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, ctypes.POINTER(wintypes.HANDLE)]
+    k32.GetCurrentThread.restype = wintypes.HANDLE
+    if not adv.ImpersonateNamedPipeClient(h):
+        raise ctypes.WinError(ctypes.get_last_error())
+    tok = wintypes.HANDLE()
+    try:
+        if not adv.OpenThreadToken(k32.GetCurrentThread(), 0x0008, True, ctypes.byref(tok)):   # TOKEN_QUERY
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        adv.RevertToSelf()
+    try:
+        return token_user_sid(tok)
+    finally:
+        k32.CloseHandle(tok)
 
 
 def make_server(engine: Engine) -> UnixControlServer | WindowsPipeServer:
-    def handler(req: Any) -> dict[str, Any]:
-        return handle_request(engine, req)
+    def handler(req: Any, caller: Caller) -> dict[str, Any]:
+        return handle_request(engine, req, caller)
+
+    def problem(msg: str) -> None:
+        try:
+            engine.status.update(control_error=msg or None)
+        except Exception:  # noqa: BLE001 - el estado público no puede tumbar el control
+            log.debug("No se pudo anotar el problema de la tubería", exc_info=True)
 
     if sys.platform == "win32":
-        return WindowsPipeServer(handler)
+        return WindowsPipeServer(handler, on_problem=problem)
     return UnixControlServer(engine.layout.updater_data / "control.sock", handler)
 
 
 def request(layout_updater_data: Path, req: dict[str, Any], timeout: float = 600.0) -> dict[str, Any]:
-    if sys.platform == "win32":
-        return pipe_request(req)
-    return unix_request(layout_updater_data / "control.sock", req, timeout)
+    """Cliente: en Windows comprueba que el servidor es el actualizador (SYSTEM) antes de enviar nada."""
+    return client_request(layout_updater_data, req, timeout)

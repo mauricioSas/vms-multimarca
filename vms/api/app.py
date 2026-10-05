@@ -169,8 +169,15 @@ async def _start_heartbeat(state: AppState) -> Any:
         log.warning("No se enviará el latido a la central: falta el módulo central.heartbeat (%s)", exc)
         return None
     try:
+        try:
+            from central.directive import deliver as deliver_directive
+
+            def deliver(directive: Any) -> bool:
+                return deliver_directive(directive, state.paths.updater_data)
+        except ImportError:
+            deliver = None   # type: ignore[assignment]
         sender = HeartbeatSender(dsn.get_secret_value(), state.site, state.settings.heartbeat_seconds,
-                                 state.heartbeat_payload)
+                                 state.heartbeat_payload, deliver=deliver)
         await sender.start()
         log.info("Latido hacia la central activado cada %d s", state.settings.heartbeat_seconds)
         return sender

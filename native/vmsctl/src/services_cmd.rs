@@ -30,6 +30,8 @@ pub fn spec_for(def: &ServiceDef, install: &InstallLayout, data: &DataLayout) ->
         account: def.account_name().unwrap_or_else(|| "LocalSystem".to_string()),
         delayed: def.delayed_start,
         env: vec![("VMS_DATA_DIR".into(), data.root.to_string_lossy().into_owned())],
+        // cuentas virtuales: solo los privilegios que usan (sin suplantación); LocalSystem, los suyos
+        privileges: def.account_name().map(|_| crate::scm::VIRTUAL_PRIVILEGES.iter().map(|p| p.to_string()).collect()),
     }
 }
 

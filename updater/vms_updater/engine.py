@@ -33,7 +33,7 @@ from .journal import FaultHook, JournalStore
 from .layout import Layout
 from .migrate import MigrationError
 from .models import (FORWARD_STATES, KNOWN_SERVICES, ChannelDoc, Journal, LocalUpdaterConfig, ReleaseDescriptor,
-                     bundle_target, channel_target, iso, utcnow)
+                     bundle_target, channel_target, check_version_dir, iso, utcnow)
 from .pointer import PointerStore, rebuild_pointer
 from .services import ServiceControl, ServiceError
 from .stage import StageError, install_updater_slot, remove_tree, stage_version, verify_staged
@@ -261,7 +261,10 @@ class Engine:
         cfg = self._apply_directive(self.config())
         self._set_status(last_check=iso(now), channel=cfg.channel, hold=cfg.hold, window=cfg.window,
                          skipped=self.blacklist.skipped(), state=self._journal_state(), paused_at=None)
-        client = self.d.client_factory()
+        try:
+            client = self.d.client_factory()   # sin fuente configurada: UpdateSourceError (no «error inesperado»)
+        except UpdateSourceError as exc:
+            return self._finish("error", exc.message_es)
         try:
             info = client.refresh()
         except MetadataExpired as exc:
@@ -731,6 +734,10 @@ class Engine:
             target = to or ptr.previous
             if not target:
                 return Outcome("error", "No hay versión anterior a la que volver")
+            try:
+                check_version_dir(target)    # nunca una ruta («..\\..») como nombre de versión
+            except ValueError as exc:
+                return Outcome("error", str(exc))
             if target == ptr.active:
                 return Outcome("error", f"La {target} ya es la versión activa")
             if not (self.layout.version_dir(target) / "release.json").is_file():

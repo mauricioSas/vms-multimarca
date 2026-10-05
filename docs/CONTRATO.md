@@ -1075,7 +1075,15 @@ real de actualización usa un servidor HTTP local en CI.
 
 ### 15.2 Tubería de control `\\.\pipe\VMSMultimarca.updater`
 
-ACL: SYSTEM y Administradores (token elevado). Mensajes JSON de una línea, petición → respuesta:
+ACL: SYSTEM y Administradores (token elevado) y, con los derechos justos de cliente (`0x120083`: leer,
+escribir, atributos y descriptor; nunca `FILE_CREATE_PIPE_INSTANCE`), `NT SERVICE\VMSHeartbeat` y
+`NT SERVICE\VMSBackend`, que solo pueden usar `status` y `directive` (el servidor identifica la cuenta del
+cliente; cualquier otra orden → `{"ok": false, "error": "forbidden"}`). La primera instancia se crea con
+`FILE_FLAG_FIRST_PIPE_INSTANCE`; si otro proceso tiene el nombre, se reintenta cada 5 s y se anota en
+`public-status.json` (`control_error`). El cliente (`vms_updater/pipe_client.py`, copia idéntica en
+`central/updater_pipe_client.py`) abre con `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` y comprueba
+que el dueño de la tubería y la cuenta del proceso servidor son SYSTEM antes de enviar nada. Mensajes JSON
+de una línea, petición → respuesta:
 
 | Petición | Respuesta |
 |---|---|
@@ -1084,6 +1092,7 @@ ACL: SYSTEM y Administradores (token elevado). Mensajes JSON de una línea, peti
 | `{"cmd": "rollback", "to": "2.0.0" \| null, "reason": "…"}` | `{"ok": true, "update_id": "…"}` o error |
 | `{"cmd": "hold", "on": true \| false}` | `{"ok": true}` |
 | `{"cmd": "lock", "owner": "installer", "ttl_s": 3600}` / `{"cmd": "unlock", "owner": "installer"}` | `{"ok": true}` o `{"ok": false, "error": "busy"}` |
+| `{"cmd": "directive", "directive": {…} \| null}` (§15.6; también desde las cuentas del latido) | `{"ok": true}`; el actualizador valida y escribe `updater\central-directive.json` (`null` la borra) |
 
 ### 15.3 Estados y fallos inyectados
 
@@ -1120,8 +1129,14 @@ Sin token o revocado → 401 `{"error":"unauthorized"}`; token de otro cliente �
  "reboot_pending": false, "updated": "2026-11-20T03:10:05Z"}
 ```
 Lo leen el visor (diagnóstico) y `/status` (`GET /api/updates/status`, router `updates`, rol O). El latido
-añade `payload.update` con esos mismos campos (aditivo a §7.3). La respuesta del latido HTTP puede traer
-`{"update": {"check": true, "channel": "pilot", "hold": false, "rollback_to": null}}`.
+añade `payload.update` con esos mismos campos (aditivo a §7.3).
+**Directiva del panel (revisión v2):** `POST /api/heartbeat` responde 200 con
+`{"directive": {"update": {"check": true, "channel": "pilot", "hold": false, "rollback_to": null, …}} | null}`
+(`central.updates.directive_for`, que además copia `payload.update` en las columnas `reported_*`). El latido
+directo a PostgreSQL hace lo mismo con `directive_for_sync` (el rol de la tienda puede escribir solo las
+columnas de lo que informa en `site_versions` y leer su fila). Las dos vías la entregan al actualizador con
+`central.directive.deliver` por la tubería (orden `directive`); `null` = el panel ya no pide nada. Una central
+antigua que responde 204 no toca la directiva que hubiera.
 
 ### 15.7 Panel central
 
