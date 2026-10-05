@@ -17,6 +17,7 @@ administrador (rol A):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -28,8 +29,9 @@ from starlette.responses import Response
 
 from vms.core.audit import audit
 from vms.core.errors import NotFoundError, ValidationFailed
-from vms.core.interfaces import Capability
+from vms.core.interfaces import Capability, PathStatus
 from vms.core.models import AppConfig, Device, DeviceIdentity, DeviceKind
+from vms.core.naming import mtx_path
 from vms.vendors import registry
 from vms.vendors.codecfix import CodecFixer
 from vms.vendors.ipwatch import IpChangeProposal, apply_move, find_moves
@@ -206,6 +208,37 @@ async def run_ip_check(state: AppState, timeout: float = 3.0, *, user: str = "si
     return list(proposals)
 
 
+async def devices_without_video(state: AppState) -> set[str]:
+    """Equipos con «seguir la IP» cuyo flujo principal no llega (candidatos a haber cambiado de IP)."""
+    cfg = state.config()
+    follow = {d.id for d in cfg.devices if d.follow_ip and d.enabled}
+    if not follow:
+        return set()
+    paths = await state.paths_status_safe()
+    if paths is None:
+        return set()
+    out: set[str] = set()
+    for dev_id in follow:
+        cams = [c for c in cfg.cameras_of(dev_id) if c.enabled]
+        if cams and not any((paths.get(mtx_path(c.id, "main")) or PathStatus(name="")).ready for c in cams):
+            out.add(dev_id)
+    return out
+
+
+async def ip_watch_loop(state: AppState, interval: float = 120.0, timeout: float = 3.0) -> None:
+    """Bucle para el lifespan del backend: si un equipo con «seguir la IP» se queda sin vídeo, busca en la red
+    y aplica la IP nueva si la serie o la MAC coinciden (PLAN-V2 §3.2 punto 11). Nunca lanza."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if await devices_without_video(state):
+                await run_ip_check(state, timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - la vigilancia no puede tumbar el backend
+            log.exception("Error buscando equipos que cambiaron de IP")
+
+
 @router.post("/devices/ip-check")
 async def ip_check(body: IpCheckRequest | None = None, p: Principal = Depends(require_admin),
                    state: AppState = Depends(get_state)) -> Response:
@@ -243,4 +276,4 @@ async def move_device(device_id: str, body: MoveRequest, request: Request, p: Pr
     return json_response({"device_id": device_id, "host": moved.host})
 
 
-__all__ = ["router", "run_ip_check"]
+__all__ = ["devices_without_video", "ip_watch_loop", "router", "run_ip_check"]

@@ -194,3 +194,40 @@ async def test_identity_and_ip_change(b5: B5Harness) -> None:
     devs = {d["id"]: d for d in (await admin.get("/api/devices")).json()}
     assert devs[dev_id]["host"] == "192.168.1.80" and devs[dev_id]["has_password"] is True
     assert b5.state.creds.get_device_password(dev_id) == TEST_PASSWORD     # misma serie: se reutiliza
+
+
+async def test_ip_watch_loop_follows_devices_without_video(b5: B5Harness) -> None:
+    """Bucle para el lifespan: un equipo con «seguir la IP» sin vídeo se busca y se mueve solo."""
+    import asyncio
+
+    from vms.api.routes.vendors import devices_without_video, ip_watch_loop
+
+    admin = await b5.login()
+    r = await admin.post("/api/devices", json={**_device_body(b5), "name": "Cam", "host": "10.0.0.70", "kind": "camera",
+                                               "follow_ip": True, "password": TEST_PASSWORD, "import_channels": [1]})
+    dev_id = r.json()["id"]
+
+    def mutate(cfg: Any) -> None:
+        d = cfg.device(dev_id)
+        data = d.model_dump()
+        data["identity"] = {"serial": "SERIE-12345678", "mac": "", "source": "api"}
+        cfg.devices = [Device.model_validate(data) if x.id == dev_id else x for x in cfg.devices]
+
+    await b5.state.update_config(mutate, "devices")
+    await b5.state.flush_apply()
+    assert await devices_without_video(b5.state) == set()           # con vídeo: no se busca nada
+
+    async def no_video() -> dict[str, Any]:
+        return {}                                                     # el equipo deja de dar vídeo
+    b5.state.paths_status_safe = no_video
+    assert await devices_without_video(b5.state) == {dev_id}
+    b5.discovered = [DiscoveredDevice(host="10.0.0.71", serial="SERIE-12345678", sources=["sadp"])]
+    task = asyncio.create_task(ip_watch_loop(b5.state, interval=0.05, timeout=0.1))
+    try:
+        for _ in range(100):
+            if b5.state.config().device(dev_id).host == "10.0.0.71":
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        task.cancel()
+    assert b5.state.config().device(dev_id).host == "10.0.0.71"
