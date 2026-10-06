@@ -39,11 +39,23 @@ STATUS_FIELDS = ("installed", "channel", "state", "hold", "window", "skipped", "
 WATCH_INTERVAL_S = 5.0
 
 
+def _release_file() -> Path:
+    return Path(vms.__file__).resolve().parents[2] / "release.json"
+
+
+def is_installed_release() -> bool:
+    """¿Corre el producto instalado (con `release.json`)? En desarrollo y pruebas no se consulta GitHub."""
+    try:
+        return _release_file().is_file()
+    except (OSError, IndexError):
+        return False
+
+
 def release_version() -> str:
     """Versión del producto en marcha: la de `versions\\<X>\\release.json` si existe (instalación v2), si no
     `vms.__version__` (desarrollo)."""
     try:
-        rel = Path(vms.__file__).resolve().parents[2] / "release.json"
+        rel = _release_file()
         data = json.loads(rel.read_text(encoding="utf-8"))
         v = data.get("version")
         if isinstance(v, str) and v:
@@ -111,9 +123,39 @@ def status_body(base: Path) -> dict[str, Any]:
     return {"available_status": True, "running": running, **st}
 
 
+def _without_tuf_source(body: dict[str, Any]) -> bool:
+    """Sin fuente TUF configurada (instalación normal): las versiones se publican en GitHub."""
+    return "VMS_UPDATE_SOURCE" in str(body.get("message_es") or "") or not body.get("available_status")
+
+
+async def github_status(body: dict[str, Any]) -> dict[str, Any]:
+    from ..github_releases import latest
+
+    running = str(body.get("running") or __version__)
+    gh = await latest(running)
+    out = {**body, "source": "github", "channel": "GitHub (beta)" if "-" in running else "GitHub",
+           "last_check": None, "metadata_expires": None, "clock_skew_s": None, "window": None, "state": "idle"}
+    if not gh["ok"]:
+        out.update(last_result="none", available=None,
+                   message_es="No se pudo consultar si hay versiones nuevas (hace falta Internet).")
+    elif gh["new"]:
+        new = gh["new"]
+        out.update(last_result="github_new", available=new["version"], download_url=new["download_url"],
+                   notes_url=new["notes_url"],
+                   message_es=f"Hay una versión nueva: {new['version']}. Para instalarla, pulsa el icono de VMS "
+                              "junto al reloj de Windows → «Versión nueva…: descargar e instalar». Se conservan "
+                              "las cámaras, la configuración y las grabaciones.")
+    else:
+        out.update(last_result="no_update", available=None, message_es="")
+    return out
+
+
 @router.get("/updates/status")
 async def updates_status(_: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
-    return json_response(await asyncio.to_thread(status_body, state.paths.base))
+    body = await asyncio.to_thread(status_body, state.paths.base)
+    if is_installed_release() and _without_tuf_source(body):
+        body = await github_status(body)
+    return json_response(body)
 
 
 @router.get("/internal/health/deep", dependencies=[Depends(require_internal)])

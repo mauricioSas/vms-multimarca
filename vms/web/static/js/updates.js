@@ -20,6 +20,7 @@ const RESULTS = {
   held: ["warn", "Retenida desde el panel"],
   min_from: ["warn", "Hace falta el instalador completo"],
   error: ["bad", "Error al comprobar"],
+  github_new: ["warn", "Versión nueva disponible"],
   none: ["off", "Sin comprobar todavía"],
 };
 
@@ -49,26 +50,35 @@ function render(s) {
     row("Canal", esc(s.channel || "—") + (s.hold ? ' <span class="pill warn">Retenida</span>' : "")),
     row("Último resultado", pill(s.last_result)),
     row("Estado", esc(STATES[s.state] || s.state || "—")),
-    row("Última comprobación", esc(fmtDateTime(s.last_check))),
-    row("Versión disponible", esc(s.available || "—")),
-    row("Información de versiones válida hasta", esc(fmtDateTime(s.metadata_expires))),
-    row("Diferencia de reloj con el servidor", esc(skew)),
   ];
+  const github = s.source === "github";
+  if (!github) {
+    rows.push(row("Última comprobación", esc(fmtDateTime(s.last_check))),
+      row("Versión disponible", esc(s.available || "—")),
+      row("Información de versiones válida hasta", esc(fmtDateTime(s.metadata_expires))),
+      row("Diferencia de reloj con el servidor", esc(skew)));
+  } else {
+    rows.push(row("Versión disponible", s.available
+      ? `${esc(s.available)}${s.notes_url ? ` · <a href="${esc(s.notes_url)}" target="_blank" rel="noopener">Novedades</a>` : ""}`
+      : "—"));
+  }
   if (s.window) rows.push(row("Ventana de mantenimiento", esc(s.window)));
   if (Array.isArray(s.skipped) && s.skipped.length) {
     rows.push(row("Omitida tras volver atrás", esc(s.skipped.join(", "))));
   }
   if (s.reboot_pending) rows.push(row("Windows", '<span class="pill warn">Reinicio pendiente</span>'));
-  const msg = s.message_es ? `<p class="upd-msg ${["update_failed", "metadata_expired", "clock_skew", "error", "disk_full"].includes(s.last_result) ? "bad" : ""}">${esc(s.message_es)}</p>` : "";
+  const msg = s.message_es ? `<p class="upd-msg ${["update_failed", "metadata_expired", "clock_skew", "error", "disk_full"].includes(s.last_result) ? "bad" : s.last_result === "github_new" ? "warn" : ""}">${esc(s.message_es)}</p>` : "";
   root.innerHTML = `
     <section class="section" aria-labelledby="h-st-updates">
       <div class="section-head"><h2 id="h-st-updates">Actualizaciones</h2></div>
       <div class="card card-pad">
         ${msg}
         <dl class="kv">${rows.join("")}</dl>
-        <p class="muted small upd-help">Las actualizaciones se aplican solas en la ventana de mantenimiento y, si algo
+        <p class="muted small upd-help">${github
+    ? "Las versiones nuevas se instalan desde el icono de VMS junto al reloj de Windows («Descargar e instalar»); Windows pide permiso de administrador."
+    : `Las actualizaciones se aplican solas en la ventana de mantenimiento y, si algo
         falla, el equipo vuelve solo a la versión anterior. Para buscar ahora o volver atrás hacen falta permisos
-        de administrador del equipo (icono del visor en la bandeja) o el panel central.</p>
+        de administrador del equipo (icono del visor en la bandeja) o el panel central.`}</p>
       </div>
     </section>`;
   root.hidden = false;

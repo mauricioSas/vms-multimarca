@@ -5,3 +5,5 @@
 }
 #updates-root .upd-msg.bad { border-color: rgba(255,85,85,.45); background: var(--danger-soft); color: #ffc9c9; }
 #updates-root .upd-help { margin: 14px 0 0; max-width: 72ch; }
+#updates-root .upd-msg.warn { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
+#updates-root .upd-msg a, #updates-root dd a { color: var(--accent); }
