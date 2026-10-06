@@ -27,7 +27,8 @@ def test_step10_restart(e2e: E2E, step: h.Step) -> None:
     stop = _vmsctl(e2e, "services", "stop")
     start = _vmsctl(e2e, "services", "start")
     assert stop.returncode == 0 and start.returncode == 0, stop.stdout + start.stdout
-    health = _vmsctl(e2e, "health", "wait", "--timeout", "10")
+    # El vmsctl real solo da por sano un proceso que lleva 20 s en marcha: el mismo plazo que el instalador.
+    health = _vmsctl(e2e, "health", "wait", "--timeout", "10" if e2e.doubles else "120")
     assert health.returncode == 0, health.stdout
     step.details["segundos"] = round(time.monotonic() - started, 1)
     diag = e2e.artifacts / "diag-bundle.zip"
@@ -38,10 +39,23 @@ def test_step10_restart(e2e: E2E, step: h.Step) -> None:
                   "medir la vuelta en < 10 s necesita los servicios reales (B1).")
     else:
         # Solo los procesos del producto: «taskkill /IM python.exe» mataría también al pytest de este e2e.
+        before = _product_pids()
+        assert before, "no hay procesos del producto en marcha"
         prog = str(h.program_dir()).replace("'", "''")
         h.powershell(f"Get-Process mediamtx, python -ErrorAction SilentlyContinue | "
                      f"Where-Object {{ $_.Path -like '{prog}\\*' }} | Stop-Process -Force")
-        assert h.wait_until(lambda: _vmsctl(e2e, "health", "wait", "--timeout", "5").returncode == 0, 10, 1)
+        # Vuelven solos en < 10 s (los relanza vmsctl run); «sano» además exige 20 s seguidos en marcha.
+        assert h.wait_until(lambda: len(_product_pids() - before) >= len(before), 10, 0.5), (before, _product_pids())
+        health = _vmsctl(e2e, "health", "wait", "--timeout", "120")
+        assert health.returncode == 0, health.stdout
+
+
+def _product_pids() -> set[int]:
+    """PID de mediamtx.exe y python.exe que corren desde la carpeta del programa."""
+    prog = str(h.program_dir()).replace("'", "''")
+    out = h.powershell(f"Get-Process mediamtx, python -ErrorAction SilentlyContinue | "
+                       f"Where-Object {{ $_.Path -like '{prog}\\*' }} | ForEach-Object {{ $_.Id }}")
+    return {int(x) for x in out.split() if x.strip().isdigit()}
 
 
 @pytest.mark.paso("10b", "Negativa a bajar de versión (CONTRATO §13.7) y /ALLOWDOWNGRADE")
