@@ -51,10 +51,11 @@ def test_step10_restart(e2e: E2E, step: h.Step) -> None:
 
 
 def _product_pids() -> set[int]:
-    """PID de mediamtx.exe y python.exe que corren desde la carpeta del programa."""
+    """PID de mediamtx.exe y python.exe que corren desde la carpeta del programa. Sin ninguno en marcha (justo
+    tras matarlos) Get-Process deja $? en falso y powershell -Command saldría con 1: «exit 0»."""
     prog = str(h.program_dir()).replace("'", "''")
     out = h.powershell(f"Get-Process mediamtx, python -ErrorAction SilentlyContinue | "
-                       f"Where-Object {{ $_.Path -like '{prog}\\*' }} | ForEach-Object {{ $_.Id }}")
+                       f"Where-Object {{ $_.Path -like '{prog}\\*' }} | ForEach-Object {{ $_.Id }}; exit 0")
     return {int(x) for x in out.split() if x.strip().isdigit()}
 
 
