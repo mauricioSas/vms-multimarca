@@ -44,7 +44,7 @@
 }
 .timeline-head {
   position: absolute; top: -6px; bottom: -6px; width: 2px; margin-left: -1px; background: var(--accent);
-  box-shadow: 0 0 10px rgba(242,165,22,.8); pointer-events: none;
+  box-shadow: 0 0 10px rgba(63,182,242,.8); pointer-events: none;
 }
 .timeline-head::before {
   content: ""; position: absolute; top: -2px; left: -5px; border: 6px solid transparent; border-top-color: var(--accent);

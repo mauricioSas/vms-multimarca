@@ -100,7 +100,7 @@ body.idle .hud { opacity: 0; pointer-events: none; }
   padding: 5px 9px; cursor: pointer; min-width: 34px;
 }
 .hud button:hover, .hud a:hover { background: #1e242d; border-color: #364050; color: #fff; }
-.hud button[aria-pressed="true"] { background: #f2a516; color: #1a1203; }
+.hud button[aria-pressed="true"] { background: #3fb6f2; color: #04131c; }
 .hud button:focus-visible, .hud a:focus-visible { outline: 2px solid #ffd166; outline-offset: 1px; }
 
 .fatal {

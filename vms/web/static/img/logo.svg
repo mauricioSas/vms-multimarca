@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VMS Multimarca">
+  <rect width="64" height="64" rx="14" fill="#121a2b"/>
+  <rect x="12" y="13" width="18" height="13" rx="3" fill="#3fb6f2"/>
+  <rect x="34" y="13" width="18" height="13" rx="3" fill="none" stroke="#e8eef7" stroke-width="2.6"/>
+  <rect x="12" y="30" width="18" height="13" rx="3" fill="none" stroke="#e8eef7" stroke-width="2.6"/>
+  <rect x="34" y="30" width="18" height="13" rx="3" fill="none" stroke="#e8eef7" stroke-width="2.6"/>
+  <circle cx="32" cy="52" r="4.5" fill="#ef4444"/>
+</svg>

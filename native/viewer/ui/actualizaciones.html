@@ -12,6 +12,20 @@
     <h1>Actualizaciones</h1>
     <p id="etiqueta">—</p>
     <p class="error" id="error" hidden></p>
+
+    <div class="tarjeta" id="novedad-tarjeta">
+      <h2 id="novedad-titulo">Versión nueva</h2>
+      <p id="novedad-texto" role="status">Buscando versiones nuevas…</p>
+      <p class="small muted" id="notas" hidden></p>
+      <div class="acciones">
+        <button type="button" id="instalar" hidden>Descargar e instalar</button>
+        <button type="button" id="comprobar">Comprobar de nuevo</button>
+      </div>
+      <p class="small muted">Se descarga de la página oficial de descargas, se comprueba que no está dañada y se instala
+        encima: se conservan las cámaras, la configuración y las grabaciones. Windows pedirá permiso de administrador;
+        mientras se copian los archivos (unos minutos) la grabación se detiene y después vuelve sola.</p>
+      <p id="res-instalar" role="status"></p>
+    </div>
     <div class="tarjeta">
       <dl class="datos">
         <dt>Visor</dt><dd id="visor">—</dd>

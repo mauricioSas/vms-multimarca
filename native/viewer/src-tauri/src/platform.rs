@@ -47,7 +47,8 @@ mod imp {
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
     use windows_sys::Win32::System::Registry::{
-        RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+        RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ,
+        RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY,
     };
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::System::Threading::{
@@ -57,7 +58,7 @@ mod imp {
     use windows_sys::Win32::UI::Shell::{
         ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL};
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -85,6 +86,15 @@ mod imp {
     }
 
     pub fn run_elevated(exe: &Path, args: &str, timeout: Duration) -> Result<(), ElevateError> {
+        run_elevated_impl(exe, args, timeout, false)
+    }
+
+    /// Como `run_elevated`, pero con su ventana visible (el instalador enseña su barra de progreso).
+    pub fn run_elevated_shown(exe: &Path, args: &str, timeout: Duration) -> Result<(), ElevateError> {
+        run_elevated_impl(exe, args, timeout, true)
+    }
+
+    fn run_elevated_impl(exe: &Path, args: &str, timeout: Duration, show: bool) -> Result<(), ElevateError> {
         let verb = wide("runas");
         let file = wide(exe.as_os_str());
         let params = wide(args);
@@ -94,7 +104,7 @@ mod imp {
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.lpParameters = params.as_ptr();
-        info.nShow = SW_HIDE;
+        info.nShow = if show { SW_SHOWNORMAL } else { SW_HIDE };
         // SAFETY: estructura inicializada y cadenas vivas durante la llamada.
         if unsafe { ShellExecuteExW(&mut info) } == 0 {
             let err = unsafe { GetLastError() };
@@ -125,6 +135,31 @@ mod imp {
             }
         }
         Ok(())
+    }
+
+    /// Tipo de puesto instalado (`HKLM\SOFTWARE\VMSMultimarca\Role`, lo escribe el instalador).
+    pub fn installed_role() -> Option<String> {
+        let key = wide(r"SOFTWARE\VMSMultimarca");
+        let name = wide("Role");
+        let mut buf = vec![0u16; 64];
+        let mut len = (buf.len() * 2) as u32;
+        // SAFETY: búfer y longitud coherentes.
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+                null_mut(),
+                buf.as_mut_ptr() as _,
+                &mut len,
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return None;
+        }
+        let chars = (len as usize / 2).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..chars.min(buf.len())]))
     }
 
     pub fn autostart_get() -> Option<String> {
@@ -212,6 +247,14 @@ mod imp {
 
     pub fn run_elevated(_exe: &Path, _args: &str, _timeout: Duration) -> Result<(), ElevateError> {
         Err(ElevateError::Unsupported)
+    }
+
+    pub fn run_elevated_shown(_exe: &Path, _args: &str, _timeout: Duration) -> Result<(), ElevateError> {
+        Err(ElevateError::Unsupported)
+    }
+
+    pub fn installed_role() -> Option<String> {
+        None
     }
 
     pub fn autostart_get() -> Option<String> {

@@ -39,6 +39,8 @@ pub const COMMANDS: &[&str] = &[
     "actualizaciones",
     "buscar_actualizaciones",
     "volver_version_anterior",
+    "novedades",
+    "instalar_novedad",
     "sin_permiso",
 ];
 
@@ -46,6 +48,9 @@ pub const TRAY_ID: &str = "vms";
 const HEALTH_EVERY: Duration = Duration::from_secs(5);
 const MONITORS_EVERY: Duration = Duration::from_secs(5);
 const UPDATES_EVERY: Duration = Duration::from_secs(10);
+/// Versiones nuevas en GitHub Releases: la primera vez al minuto y medio de arrancar, luego cada 6 h.
+const GITHUB_FIRST: Duration = Duration::from_secs(90);
+const GITHUB_EVERY: Duration = Duration::from_secs(6 * 3600);
 const PANEL_IDLE_BEFORE_RESTART: Duration = Duration::from_secs(60);
 const KIOSK_RETRY_GAP: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -834,9 +839,53 @@ pub fn read_public_status(v: &Viewer) -> Option<updates::PublicStatus> {
     std::fs::read(v.public_status_path()).ok().and_then(|b| updates::parse(&b))
 }
 
+fn github_loop<R: Runtime>(app: AppHandle<R>) {
+    std::thread::sleep(GITHUB_FIRST);
+    loop {
+        check_github(&app);
+        std::thread::sleep(GITHUB_EVERY);
+    }
+}
+
+/// Busca una versión nueva publicada y, la primera vez que aparece, abre «Actualizaciones» si la persona está
+/// usando el panel (con los muros solos no se interrumpe nada: queda el aviso en la bandeja).
+fn check_github<R: Runtime>(app: &AppHandle<R>) {
+    let v = viewer(app);
+    let Some(installed) = v.layout.as_ref().map(|l| l.version.clone()) else { return };
+    let found = match crate::github_update::check(&installed) {
+        Ok(n) => n,
+        Err(e) => {
+            log::info(format!("Comprobación de versiones en GitHub: {e}"));
+            return;
+        }
+    };
+    if let Ok(mut slot) = v.novedad.lock() {
+        *slot = found.clone();
+    }
+    let Some(n) = found else { return };
+    let already = v.novedad_avisada.lock().ok().and_then(|a| a.clone());
+    if already.as_deref() == Some(n.version.as_str()) {
+        return;
+    }
+    log::info(format!("Hay una versión nueva publicada: {}", n.version));
+    let panel_visible = app.get_webview_window(PANEL).map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false);
+    if panel_visible {
+        open_local_window(app, "actualizaciones");
+    }
+    let mut avisada = v.novedad_avisada.lock();
+    if let Ok(a) = avisada.as_mut() {
+        **a = Some(n.version);
+    }
+}
+
 fn check_updates<R: Runtime>(app: &AppHandle<R>) {
     let v = viewer(app);
-    let view = updates::view(&v.version, read_public_status(&v).as_ref());
+    let mut view = updates::view(&v.version, read_public_status(&v).as_ref());
+    if view.restart_into.is_none() {
+        if let Some(n) = v.novedad.lock().ok().and_then(|n| n.clone()) {
+            view.label = format!("Versión nueva {}: descargar e instalar…", n.version);
+        }
+    }
     let changed = v.update.lock().map(|u| *u != view).unwrap_or(false);
     if changed {
         if let Some(items) = app.try_state::<TrayItems<R>>() {
@@ -971,6 +1020,8 @@ pub fn handlers<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send +
         actualizaciones,
         buscar_actualizaciones,
         volver_version_anterior,
+        novedades,
+        instalar_novedad,
         sin_permiso
     ]
 }
@@ -1016,7 +1067,12 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             build_tray(&handle)?;
-            for f in [health_loop::<tauri::Wry>, monitors_loop::<tauri::Wry>, updates_loop::<tauri::Wry>] {
+            for f in [
+                health_loop::<tauri::Wry>,
+                monitors_loop::<tauri::Wry>,
+                updates_loop::<tauri::Wry>,
+                github_loop::<tauri::Wry>,
+            ] {
                 let h = handle.clone();
                 std::thread::spawn(move || f(h));
             }

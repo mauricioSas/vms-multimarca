@@ -19,6 +19,8 @@ const COMMANDS: &[&str] = &[
     "actualizaciones",
     "buscar_actualizaciones",
     "volver_version_anterior",
+    "novedades",
+    "instalar_novedad",
     "sin_permiso",
 ];
 

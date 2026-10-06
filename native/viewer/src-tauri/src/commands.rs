@@ -14,7 +14,7 @@ use crate::kiosk::{self, TokenError};
 use crate::pinning::{self, display_fingerprint};
 use crate::servers::{self, parse_server_url};
 use crate::state::{wall_of, Viewer};
-use crate::{http, log, platform, updates};
+use crate::{github_update, http, log, platform, updates};
 
 type Res<T> = Result<T, String>;
 
@@ -485,6 +485,102 @@ pub async fn buscar_actualizaciones(state: State<'_, Arc<Viewer>>) -> Res<Result
     let v = state.inner().clone();
     blocking(move || {
         run_vmsctl(&v, "update check --json".into(), "Comprobado. El estado se actualiza en unos segundos.")
+    })
+    .await
+}
+
+// --------------------------------------------------------------------------------------------- versión nueva (GitHub)
+#[derive(Serialize)]
+pub struct Novedades {
+    instalada: Option<String>,
+    novedad: Option<github_update::Novedad>,
+    mensaje: String,
+    puede_instalar: bool,
+}
+
+/// Versión del producto instalada (la carpeta `versions\<X>` de la que arranca el visor).
+fn installed_version(v: &Viewer) -> Option<String> {
+    v.layout.as_ref().map(|l| l.version.clone())
+}
+
+#[tauri::command]
+pub async fn novedades(state: State<'_, Arc<Viewer>>) -> Res<Novedades> {
+    let v = state.inner().clone();
+    blocking(move || {
+        let Some(installed) = installed_version(&v) else {
+            return Novedades {
+                instalada: None,
+                novedad: None,
+                mensaje: "Disponible solo en un equipo con el programa instalado (Windows).".into(),
+                puede_instalar: false,
+            };
+        };
+        match github_update::check(&installed) {
+            Ok(n) => {
+                if let Ok(mut slot) = v.novedad.lock() {
+                    *slot = n.clone();
+                }
+                let mensaje = match &n {
+                    Some(n) => format!("Hay una versión nueva: {}.", n.version),
+                    None => format!("Tienes la última versión publicada ({installed})."),
+                };
+                Novedades { instalada: Some(installed), novedad: n, mensaje, puede_instalar: cfg!(windows) }
+            }
+            Err(e) => Novedades { instalada: Some(installed), novedad: None, mensaje: e, puede_instalar: false },
+        }
+    })
+    .await
+}
+
+/// Descarga la versión nueva, comprueba su SHA-256 y la instala encima con elevación (UAC). La grabación solo se
+/// para mientras se copian los archivos; la configuración y las grabaciones se conservan.
+#[tauri::command]
+pub async fn instalar_novedad(state: State<'_, Arc<Viewer>>) -> Res<Resultado> {
+    let v = state.inner().clone();
+    blocking(move || {
+        let Some(installed) = installed_version(&v) else {
+            return Resultado { ok: false, mensaje: "Esta copia del visor no está instalada.".into() };
+        };
+        let cached = v.novedad.lock().ok().and_then(|n| n.clone());
+        let n = match cached {
+            Some(n) => n,
+            None => match github_update::check(&installed) {
+                Ok(Some(n)) => n,
+                Ok(None) => {
+                    return Resultado { ok: true, mensaje: format!("Ya tienes la última versión ({installed}).") }
+                }
+                Err(e) => return Resultado { ok: false, mensaje: e },
+            },
+        };
+        // Carpeta temporal de la persona (ProgramData no es escribible para ella; el instalador elevado sí la lee).
+        let dir = std::env::temp_dir().join("VMSMultimarca-actualizacion");
+        log::info(format!("Descargando la versión {} de {}", n.version, n.instalador_url));
+        let exe = match github_update::download(&n, &dir) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn(format!("Descarga de {}: {e}", n.version));
+                return Resultado { ok: false, mensaje: e };
+            }
+        };
+        let log_file = dir.join(format!("instalacion-{}.log", n.version));
+        let args = github_update::installer_args(platform::installed_role().as_deref(), &log_file);
+        log::info(format!("Instalando {} con elevación: {args}", exe.display()));
+        match platform::run_elevated_shown(&exe, &args, Duration::from_secs(1800)) {
+            Ok(()) => Resultado {
+                ok: true,
+                mensaje: format!("Versión {} instalada. El visor se reinicia solo en la versión nueva.", n.version),
+            },
+            Err(e) => {
+                log::warn(format!("Instalador de {}: {e:?}", n.version));
+                let detalle = match e {
+                    platform::ElevateError::Failed(c) => {
+                        format!("El instalador terminó con el código {c}. Detalle en {}.", log_file.display())
+                    }
+                    other => other.message_es(),
+                };
+                Resultado { ok: false, mensaje: detalle }
+            }
+        }
     })
     .await
 }

@@ -7,6 +7,7 @@
 pub mod app;
 pub mod commands;
 pub mod config;
+pub mod github_update;
 pub mod health;
 pub mod http;
 pub mod kiosk;

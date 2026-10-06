@@ -80,6 +80,9 @@ pub struct Viewer {
     /// Versión instalada ya comparada con el propio ejecutable: (versión, ¿hay que reiniciar?).
     pub restart_check: Mutex<Option<(String, bool)>>,
     pub panel_notice_shown: Mutex<Option<String>>,
+    /// Versión nueva publicada en GitHub (comprobación del visor, `github_update`) y si ya se avisó de ella.
+    pub novedad: Mutex<Option<crate::github_update::Novedad>>,
+    pub novedad_avisada: Mutex<Option<String>>,
     /// Ventanas con una comprobación de servidor en curso.
     pub going: Mutex<HashSet<String>>,
 }
@@ -112,6 +115,8 @@ impl Viewer {
             update: Mutex::new(UpdateView { label: format!("Versión {version}"), restart_into: None }),
             restart_check: Mutex::new(None),
             panel_notice_shown: Mutex::new(None),
+            novedad: Mutex::new(None),
+            novedad_avisada: Mutex::new(None),
             going: Mutex::new(HashSet::new()),
         };
         v.refresh_policies();

@@ -35,6 +35,49 @@ async function accion(boton, salida, comando, args) {
   }
 }
 
+async function novedades() {
+  texto("novedad-texto", "Buscando versiones nuevas…");
+  $("instalar").hidden = true;
+  $("notas").hidden = true;
+  try {
+    const n = await invocar("novedades");
+    texto("novedad-texto", n.mensaje);
+    if (n.novedad) {
+      const mb = Math.round(n.novedad.tamano / 1048576);
+      texto("novedad-titulo", `Versión nueva: ${n.novedad.version}`);
+      texto("novedad-texto", `${n.mensaje} Descarga de unos ${mb} MB.`);
+      $("instalar").hidden = !n.puede_instalar;
+      texto("notas", `Novedades: ${n.novedad.notas_url}`);
+      $("notas").hidden = false;
+    } else {
+      texto("novedad-titulo", "Versión nueva");
+    }
+  } catch (err) {
+    texto("novedad-texto", err.message);
+  }
+}
+
+$("comprobar").addEventListener("click", novedades);
+$("instalar").addEventListener("click", async () => {
+  if (!confirm("¿Descargar e instalar la versión nueva? La grabación se detendrá unos minutos mientras se instala.")) return;
+  $("instalar").disabled = true;
+  $("comprobar").disabled = true;
+  texto("res-instalar", "Descargando y comprobando la versión nueva… (puede tardar unos minutos). Después Windows pedirá permiso.");
+  $("res-instalar").className = "";
+  try {
+    const r = await invocar("instalar_novedad");
+    texto("res-instalar", r.mensaje);
+    $("res-instalar").className = r.ok ? "ok" : "error";
+  } catch (err) {
+    texto("res-instalar", err.message);
+    $("res-instalar").className = "error";
+  } finally {
+    $("instalar").disabled = false;
+    $("comprobar").disabled = false;
+  }
+});
+novedades();
+
 $("buscar").addEventListener("click", () => accion("buscar", "res-buscar", "buscar_actualizaciones", {}));
 $("volver").addEventListener("click", () => {
   if (!confirm("¿Volver a la versión anterior? Se perderán los cambios de configuración hechos desde la última actualización.")) return;

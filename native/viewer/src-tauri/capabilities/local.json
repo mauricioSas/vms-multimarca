@@ -20,6 +20,8 @@
     "allow-actualizaciones",
     "allow-buscar-actualizaciones",
     "allow-volver-version-anterior",
+    "allow-novedades",
+    "allow-instalar-novedad",
     "allow-sin-permiso"
   ]
 }
