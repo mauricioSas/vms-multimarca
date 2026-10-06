@@ -1,0 +1,93 @@
+# Publicar una versión en GitHub Releases (docs/PUBLICAR-VERSION.md §«Publicar en GitHub»). Dueño: B3.
+#
+# Se dispara cuando llega a v2 un cambio de docs/versiones/ACTUAL (una línea con la etiqueta, p. ej. v2.0.0-beta.1)
+# o al subir una etiqueta v*. Compila el instalador de producto (binarios y visor reales, sin parámetros de prueba ni
+# roots de desarrollo) y crea la versión con el instalador, SHA256SUMS.txt y el SBOM. Si la etiqueta no existe, la
+# crea GitHub en el commit publicado. Si la versión ya está publicada, no hace nada.
+name: Publicar versión
+
+on:
+  push:
+    branches: [v2]
+    paths: [docs/versiones/ACTUAL]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Versión a publicar
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; else tag="$(tr -d ' \r\n' < docs/versiones/ACTUAL)"; fi
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::Etiqueta no válida: «$tag» (formato vX.Y.Z o vX.Y.Z-algo)"; exit 1
+          fi
+          if [ ! -f "docs/versiones/${tag}.md" ]; then
+            echo "::error::Faltan las notas de la versión: docs/versiones/${tag}.md (plantilla en docs/versiones/PLANTILLA.md)"
+            exit 1
+          fi
+          publish=true
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            publish=false; echo "La versión $tag ya está publicada: no se hace nada." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          { echo "tag=$tag"; echo "version=${tag#v}"; echo "publish=$publish"; } >> "$GITHUB_OUTPUT"
+
+  installer:
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    uses: ./.github/workflows/windows-installer.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      doubles: false
+      e2e: false
+      with_v1: false
+
+  release:
+    name: Publicar en GitHub Releases
+    needs: [version, installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: instalador
+          path: instalador
+      - name: Sumas SHA-256 de lo que se publica
+        working-directory: instalador
+        run: |
+          set -euo pipefail
+          ls -la
+          sha256sum VMSMultimarca-Setup-*.exe sbom-*.cdx.json > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Crear la versión
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; *) flags+=(--latest) ;; esac
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "VMS Multimarca ${TAG#v}" \
+            --notes-file "docs/versiones/${TAG}.md" "${flags[@]}" \
+            instalador/VMSMultimarca-Setup-*.exe instalador/SHA256SUMS.txt instalador/sbom-*.cdx.json
+          echo "Publicada: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

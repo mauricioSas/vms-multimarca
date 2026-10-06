@@ -1,8 +1,8 @@
 # Build del instalador (PLAN-V2 §1.8): PR a main, etiquetas v* y a mano. Dueño: B3.
 # Compila desde un commit limpio con los binarios y el visor REALES, comprueba que el payload es reproducible,
 # genera el SBOM y deja los artefactos SIN firma de publicación (la firma Authenticode y la de TUF se hacen en local:
-# PLAN-V2 §1.6). En etiquetas, además, la atestación de procedencia y la página de descarga en GitHub Releases
-# (docs/PUBLICAR-VERSION.md §«Publicar en GitHub»).
+# PLAN-V2 §1.6). En etiquetas, además, la atestación de procedencia. La página de descarga (GitHub Releases) la
+# crea publicar.yml (docs/PUBLICAR-VERSION.md §«Publicar en GitHub»).
 name: Build
 
 on:
@@ -52,40 +52,3 @@ jobs:
           subject-path: |
             instalador/*.exe
             instalador/sbom-*.cdx.json
-
-  release:
-    name: Publicar en GitHub Releases (solo etiquetas)
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: installer
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: instalador
-          path: instalador
-      - name: Sumas SHA-256 de lo que se publica
-        working-directory: instalador
-        run: |
-          set -euo pipefail
-          ls -la
-          sha256sum VMSMultimarca-Setup-*.exe sbom-*.cdx.json > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-      - name: Crear la versión (notas en docs/versiones/<etiqueta>.md)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          notes="docs/versiones/${TAG}.md"
-          if [ ! -f "$notes" ]; then
-            echo "::error::Faltan las notas de la versión: $notes (plantilla en docs/versiones/PLANTILLA.md)"
-            exit 1
-          fi
-          pre=()
-          case "$TAG" in *-*) pre=(--prerelease) ;; *) pre=(--latest) ;; esac
-          gh release create "$TAG" --verify-tag --title "VMS Multimarca ${TAG#v}" --notes-file "$notes" "${pre[@]}" \
-            instalador/VMSMultimarca-Setup-*.exe instalador/SHA256SUMS.txt instalador/sbom-*.cdx.json
-          echo "Publicada: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
