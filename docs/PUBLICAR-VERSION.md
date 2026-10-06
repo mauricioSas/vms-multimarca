@@ -276,3 +276,17 @@ python -m tools.release upload --to <carpeta>
 python -m tools.release site-token add|revoke|revoke-client|list --client <c> [--site S] [--kv-file F] [--out secrets.json]
 ```
 En la tienda (consola elevada): `python -m vms_updater status|check|rollback|unskip` o, con B1, `vmsctl update …`.
+
+## Publicar en GitHub (página de descarga)
+
+Mientras no haya certificado ni claves de producción, el instalador se publica en **GitHub Releases** para que se
+pueda descargar sin compilar nada:
+
+1. Escribe las notas en `docs/versiones/vX.Y.Z.md` (copia `docs/versiones/PLANTILLA.md`; el nombre es la etiqueta
+   exacta, con la «v»). Súbelas a `v2`.
+2. Con el CI en verde en ese commit, crea y sube la etiqueta: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `build.yml` compila el instalador de producto (binarios y visor reales, sin parámetros de prueba ni roots de
+   desarrollo), genera el SBOM y crea la versión con el instalador, `SHA256SUMS.txt` y el SBOM. Una etiqueta con
+   guion (`v2.0.0-beta.1`) sale como *pre-release*; sin guion, como la última versión.
+
+El botón «Descargar» del README apunta siempre a la última versión publicada.

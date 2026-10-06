@@ -106,26 +106,31 @@ jobs:
             ~/.cargo/git
             tests/windows/doubles/target
             native/target
-          key: cargo-instalador-windows-${{ hashFiles('tests/windows/doubles/Cargo.lock', 'tests/windows/doubles/src/**', 'native/Cargo.lock', 'native/**/*.rs') }}
+            native/viewer/src-tauri/target
+          key: cargo-instalador-windows-${{ hashFiles('tests/windows/doubles/Cargo.lock', 'tests/windows/doubles/src/**', 'native/Cargo.lock', 'native/**/*.rs', 'native/viewer/src-tauri/Cargo.lock') }}
           restore-keys: cargo-instalador-windows-
+      # Solo para el e2e (instala con UpdateSource). Un instalador para publicar (sin e2e: build.yml) nunca lleva roots
+      # de desarrollo: sin roots de producción sale sin actualizaciones automáticas hasta que existan (PUBLICAR-VERSION).
       - name: Roots de confianza de desarrollo (el e2e instala con UpdateSource; sin root el instalador lo rechaza)
+        if: inputs.e2e
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           python -m tools.build dev-roots --out "$env:RUNNER_TEMP\trusted"
           "VMS_BUILD_TRUSTED_ROOTS=$env:RUNNER_TEMP\trusted" >> $env:GITHUB_ENV
-      # Sin dobles: el vmsctl y el vmshost REALES de native/ (revisión v2: con el doble, CI salía verde con el flujo
-      # real roto) y el runtime de Python de verdad. El visor sigue siendo el doble: el real lo prueba el job de B2.
-      - name: Binarios reales (vmshost, vmsctl), visor doble y runtime de Python con los locks de sede
+      # Sin dobles: el vmshost, el vmsctl y el visor VMS.exe REALES de native/ (revisión v2: con los dobles, CI salía
+      # verde con el flujo real roto) y el runtime de Python de verdad. El visor se compila sin la función «prueba»
+      # (sin CDP): es el mismo que se publica; su prueba de humo por CDP la hace el job de B2.
+      - name: Binarios reales (vmshost, vmsctl, visor) y runtime de Python con los locks de sede
         if: ${{ !inputs.doubles }}
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           Push-Location native; cargo build --release --locked -p vmshost -p vmsctl; Pop-Location
-          Push-Location tests\windows\doubles; cargo build --release --locked; Pop-Location
+          Push-Location native\viewer\src-tauri; npx --yes @tauri-apps/cli@2.12.1 build --no-bundle --ci; Pop-Location
           python -m distribution.runtime.build --out build\runtime
           $n = @('--vmshost', 'native\target\release\vmshost.exe', '--vmsctl', 'native\target\release\vmsctl.exe',
-                 '--viewer', 'tests\windows\doubles\target\release\VMS.exe', '--runtime-dir', 'build\runtime')
+                 '--viewer', 'native\viewer\src-tauri\target\release\VMS.exe', '--runtime-dir', 'build\runtime')
           "NATIVES=$($n -join ' ')" >> $env:GITHUB_ENV
       - name: Inno Setup 7.1.0 (descarga verificada con SHA-256)
         run: python -m tools.build inno --install

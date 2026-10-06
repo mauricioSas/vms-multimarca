@@ -170,7 +170,22 @@ def test_step5_viewer(e2e: E2E, step: h.Step) -> None:
     step.details["acceso_directo"] = [target, args]
     assert Path(target) == h.program_dir() / "bin" / "vmshost.exe" and args == "viewer"
     if not e2e.doubles:
-        pytest.skip("visor real: prueba por CDP (Playwright connect_over_cdp) pendiente de que B2 entregue VMS.exe")
+        # Visor real (VMS.exe de B2, sin CDP): el acceso directo lo abre. Su contenido lo prueba el humo por CDP de B2.
+        h.powershell("Get-Process VMS -ErrorAction SilentlyContinue | Stop-Process -Force; exit 0")
+        proc = subprocess.run([target, args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+                              check=False)
+        assert proc.returncode == 0, f"vmshost viewer terminó con {proc.returncode}"
+        prog = str(h.program_dir()).replace("'", "''")
+
+        def viewer_running() -> bool:
+            out = h.powershell(f"Get-Process VMS -ErrorAction SilentlyContinue | "
+                               f"Where-Object {{ $_.Path -like '{prog}\\*' }} | ForEach-Object {{ $_.Id }}; exit 0")
+            return bool(out.strip())
+
+        assert h.wait_until(viewer_running, 30), "no se abrió el visor VMS.exe"
+        step.details["visor"] = "VMS.exe en marcha"
+        h.powershell("Get-Process VMS -ErrorAction SilentlyContinue | Stop-Process -Force; exit 0")
+        return
     for hwnd in h.find_windows(h.VIEWER_DOUBLE_CLASS):
         h.close_window(hwnd)
     # Sin capturar la salida: el visor que lanza vmshost heredaría las tuberías y run() esperaría a que se cierre.
