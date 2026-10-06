@@ -157,3 +157,39 @@ def test_find_moves_ignores_devices_still_seen_at_their_ip_and_non_lan_hosts() -
     public = [DiscoveredDevice(host="203.0.113.9", serial=serial, sources=["dhip"]),
               DiscoveredDevice(host="nvr.example", serial=serial, sources=["wsd"])]
     assert find_moves([dev], public) == []
+
+
+def test_subnet_hint_explains_other_network() -> None:
+    from vms.vendors.localnet import LocalNet, same_network, subnet_hint, suggested_pc_ip
+
+    nets = [LocalNet("169.254.12.7", 16, "Ethernet")]
+    assert not same_network("192.168.254.27", nets)
+    hint = subnet_hint("192.168.254.27", nets)
+    assert "192.168.254.250" in hint and "169.254.12.7" in hint
+    assert subnet_hint("169.254.40.1", nets) == ""
+    assert subnet_hint("192.168.254.27", [LocalNet("192.168.254.10", 24)]) == ""
+    assert subnet_hint("192.168.254.27", []) == ""  # sin datos del PC no se avisa
+    assert suggested_pc_ip("10.0.0.250") == "10.0.0.251"
+
+
+def test_local_ipv4_skips_loopback_and_puts_link_local_last() -> None:
+    from vms.vendors.localnet import local_ipv4
+
+    nets = local_ipv4()
+    assert all(not n.ip.startswith("127.") for n in nets)
+    ll = [n.ip.startswith("169.254.") for n in nets]
+    assert ll == sorted(ll)
+
+
+async def test_sadp_search_by_interface_list() -> None:
+    with SadpResponder([SadpTarget(host="192.168.254.27")]) as r:
+        found = await sadp.search(0.4, targets=[("127.0.0.1", r.port)], multicast=False, interfaces=["127.0.0.1"])
+    assert [d.host for d in found] == ["192.168.254.27"]
+    assert r.probes_received == 2
+
+
+async def test_scan_adds_network_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vms.vendors import localnet
+
+    monkeypatch.setattr(localnet, "local_ipv4", lambda: [localnet.LocalNet("169.254.3.4", 16)])
+    assert "192.168.254.250" in localnet.subnet_hint("192.168.254.27", localnet.local_ipv4())

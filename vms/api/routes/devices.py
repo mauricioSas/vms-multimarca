@@ -12,6 +12,7 @@ from starlette.responses import Response
 from vms.core.errors import ConflictError, DeviceError, NotFoundError, ValidationFailed
 from vms.core.interfaces import ChannelInfo, DeviceInfo
 from vms.core.models import AppConfig, Camera, Device, DeviceCreate, DeviceTestRequest, DeviceUpdate
+from vms.vendors.localnet import local_ipv4, subnet_hint
 
 from ..deps import Principal, get_state, require_admin, require_operator
 from ..errors import json_response
@@ -273,5 +274,7 @@ async def discovery_scan(body: ScanRequest | None = None, _: Principal = Depends
     timeout = (body or ScanRequest()).timeout_s
     found = await state.discoverer(timeout)
     hosts = {d.host.lower() for d in state.config().devices}
-    out = [d.model_copy(update={"already_added": d.host.lower() in hosts}) for d in found]
+    nets = local_ipv4() if found else []
+    out = [d.model_copy(update={"already_added": d.host.lower() in hosts,
+                                "network_hint": subnet_hint(d.host, nets)}) for d in found]
     return json_response({"devices": out})

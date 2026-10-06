@@ -12,6 +12,7 @@ use std::path::Path;
 use vms_common::services::Role;
 
 pub const PREFIX: &str = "VMSMultimarca-";
+const SADP_PORT: u16 = 37020;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
@@ -24,7 +25,8 @@ fn rule(kind: &str, proto: &'static str, port: u16) -> Rule {
     Rule { name: format!("{PREFIX}{kind}-{proto}-{port}"), proto, port }
 }
 
-/// Reglas del puesto: web (HTTPS si hay certificado; si no, HTTP), ICE de WebRTC y panel central.
+/// Reglas del puesto: web (HTTPS si hay certificado; si no, HTTP), ICE de WebRTC, respuestas de la búsqueda
+/// SADP de Hikvision (llegan por multicast al puerto 37020, no a la sonda) y panel central.
 pub fn rules_for(role: Role, net: &NetSettings) -> Vec<Rule> {
     let mut out = Vec::new();
     if matches!(role, Role::Control | Role::Store) {
@@ -39,6 +41,7 @@ pub fn rules_for(role: Role, net: &NetSettings) -> Vec<Rule> {
         if let Some((_, p)) = net.ice_tcp() {
             out.push(rule("WebRTC", "TCP", p));
         }
+        out.push(rule("SADP", "UDP", SADP_PORT));
     }
     if role == Role::Central {
         out.push(rule("Central", "TCP", net.central_port()));
@@ -147,12 +150,17 @@ mod tests {
         let names = |r: Vec<Rule>| r.into_iter().map(|r| r.name).collect::<Vec<_>>();
         assert_eq!(
             names(rules_for(Role::Store, &net(&[]))),
-            ["VMSMultimarca-Web-TCP-8600", "VMSMultimarca-WebRTC-UDP-8189", "VMSMultimarca-WebRTC-TCP-8189"]
+            [
+                "VMSMultimarca-Web-TCP-8600",
+                "VMSMultimarca-WebRTC-UDP-8189",
+                "VMSMultimarca-WebRTC-TCP-8189",
+                "VMSMultimarca-SADP-UDP-37020"
+            ]
         );
         let tls = net(&[("VMS_TLS_CERT_FILE", "a"), ("VMS_TLS_KEY_FILE", "b"), ("VMS_MTX_WEBRTC_ICE_TCP", "off")]);
         assert_eq!(
             names(rules_for(Role::Control, &tls)),
-            ["VMSMultimarca-WebHTTPS-TCP-8643", "VMSMultimarca-WebRTC-UDP-8189"]
+            ["VMSMultimarca-WebHTTPS-TCP-8643", "VMSMultimarca-WebRTC-UDP-8189", "VMSMultimarca-SADP-UDP-37020"]
         );
         assert_eq!(names(rules_for(Role::Central, &net(&[]))), ["VMSMultimarca-Central-TCP-8700"]);
         assert!(rules_for(Role::Viewer, &net(&[])).is_empty());
@@ -176,16 +184,16 @@ mod tests {
         let rules = rules_for(Role::Control, &net(&[]));
         apply(&mut r, &rules, "private", &state).unwrap();
         let adds: Vec<&String> = r.calls.iter().filter(|c| c.contains(" add rule ")).collect();
-        assert_eq!(adds.len(), 3);
+        assert_eq!(adds.len(), 4);
         assert!(adds[0].ends_with(
             "name=VMSMultimarca-Web-TCP-8600 dir=in action=allow protocol=TCP localport=8600 profile=private enable=yes"
         ));
-        assert_eq!(recorded(&state).len(), 3);
+        assert_eq!(recorded(&state).len(), 4);
         r.calls.clear();
         let removed = remove(&mut r, &[], &state).unwrap();
-        assert_eq!(removed.len(), 3);
+        assert_eq!(removed.len(), 4);
         assert!(!state.exists());
-        assert_eq!(r.calls.iter().filter(|c| c.contains(" delete rule ")).count(), 3);
+        assert_eq!(r.calls.iter().filter(|c| c.contains(" delete rule ")).count(), 4);
     }
 
     #[test]

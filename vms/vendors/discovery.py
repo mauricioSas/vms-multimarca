@@ -27,7 +27,7 @@ from urllib.parse import unquote, urlsplit
 from vms.core.interfaces import DetectionHints, DiscoveredDevice
 from vms.core.models import Vendor
 
-from .netguard import reply_host
+from .netguard import RateLimiter, reply_host
 
 log = logging.getLogger("vms.vendors.discovery")
 
@@ -232,7 +232,12 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
 
     timeout = max(0.2, min(float(timeout), 30.0))
     lan = multicast if multicast is not None else not (targets or sadp_targets or dhip_targets)
-    iface = interfaces[0] if interfaces else None
+    if lan and interfaces is None:
+        # Todas las tarjetas: con el WiFi y un switch de cámaras a la vez, o con el PC en 169.254 (switch sin
+        # router), la tarjeta «por defecto» no es la del cable de las cámaras.
+        from .localnet import local_ipv4
+
+        interfaces = [n.ip for n in local_ipv4()] or None
 
     async def run_wsd() -> list[DiscoveredDevice]:
         if not (lan or targets):
@@ -243,7 +248,7 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
         if not (lan or sadp_targets):
             return []
         try:
-            return await sadp.search(timeout, targets=sadp_targets, multicast=lan, interface=iface)
+            return await sadp.search(timeout, targets=sadp_targets, multicast=lan, interfaces=interfaces)
         except OSError as exc:
             log.warning("No se pudo buscar por SADP: %s", exc)
             return []
@@ -251,7 +256,12 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
     async def run_dhip() -> list[dhip.DhipDevice]:
         if not (lan or dhip_targets):
             return []
-        return await dhip.search(timeout, targets=dhip_targets, broadcast=lan, interface=iface)
+        ifaces: list[str | None] = list(interfaces) if interfaces else [None]
+        limiter = RateLimiter(dhip.MAX_PACKETS_PER_S)
+        runs = await asyncio.gather(*(dhip.search(timeout, targets=dhip_targets if i == 0 else None, broadcast=lan,
+                                                  interface=iface, limiter=limiter)
+                                      for i, iface in enumerate(ifaces)))
+        return [d for run in runs for d in run]
 
     wsd_found, sadp_found, dhip_found = await asyncio.gather(run_wsd(), run_sadp(), run_dhip())
     found: dict[str, DiscoveredDevice] = {}

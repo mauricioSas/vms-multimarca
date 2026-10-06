@@ -105,8 +105,8 @@ class _Collector(asyncio.DatagramProtocol):
         log.debug("Error UDP en SADP: %s", exc)
 
 
-def _listen_socket(interface: str | None) -> socket.socket | None:
-    """Socket unido al grupo multicast en el puerto 37020 (las respuestas SADP suelen ir ahí)."""
+def _listen_socket(interfaces: list[str | None]) -> socket.socket | None:
+    """Socket en el puerto 37020 unido al grupo multicast por cada tarjeta (las respuestas SADP suelen ir ahí)."""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -116,38 +116,60 @@ def _listen_socket(interface: str | None) -> socket.socket | None:
             except OSError:
                 pass
         sock.bind(("", SADP_PORT))
-        mreq = struct.pack("4s4s", socket.inet_aton(SADP_GROUP), socket.inet_aton(interface or "0.0.0.0"))
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.setblocking(False)
-        return sock
     except OSError as exc:
         log.debug("No se pudo escuchar SADP en el puerto %d: %s", SADP_PORT, exc)
         return None
+    joined = 0
+    for iface in interfaces:
+        mreq = struct.pack("4s4s", socket.inet_aton(SADP_GROUP), socket.inet_aton(iface or "0.0.0.0"))
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            joined += 1
+        except OSError as exc:
+            log.debug("SADP: no se pudo unir al grupo por %s: %s", iface or "la tarjeta por defecto", exc)
+    if not joined:
+        sock.close()
+        return None
+    sock.setblocking(False)
+    return sock
 
 
 async def search(timeout: float = 2.0, *, targets: list[tuple[str, int]] | None = None,
-                 multicast: bool = True, interface: str | None = None) -> list[SadpDevice]:
-    """Manda `inquiry` (multicast y/o a destinos concretos de la LAN) y devuelve lo que responde."""
+                 multicast: bool = True, interface: str | None = None,
+                 interfaces: list[str] | None = None) -> list[SadpDevice]:
+    """Manda `inquiry` (multicast y/o a destinos concretos de la LAN) y devuelve lo que responde.
+
+    `interfaces`: IPs locales por las que preguntar (una por tarjeta); vacío = la tarjeta por defecto."""
     loop = asyncio.get_running_loop()
     probe_uuid = str(uuid.uuid4()).upper()
     probe = build_inquiry(probe_uuid)
     limiter = RateLimiter(MAX_PACKETS_PER_S)
     collector = _Collector(probe_uuid)
+    ifaces: list[str | None] = list(interfaces) if interfaces else [interface]
     transports: list[asyncio.DatagramTransport] = []
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("b", 1))
-    if interface:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(interface))
-    sock.bind((interface or "0.0.0.0", 0))
-    sock.setblocking(False)
-    tx, _ = await loop.create_datagram_endpoint(lambda: collector, sock=sock)
-    transports.append(tx)
-    if multicast:
-        lsock = _listen_socket(interface)
-        if lsock is not None:
-            ltx, _ = await loop.create_datagram_endpoint(lambda: collector, sock=lsock)
-            transports.append(ltx)
+    senders: list[asyncio.DatagramTransport] = []
     try:
+        for iface in ifaces:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("b", 1))
+                if iface:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface))
+                sock.bind((iface or "0.0.0.0", 0))
+                sock.setblocking(False)
+            except OSError as exc:
+                log.debug("SADP: no se pudo preparar la tarjeta %s: %s", iface or "por defecto", exc)
+                continue
+            tx, _ = await loop.create_datagram_endpoint(lambda: collector, sock=sock)
+            transports.append(tx)
+            senders.append(tx)
+        if not senders:
+            raise OSError("ninguna tarjeta de red disponible para SADP")
+        if multicast:
+            lsock = _listen_socket(ifaces)
+            if lsock is not None:
+                ltx, _ = await loop.create_datagram_endpoint(lambda: collector, sock=lsock)
+                transports.append(ltx)
         dests = [(SADP_GROUP, SADP_PORT)] if multicast else []
         for d in targets or []:
             if is_lan_destination(d[0]):
@@ -155,12 +177,13 @@ async def search(timeout: float = 2.0, *, targets: list[tuple[str, int]] | None 
             else:
                 log.warning("SADP: destino fuera de la red local ignorado: %s", d[0])
         for attempt in range(2):
-            for dest in dests:
-                await limiter.acquire()
-                try:
-                    tx.sendto(probe, dest)
-                except OSError as exc:
-                    log.debug("No se pudo enviar SADP a %s:%s: %s", dest[0], dest[1], exc)
+            for tx in senders:
+                for dest in dests:
+                    await limiter.acquire()
+                    try:
+                        tx.sendto(probe, dest)
+                    except OSError as exc:
+                        log.debug("No se pudo enviar SADP a %s:%s: %s", dest[0], dest[1], exc)
             if attempt == 0:
                 await asyncio.sleep(min(0.3, timeout / 3))
         await asyncio.sleep(timeout)

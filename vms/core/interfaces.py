@@ -70,6 +70,7 @@ class DiscoveredDevice(BaseModel):
     firmware: str = ""
     vendor_score: float = 0.0           # 0..1 de best_match para vendor_guess
     sources: list[Literal["wsd", "sadp", "dhip"]] = Field(default_factory=list)
+    network_hint: str = ""              # lo rellena la API si el equipo está en otra red que este PC
 
 
 class DeviceTestResult(BaseModel):

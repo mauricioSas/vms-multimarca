@@ -362,7 +362,7 @@ se suscribe a cambios de configuración (aplicación con antirrebote de 1 s) →
 | `POST /api/devices/{id}/test` | A | → `DeviceTestResult` con la contraseña guardada |
 | `GET /api/devices/{id}/channels` | A | → `[ChannelInfo]` (502 si el equipo falla) |
 | `POST /api/devices/{id}/channels/import` | A | `{channels: [int] \| "all"}` → 201 `[Camera]` (omite canales ya dados de alta) |
-| `POST /api/discovery/scan` | A | `{timeout_s: 1..10 = 3}` → `{devices: [DiscoveredDevice]}` (`already_added` según host) |
+| `POST /api/discovery/scan` | A | `{timeout_s: 1..10 = 3}` → `{devices: [DiscoveredDevice]}` (`already_added` según host; `network_hint`: aviso si el equipo está en otra red que el PC) |
 
 ### 6.4 Cámaras
 

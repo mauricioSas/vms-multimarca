@@ -349,3 +349,9 @@ dl.kv { display: grid; grid-template-columns: minmax(160px, max-content) 1fr; ga
 dl.kv dt { color: var(--muted); }
 dl.kv dd { margin: 0; }
 @media (max-width: 860px) { dl.kv { grid-template-columns: 1fr; } dl.kv dd { margin-bottom: 8px; } }
+
+/* Búsqueda en la red: equipo encontrado en otra red que este PC */
+.discover-warn {
+  margin-top: 6px; padding: 6px 8px; border-radius: 8px; max-width: 34em;
+  border: 1px solid var(--warn-line); background: var(--warn-soft); color: var(--warn);
+}

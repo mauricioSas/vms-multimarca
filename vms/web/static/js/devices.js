@@ -604,14 +604,17 @@ $("#btn-discover-run").addEventListener("click", async (ev) => {
       const list = res.devices || [];
       if (!list.length) {
         tbody.innerHTML = `<tr><td colspan="5" class="empty"><strong>No se encontró ningún equipo</strong>
-          Comprueba que el PC está en la misma red y que el equipo tiene ONVIF activado.</td></tr>`;
+          Comprueba que el cable de la cámara y el del PC van al mismo switch y que la red de este PC está como
+          «Privada» en Windows (Configuración → Red e Internet → Ethernet → Tipo de perfil de red). Si sabes la IP
+          de la cámara, añádela con «Añadir equipo».</td></tr>`;
         return;
       }
       tbody.innerHTML = list.map((d, i) => `<tr>
         <td class="mono">${esc(d.host)}:${esc(d.http_port)}</td>
         <td><span class="vendor-tag ${esc(d.vendor_guess)}">${esc(vendorLabel(d.vendor_guess))}</span>
           ${(d.sources || []).length ? `<div class="muted small">${esc(d.sources.map((s) => SOURCE_LABELS[s] || s).join(", "))}</div>` : ""}</td>
-        <td>${esc(d.model || "—")}</td><td>${esc(d.name || "—")}</td>
+        <td>${esc(d.model || "—")}${d.network_hint ? `<div class="discover-warn small">${esc(d.network_hint)}</div>` : ""}</td>
+        <td>${esc(d.name || "—")}</td>
         <td>${d.already_added ? '<span class="pill ok">Ya añadido</span>'
           : `<button type="button" class="btn btn-sm btn-primary" data-add="${i}">Añadir</button>`}</td></tr>`).join("");
       tbody.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
