@@ -7,6 +7,7 @@ desenfocada ORB da desplazamientos falsos). Nunca se usan fotos ni personas: ver
 from __future__ import annotations
 
 import statistics
+import time
 from datetime import datetime, timedelta, timezone
 
 import cv2
@@ -69,17 +70,27 @@ def test_fifty_normal_frames_without_false_positives(base: np.ndarray, day: im.R
 
 
 def test_under_20_ms_per_check_at_640_px(base: np.ndarray, day: im.Reference) -> None:
+    """CONTRATO §18.2: < 20 ms **de CPU** por comprobación a 640 px. Se mide el tiempo de CPU de la comprobación (OpenCV en un
+    solo hilo), no el de reloj: en un runner compartido el reloj se infla sin que el análisis cueste más
+    (macOS, runs 42 y 49: 25-50 ms de reloj)."""
     frames = [cv2.resize(syn.normal_frame(base, i), (640, 360), interpolation=cv2.INTER_AREA) for i in range(30)]
-    im.analyze(frames[0], day=day, night=None)   # calentamiento (OpenCV carga sus tablas)
-    # Mismo presupuesto (mediana < 20 ms, p90 < 30 ms), medido hasta 3 veces: en un runner compartido un vecino
-    # ruidoso infla una tanda entera (macOS, run 42: mediana 23,6 ms) sin que el análisis sea más lento.
-    rounds = []
-    for _ in range(3):
-        durations = [im.analyze(f, day=day, night=None).duration_ms for f in frames]
-        rounds.append(durations)
-        if statistics.median(durations) < 20 and sorted(durations)[int(len(durations) * 0.9)] < 30:
-            return
-    raise AssertionError(f"ninguna de 3 tandas cumple el presupuesto: {rounds}")
+    threads = cv2.getNumThreads()
+    cv2.setNumThreads(1)          # el reparto entre hilos de OpenCV suma esperas activas, no trabajo
+    try:
+        im.analyze(frames[0], day=day, night=None)   # calentamiento (OpenCV carga sus tablas)
+        rounds = []
+        for _ in range(3):
+            cpu_ms = []
+            for f in frames:
+                t0 = time.thread_time()
+                im.analyze(f, day=day, night=None)
+                cpu_ms.append(round((time.thread_time() - t0) * 1000, 2))
+            rounds.append(cpu_ms)
+            if statistics.median(cpu_ms) < 20 and sorted(cpu_ms)[int(len(cpu_ms) * 0.9)] < 30:
+                return
+    finally:
+        cv2.setNumThreads(threads)
+    raise AssertionError(f"ninguna de 3 tandas cumple el presupuesto de CPU: {rounds}")
 
 
 def test_frozen_ignores_the_osd_clock(base: np.ndarray, day: im.Reference) -> None:
