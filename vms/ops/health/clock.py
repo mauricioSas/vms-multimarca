@@ -99,16 +99,23 @@ def _fmt_offset(seconds: int) -> str:
     return f"UTC{sign}{h}" + (f":{rem // 60:02d}" if rem else "")
 
 
+def _pc_offset_s(instant: datetime) -> int:
+    """Zona del PC en ese instante. Con un equipo sin hora (1970…) Windows no sabe pasarlo a hora local
+    (`localtime` falla antes de 1970): se usa la zona actual del PC."""
+    try:
+        off = instant.astimezone().utcoffset()
+    except (OSError, OverflowError, ValueError):
+        off = datetime.now().astimezone().utcoffset()
+    return int(off.total_seconds()) if off is not None else 0
+
+
 def zone_mismatch(dt: DeviceTime, pc_offset_s: int | None = None) -> str | None:
     """Frase si la zona del equipo (la de la hora que sale en la imagen) no es la del PC; None si coincide o
     no se sabe. `pc_offset_s`: zona del PC en ese instante (por defecto, la del sistema)."""
     if dt.utc_offset_s is None:
         return None
     if pc_offset_s is None:
-        off = dt.device_time.astimezone().utcoffset()
-        if off is None:
-            return None
-        pc_offset_s = int(off.total_seconds())
+        pc_offset_s = _pc_offset_s(dt.device_time)
     if abs(dt.utc_offset_s - pc_offset_s) < 60:
         return None
     return (f"El equipo usa otra zona horaria ({_fmt_offset(dt.utc_offset_s)}) que este PC "

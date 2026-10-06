@@ -206,3 +206,32 @@ async def test_real_isapi_client_against_mock_counts_one_credentialed_attempt(hi
     res = await diag.run(DiagnoseInput(dev, PW, "dev-00000001", [_cam()]))
     st = _steps(res)
     assert st["ping"] and st["auth"] and st["rtsp_describe"] and st["codec"], res.steps
+
+
+async def test_device_without_time_1970_does_not_break_the_diagnosis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cámara sin hora (01-01-1970, zona de fábrica UTC+8): en Windows `astimezone()` de ese instante lanza
+    OSError (localtime antes de 1970) y el diagnóstico daba «Error interno del servidor»."""
+    from datetime import datetime, timezone
+
+    from vms.core.interfaces import DeviceTime
+    from vms.ops.health import clock as health_clock
+
+    class WinDatetime(datetime):
+        def astimezone(self, tz: Any = None) -> Any:  # type: ignore[override]
+            if tz is None and self.timestamp() < 86400:
+                raise OSError(22, "Invalid argument")
+            return super().astimezone(tz)
+
+    t = WinDatetime(1970, 1, 1, 0, 7, 9, tzinfo=timezone(timedelta(hours=8)))
+    dt = DeviceTime(device_time=t, measured_at=datetime.now(timezone.utc), utc_offset_s=8 * 3600)
+    chk = health_clock.device_check("dev-1", None, dt, 2.0, 30.0)
+    assert chk.status == "critical"
+
+    b = DiagBehavior()
+
+    class Broken(DiagClient):
+        async def device_time(self) -> Any:
+            raise OSError(22, "Invalid argument")
+
+    res = await _diag(b, client=Broken(b, PW)).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
+    assert _steps(res)["clock"] is None and _steps(res)["auth"] is True

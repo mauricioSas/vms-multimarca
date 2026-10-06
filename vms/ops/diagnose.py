@@ -259,6 +259,9 @@ class Diagnoser:
                     "" if chk.status == "ok" else "Activa NTP en el equipo apuntando a este PC.", t0)
             except DeviceError as exc:
                 add("clock", None, f"No se pudo leer la hora: {redact(exc.message)}", "", t0)
+            except Exception:  # noqa: BLE001 - un fallo leyendo la hora no tumba el diagnóstico entero
+                log.exception("Fallo inesperado leyendo la hora del equipo")
+                add("clock", None, "No se pudo leer la hora del equipo.", "", t0)
         else:
             add("clock", None, "La hora de este equipo no se puede leer desde aquí (marca sin lectura de hora o "
                                "contraseña sin comprobar).")

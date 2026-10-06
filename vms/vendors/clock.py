@@ -192,8 +192,14 @@ def local_tz() -> timezone:
 
 
 def pc_offset_at(instant: datetime) -> timedelta:
-    """Offset de la zona del PC en un instante (tiene en cuenta el horario de verano del PC)."""
-    return instant.astimezone().utcoffset() or timedelta(0)
+    """Offset de la zona del PC en un instante (tiene en cuenta el horario de verano del PC).
+
+    Un equipo sin hora (1970, año 2000…) da instantes que Windows no sabe pasar a hora local (`localtime` falla
+    con fechas antes de 1970 o fuera de rango): entonces se usa la zona actual del PC."""
+    try:
+        return instant.astimezone().utcoffset() or timedelta(0)
+    except (OSError, OverflowError, ValueError):
+        return datetime.now().astimezone().utcoffset() or timedelta(0)
 
 
 def round_offset(delta: timedelta) -> int:
