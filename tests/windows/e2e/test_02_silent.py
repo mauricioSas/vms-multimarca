@@ -160,6 +160,44 @@ def test_step4_start(e2e: E2E, step: h.Step) -> None:
         import httpx
 
         assert httpx.get("http://127.0.0.1:8600/api/health", timeout=10).status_code == 200
+        _assert_engine_answers(step)
+
+
+def _assert_engine_answers(step: h.Step) -> None:
+    """El motor de vídeo (VMSEngine → MediaMTX) responde a la API del backend. `health wait` solo mira que el estado
+    no sea «down»; un motor parado pasaba (visto en un PC real: «Motor de vídeo: Detenido»)."""
+    import time
+
+    import httpx
+
+    token = (h.data_dir() / "secrets" / "internal.token").read_text(encoding="utf-8").strip()
+    body: dict = {}
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        r = httpx.get("http://127.0.0.1:8600/api/internal/health/deep", headers={"x-vms-internal-token": token},
+                      timeout=10)
+        body = r.json() if r.status_code == 200 else {"http": r.status_code}
+        if body.get("engine", {}).get("api_ok"):
+            step.details["engine"] = body["engine"]
+            return
+        time.sleep(3)
+    logs = h.data_dir() / "logs"
+    tails = {}
+    for name in ("engine.log", "backend.log", "vmshost.log", "vmsctl.log"):
+        f = logs / name
+        if f.is_file():
+            tails[name] = f.read_text(encoding="utf-8", errors="replace")[-6000:]
+    tails["logs_dir"] = sorted(p.name for p in logs.iterdir()) if logs.is_dir() else []
+    tails["mediamtx_dir"] = sorted(p.name for p in (h.data_dir() / "mediamtx").iterdir()) \
+        if (h.data_dir() / "mediamtx").is_dir() else []
+    tails["services"] = h.powershell("Get-Service VMS* | Format-Table -AutoSize Name,Status | Out-String -Width 200")
+    tails["procesos"] = h.powershell("Get-Process mediamtx -ErrorAction SilentlyContinue | "
+                                     "Format-Table -AutoSize Id,Path | Out-String -Width 300; exit 0")
+    step.details["engine_down"] = {"deep": body, **tails}
+    print("MOTOR DE VÍDEO SIN RESPUESTA:", body)
+    for k, v in tails.items():
+        print(f"===== {k} =====\n{v}")
+    raise AssertionError(f"el motor de vídeo no responde a la API tras 90 s: {body}")
 
 
 @pytest.mark.paso("5", "Visor: acceso directo del menú Inicio → vmshost viewer → ventana del visor")
