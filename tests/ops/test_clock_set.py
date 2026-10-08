@@ -23,6 +23,8 @@ from vms.vendors import client_for
 PW = "Cl@ve#1"
 ADMIN_PW = "Adm#Temporal:9"
 REAL_CAMERA_TIME = datetime(1970, 1, 1, 0, 7, 29, tzinfo=timezone(timedelta(hours=8)))
+# el paso que existe en la web para cambiar el usuario o la contraseña guardados (devices.js, diagnose.py)
+EDIT_STEP = "en «Equipos y monitores», pulsa «Editar» en la fila del equipo"
 
 
 def _mock(**kw: Any) -> HikvisionMock:
@@ -148,8 +150,11 @@ async def test_wrong_stored_password_is_tried_once_and_admin_typo_is_not_blocked
     r = await admin.post(f"/api/clock/devices/{d['id']}/set")
     assert r.status_code == 502 and r.json()["error"]["code"] == "device_auth_failed"
     assert "contraseña guardada" in r.json()["error"]["message"] and mock.auth.rejected_credentials == 1
+    # revisión final: mandaba a «la ficha del equipo», una pantalla que no existe
+    assert EDIT_STEP in r.json()["error"]["message"] and "ficha" not in r.json()["error"]["message"]
     r = await admin.post(f"/api/clock/devices/{d['id']}/set")
     assert r.status_code == 502 and "rechazó hace poco" in r.json()["error"]["message"]
+    assert EDIT_STEP in r.json()["error"]["message"] and "ficha" not in r.json()["error"]["message"]
     assert mock.auth.rejected_credentials == 1, "ni un intento más con la contraseña guardada"
     r = await admin.post(f"/api/clock/devices/{d['id']}/set", json={"username": "admin", "password": "Otra#mala"})
     assert r.status_code == 502 and "administrador" in r.json()["error"]["message"]
@@ -281,6 +286,7 @@ async def test_restricted_user_on_the_time_read_does_not_pause_the_device(api: H
     assert first["status"] == second["status"] == "unknown"
     assert "contraseña" not in second["message_es"] and "permiso" in second["message_es"], second
     assert "Qué hacer:" in second["message_es"], "revisión: el texto nuevo de la tabla no decía qué hacer"
+    assert EDIT_STEP in second["message_es"] and "ficha" not in second["message_es"], second
     assert mock.requests.count("GET /ISAPI/System/time") > sent, "la segunda lectura sí llega al equipo"
     assert not api.app.state.ops.auth_backoff.blocked(d["id"], PW)
 

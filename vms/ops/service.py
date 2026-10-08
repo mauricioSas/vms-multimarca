@@ -74,6 +74,8 @@ CLOCK_RECHECK_MIN_S = 60.0            # como mucho una lectura de hora por equip
 CLOCK_CONFIRM_S = 180.0               # hora que pone otro sistema (NTP…): margen para que la reciba antes de avisar
 CLOCK_RANK = {"ok": 0, "unknown": 0, "warning": 1, "critical": 2}   # para saber si una relectura EMPEORA la hora
 CLOCK_WRITE_DENIED_S = 1800.0         # «Poner en hora» no reintenta con un usuario guardado que el equipo rechazó así
+# dónde se cambian el usuario y la contraseña guardados (no hay ninguna pantalla llamada «ficha del equipo»)
+EDIT_DEVICE = "en «Equipos y monitores», pulsa «Editar» en la fila del equipo"
 MAINTENANCE_PERIOD_S = 3600.0
 EXPORT_RETENTION_DEFAULT_DAYS = 30
 EXPORT_RETENTION_KEY = "export_retention_days"
@@ -486,7 +488,7 @@ class OpsService:
                 return clockmod.failed_check(
                     dev.id, cam_id, f"No se pudo leer la hora: el usuario guardado {de} no tiene permiso para verla. "
                     f"Qué hacer: en la web {de} (apartado de usuarios), dale permiso para ver la configuración, o "
-                    "pon en la ficha del equipo otro usuario de solo lectura que sí pueda verla.")
+                    f"{EDIT_DEVICE} y pon otro usuario de solo lectura que sí pueda verla.")
             return clockmod.failed_check(dev.id, cam_id, f"No se pudo leer la hora: {exc.message}")
         except Exception:  # noqa: BLE001
             log.exception("Error leyendo la hora de %s", dev.id)
@@ -537,8 +539,8 @@ class OpsService:
         password = self.state.creds.get_device_password(dev.id)
         if not temp and self.auth_backoff.blocked(dev.id, password):
             raise refused(VmsError(f"{clockmod.cap_first(noun)} rechazó hace poco la contraseña guardada y no se "
-                                   "vuelve a probar para no bloquear el usuario. Qué hacer: corrige la contraseña en "
-                                   "la ficha del equipo o escribe aquí el usuario y la contraseña de administrador.",
+                                   "vuelve a probar para no bloquear el usuario. Qué hacer: corrige la contraseña ("
+                                   f"{EDIT_DEVICE}) o escribe aquí el usuario y la contraseña de administrador.",
                                    code="device_auth_failed", status=502))
         if not temp and self._stored_cannot_write(dev.id, password):
             # cada clic con ese usuario podía gastar un intento de contraseña del equipo (y un bloqueo corta también
@@ -698,7 +700,7 @@ class OpsService:
                 return VmsError(f"{cap} no ha aceptado el usuario o la contraseña de administrador. Qué hacer: "
                                 f"revísalos y vuelve a probar; tras varios intentos fallidos {noun} bloquea el usuario "
                                 "un rato.", code=code, status=502)
-            return VmsError(f"{cap} rechaza la contraseña guardada. Qué hacer: corrígela en la ficha del equipo o "
+            return VmsError(f"{cap} rechaza la contraseña guardada. Qué hacer: corrígela ({EDIT_DEVICE}) o "
                             "escribe aquí el usuario y la contraseña de administrador.", code=code, status=502)
         if code == "device_unreachable":
             return VmsError(f"No se ha podido poner en hora {noun} porque no responde. Qué hacer: comprueba que está "

@@ -50,6 +50,9 @@ def test_set_clock_from_the_status_page(browser: Any, tmp_path: Path) -> None:
         page.click(f"button[data-clock-set='{dev['id']}']")
         # la hora que se escribe es la del PC del programa, no la del navegador (puede ser otro ordenador)
         assert "la hora del PC donde está instalado el programa" in page.inner_text(".ops-modal")
+        # revisión final: el botón del diálogo decía «Poner en hora» y los errores, «pulsa otra vez «Poner en hora
+        # con este PC»», que no estaba en pantalla
+        assert page.inner_text(".ops-modal button.btn-primary").strip() == "Poner en hora con este PC"
         page.click(".ops-modal button.btn-primary")
         page.wait_for_selector(".ops-clock-result .form-error")
         assert "solo lectura" in page.inner_text(".ops-clock-result") and mock.time_puts, "lo intentó con el guardado"

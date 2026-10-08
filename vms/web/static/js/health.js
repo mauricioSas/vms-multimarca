@@ -240,7 +240,8 @@ function clockSetDialog(dev, body) {
           }
         }
       });
-    } }, "Poner en hora")));
+    // el mismo nombre que el botón de la fila: los errores dicen «pulsa otra vez «Poner en hora con este PC»»
+    } }, SET_LABEL)));
 }
 
 async function renderClock(body) {
