@@ -9,11 +9,11 @@ Operación, IA de verificación y onboarding dentro del backend. Lo arranca el `
 |---|---|
 | `service.py` | Tareas en segundo plano (salud, hora, vigilancia de cámaras caídas, huecos de grabación y disco, resumen del latido, mantenimiento) y operaciones de las rutas. Al arrancar crea la clave de evidencias y da por fallidas las exportaciones cortadas |
 | `host.py` | `OpsHost`: lo que B6 usa del backend, como Protocol (mypy no arrastra `vms.api` ni `vms.engine`) |
-| `drivers.py` | Lo que B6 pregunta al registro de drivers de B5: capacidades (`time_read`, `security_read`), si hay API (Ezviz/Reolink/RTSP manual no: ni se pide cliente) y la marca real de un equipo dado de alta como ONVIF |
+| `drivers.py` | Lo que B6 pregunta al registro de drivers de B5: capacidades (`time_read`, `time_write`, `security_read`), si hay API (Ezviz/Reolink/RTSP manual no: ni se pide cliente) y la marca real de un equipo dado de alta como ONVIF |
 | `health/imaging.py` | Salud 0-100 con OpenCV clásico frente a la referencia (mediana): negra, tapada, congelada (sin OSD), movida/girada con **puerta de inliers ≥ 15 %**, mira a otro sitio, desenfocada, degradada, IR atascado/débil, contraluz, color, ruido |
 | `health/tracker.py` | Histéresis (N comprobaciones seguidas para cambiar de estado) |
 | `health/references.py` | Referencias de día y noche y la imagen del último aviso (`<datos>/ops/references/`) |
-| `health/clock.py` | Desfase cámara↔PC (capacidad `time_read` de B5) y hora del PC (registro de W32Time + SNTP al mismo servidor que usa Windows; se desactiva con `PUT /api/clock/settings`) |
+| `health/clock.py` | Desfase cámara↔PC (capacidad `time_read` de B5) y hora del PC (registro de W32Time + SNTP al mismo servidor que usa Windows; se desactiva con `PUT /api/clock/settings`). Textos con causa y acción por separado: «no tiene la hora puesta» (1970/2000), «Poner en hora con este PC» y NTP solo si este PC sirve la hora. La escritura («Poner en hora con este PC», `time_write`) la hace `service.clock_set` cuando la pide un administrador |
 | `health/snapshot.py` | Instantánea para la salud; tras una contraseña rechazada no usa la API del equipo durante 30 min (ni hasta que cambie la contraseña) |
 | `health/forecast.py` | Días de grabación previstos con la tasa real y simulador |
 | `report.py`, `heartbeat.py` | Informe diario (puntuación **sostenida**: la peor que duró `hysteresis` comprobaciones seguidas), CSV y `payload.health` / `payload.evidence_key` del latido |

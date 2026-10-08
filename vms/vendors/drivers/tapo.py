@@ -13,7 +13,7 @@ SPEC = register(DriverSpec(
     brands=("Tapo",),
     kinds=("camera",),
     capabilities=frozenset({Capability.ONVIF, Capability.DISCOVERY_WSD, Capability.TIME_READ,
-                            Capability.SECURITY_READ}),
+                            Capability.TIME_WRITE, Capability.SECURITY_READ}),
     default_ports={"rtsp": 554, "onvif": 2020},
     auth=("digest-md5",),
     maturity="community",

@@ -1,4 +1,5 @@
-"""Capacidades de la interfaz que usa B6 (TIME_READ, SECURITY_READ) y «Corregir códec» con copia y deshacer."""
+"""Capacidades de la interfaz que usa B6 (TIME_READ, TIME_WRITE, SECURITY_READ) y «Corregir códec» con copia y
+deshacer."""
 from __future__ import annotations
 
 import json
@@ -14,7 +15,7 @@ from tools.mocks.dahua import DahuaChannel, DahuaMock
 from tools.mocks.hikvision import HikChannel, HikvisionMock
 from tools.mocks.onvif import OnvifMock
 from vms.core.errors import DeviceAuthFailed, DeviceUnsupported, NotFoundError, ValidationFailed
-from vms.core.interfaces import Capability, DeviceClockClient, DeviceSecurityClient
+from vms.core.interfaces import Capability, DeviceClockClient, DeviceClockWriter, DeviceSecurityClient
 from vms.vendors import client_for
 from vms.vendors.codec import CodecFixClient
 from vms.vendors.codecfix import CodecFixer
@@ -28,10 +29,13 @@ def test_capabilities_are_backed_by_the_client_protocols() -> None:
         try:
             client = client_for(dev, "x")
         except DeviceUnsupported:
-            assert not spec.capabilities & {Capability.TIME_READ, Capability.SECURITY_READ, Capability.API_CODEC_FIX}
+            assert not spec.capabilities & {Capability.TIME_READ, Capability.TIME_WRITE, Capability.SECURITY_READ,
+                                            Capability.API_CODEC_FIX}
             continue
         if Capability.TIME_READ in spec.capabilities:
             assert isinstance(client, DeviceClockClient), spec.id
+        if Capability.TIME_WRITE in spec.capabilities:
+            assert isinstance(client, DeviceClockWriter), spec.id
         if Capability.SECURITY_READ in spec.capabilities:
             assert isinstance(client, DeviceSecurityClient), spec.id
         if Capability.API_CODEC_FIX in spec.capabilities:
@@ -50,6 +54,8 @@ def test_clients_declare_what_they_implement() -> None:
             continue
         if isinstance(client, DeviceClockClient) and Capability.TIME_READ not in spec.capabilities:
             missing.append(f"{spec.id}: time_read")
+        if isinstance(client, DeviceClockWriter) and Capability.TIME_WRITE not in spec.capabilities:
+            missing.append(f"{spec.id}: time_write")
         if isinstance(client, DeviceSecurityClient) and Capability.SECURITY_READ not in spec.capabilities:
             missing.append(f"{spec.id}: security_read")
         if isinstance(client, CodecFixClient) and Capability.API_CODEC_FIX not in spec.capabilities:

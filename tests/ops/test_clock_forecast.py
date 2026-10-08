@@ -60,10 +60,11 @@ def test_thresholds() -> None:
 
 
 class _SntpServer:
-    """Servidor NTP de prueba en UDP local: responde con su reloj desplazado `offset` segundos."""
+    """Servidor NTP de prueba en UDP local: responde con su reloj desplazado `offset` segundos (estrato 2; con
+    `leap=3` o `stratum=0`, como un servidor que dice que él mismo no está en hora)."""
 
-    def __init__(self, offset: float) -> None:
-        self.offset = offset
+    def __init__(self, offset: float, *, leap: int = 0, stratum: int = 2) -> None:
+        self.offset, self.leap, self.stratum = offset, leap, stratum
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
@@ -78,7 +79,8 @@ class _SntpServer:
             return
         now = time.time() + self.offset + clk.NTP_EPOCH_OFFSET
         pkt = bytearray(48)
-        pkt[0] = 0x24
+        pkt[0] = (self.leap << 6) | 0x24   # VN=4, modo=4 (servidor)
+        pkt[1] = self.stratum
         struct.pack_into("!II", pkt, 24, *struct.unpack_from("!II", data, 40))
         for off in (32, 40):
             struct.pack_into("!II", pkt, off, int(now), int((now % 1) * 2**32))
@@ -90,6 +92,22 @@ def test_pc_clock_with_sntp_server() -> None:
     srv = _SntpServer(offset=-40.0)   # el servidor va 40 s por detrás → el PC va 40 s adelantado
     skew, rtt = clk.sntp_offset("127.0.0.1", port=srv.port)
     assert skew == pytest.approx(40.0, abs=0.5) and rtt >= 0
+
+
+@pytest.mark.parametrize(("leap", "stratum"), [(3, 1), (0, 0)])
+def test_unsynced_time_server_is_not_a_reference(monkeypatch: pytest.MonkeyPatch, leap: int, stratum: int) -> None:
+    """Un W32Time recién arrancado contesta con LI=3 («no sincronizado», visto en el PC del usuario) y un «beso de
+    la muerte» con estrato 0: su hora no vale para decir cuánto va desajustado el PC (RFC 4330)."""
+    srv = _SntpServer(offset=-40.0, leap=leap, stratum=stratum)
+    with pytest.raises(clk.UnsyncedServer):
+        clk.sntp_offset("127.0.0.1", port=srv.port)
+    srv2 = _SntpServer(offset=-40.0, leap=leap, stratum=stratum)
+    monkeypatch.setattr(clk, "windows_time_config", lambda: ("ntp", "127.0.0.1"))
+    real = clk.sntp_offset
+    monkeypatch.setattr(clk, "sntp_offset", lambda server: real(server, port=srv2.port))
+    chk = clk.pc_check(2.0, 30.0)
+    assert chk.status == "unknown" and chk.skew_s is None and "no está en hora" in chk.message_es
+    assert chk.message_es.count("Qué hacer:") == 1 and "elige otro servidor" in chk.message_es
 
 
 def test_pc_clock_without_server_is_unknown_not_invented(monkeypatch: pytest.MonkeyPatch) -> None:

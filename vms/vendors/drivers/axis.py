@@ -13,7 +13,7 @@ SPEC = register(DriverSpec(
     brands=("Axis",),
     kinds=("camera", "nvr"),
     capabilities=frozenset({Capability.ONVIF, Capability.ONVIF_MEDIA2, Capability.DISCOVERY_WSD,
-                            Capability.TIME_READ, Capability.SECURITY_READ}),
+                            Capability.TIME_READ, Capability.TIME_WRITE, Capability.SECURITY_READ}),
     default_ports={"http": 80, "rtsp": 554, "onvif": 80},
     auth=("digest-sha256", "digest-md5"),
     maturity="community",

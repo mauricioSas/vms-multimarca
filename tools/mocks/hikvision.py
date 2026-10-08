@@ -8,6 +8,10 @@ Endpoints imitados (respuestas XML con el espacio de nombres real ver20):
   GET/PUT /ISAPI/Streaming/channels/{id}                    (el PUT registra el cambio: «Corregir códec»)
   GET /ISAPI/Streaming/channels/{id}/picture                (JPEG sintético)
   GET /ISAPI/System/time[/ntpServers]                       (hora con desfase configurable)
+  PUT /ISAPI/System/time                                    («Poner en hora»: cambia el reloj y guarda el cuerpo;
+                                                             403 `lowPrivilege` si el usuario no está en `write_users`,
+                                                             o 401 con reto con `write_denied_status=401`, que
+                                                             cuenta como intento fallido)
   GET /ISAPI/System/Network/{telnetd,ssh,UPnP,EZVIZ}, /ISAPI/Security/adminAccesses
 Cualquier otra ruta → 404 con <ResponseStatus> como el equipo real.
 
@@ -30,6 +34,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
+
+from vms.vendors.clock import posix_zone
 
 from .http_auth import AuthMode, HttpAuthChecker
 
@@ -93,6 +99,11 @@ class HikvisionMock:
     time_mode: str = "NTP"
     tz_hours: float | None = None   # zona del equipo; None = la del PC (misma tienda)
     ntp_server: str = "pool.ntp.org"
+    extra_users: dict[str, str] = field(default_factory=dict)   # más usuarios (p. ej. «admin» además del de lectura)
+    write_users: set[str] | None = None   # quién puede cambiar ajustes; None = todos (403 `lowPrivilege` si no)
+    write_denied_status: int = 403        # 401: a quien no está en `write_users` le contesta 401 con reto
+    time_puts: list[str] = field(default_factory=list)          # cuerpos recibidos en PUT /ISAPI/System/time
+    current_user: str = ""
     security: dict[str, bool] = field(default_factory=lambda: {
         "telnetd": False, "ssh": False, "UPnP": True, "EZVIZ": True, "https": False, "sdk": True})
     requests: list[str] = field(default_factory=list)
@@ -113,7 +124,8 @@ class HikvisionMock:
                 self.analog = [HikChannel(f"Analógica {i}", ip="", sub_size=(704, 576)) for i in range(1, 5)]
             if not self.ip_start:
                 self.ip_start = 33
-        self.auth = HttpAuthChecker(self.username, self.password, realm=f"{self.model}", mode=self.auth_mode)
+        self.auth = HttpAuthChecker(self.username, self.password, realm=f"{self.model}", mode=self.auth_mode,
+                                    extra_users=self.extra_users)
         inner = Starlette(routes=[
             Route("/ISAPI/System/deviceInfo", self.device_info),
             Route("/ISAPI/ContentMgmt/InputProxy/channels", self.proxy_channels),
@@ -122,7 +134,7 @@ class HikvisionMock:
             Route("/ISAPI/Streaming/channels", self.streaming_list),
             Route("/ISAPI/Streaming/channels/{sid:int}", self.streaming_one, methods=["GET", "PUT"]),
             Route("/ISAPI/Streaming/channels/{sid:int}/picture", self.picture),
-            Route("/ISAPI/System/time", self.time),
+            Route("/ISAPI/System/time", self.time, methods=["GET", "PUT"]),
             Route("/ISAPI/System/time/ntpServers", self.ntp_servers),
             Route("/ISAPI/System/Network/{what}", self.network_flag),
             Route("/ISAPI/Security/adminAccesses", self.admin_accesses),
@@ -265,10 +277,20 @@ class HikvisionMock:
             return Response(_status(3, "deviceError", "Device Error", request.url.path), 500, media_type=XML)
         return Response(SNAPSHOT, media_type="image/jpeg")
 
+    def _local(self, instant: datetime) -> datetime:
+        """Zona del equipo: la del PC (misma tienda) salvo que la prueba fije otra con `tz_hours`."""
+        if self.tz_hours is not None:
+            return instant.astimezone(timezone(timedelta(hours=self.tz_hours)))
+        try:
+            return instant.astimezone()
+        except (OSError, OverflowError, ValueError):   # Windows: localtime() falla con instantes antes de 1970
+            return instant.astimezone(datetime.now().astimezone().tzinfo)
+
     async def time(self, request: Request) -> Response:
+        if request.method == "PUT":
+            return await self._set_time(request)
         now = datetime.now(timezone.utc) + timedelta(seconds=self.clock_offset_s)
-        # zona del equipo: la del PC (misma tienda) salvo que la prueba fije otra con `tz_hours`
-        local = now.astimezone() if self.tz_hours is None else now.astimezone(timezone(timedelta(hours=self.tz_hours)))
+        local = self._local(now)
         off = local.utcoffset() or timedelta(0)
         minutes = int(off.total_seconds() // 60)
         posix = f"CST{'-' if minutes >= 0 else '+'}{abs(minutes) // 60}:{abs(minutes) % 60:02d}:00"  # POSIX: signo al revés
@@ -276,6 +298,41 @@ class HikvisionMock:
                 f"<timeMode>{self.time_mode}</timeMode>\n<localTime>{local.isoformat(timespec='seconds')}</localTime>\n"
                 f"<timeZone>{posix}</timeZone>\n</Time>\n")
         return Response(body, media_type=XML)
+
+    async def _set_time(self, request: Request) -> Response:
+        """PUT /ISAPI/System/time: el reloj pasa a la `localTime` recibida (con su desfase o, sin él, en la zona
+        `timeZone` del cuerpo); `timeMode` y `timeZone` quedan como digan. Sin `localTime` válida → 400."""
+        path = request.url.path
+        body = (await request.body()).decode("utf-8", errors="replace")
+        self.time_puts.append(body)
+        if self.write_users is not None and self.current_user not in self.write_users:
+            if self.write_denied_status == 401:
+                # firmware que lo contesta como si la contraseña fuera mala, y lo cuenta como intento fallido (el
+                # peor caso: con `lock_after` intentos bloquea el usuario, también para el vídeo)
+                self.auth.rejected_credentials += 1
+                if self.lock_after and self.auth.rejected_credentials >= self.lock_after:
+                    self.locked = True
+                return self.auth.challenge(self.auth_failed_body(path), XML)
+            return Response(_status(4, "lowPrivilege", "Invalid Operation", path), 403, media_type=XML)
+        lt = re.search(r"<localTime>([^<]+)</localTime>", body)
+        tz = re.search(r"<timeZone>([^<]*)</timeZone>", body)
+        mode = re.search(r"<timeMode>([^<]*)</timeMode>", body)
+        zone = posix_zone(tz.group(1)) if tz else None
+        try:
+            local = datetime.fromisoformat(lt.group(1).strip()) if lt else None
+        except ValueError:
+            local = None
+        if local is not None and local.tzinfo is None:
+            off = zone.offset_at_local(local) if zone is not None else None
+            local = local.replace(tzinfo=timezone(off)) if off is not None else None
+        if local is None:
+            return Response(_status(6, "badXmlContent", "Invalid XML Content", path), 400, media_type=XML)
+        self.clock_offset_s = (local - datetime.now(timezone.utc)).total_seconds()
+        if mode:
+            self.time_mode = mode.group(1)
+        if zone is not None:
+            self.tz_hours = zone.std.total_seconds() / 3600
+        return Response(_status(1, "ok", "OK", path), media_type=XML)
 
     async def ntp_servers(self, request: Request) -> Response:
         body = (f'<?xml version="1.0" encoding="UTF-8"?>\n<NTPServerList version="2.0" xmlns="{NS}">\n<NTPServer>\n'
@@ -342,4 +399,5 @@ class _AuthMiddleware:
             resp = self.mock.auth.challenge(body, XML)
             await resp(scope, receive, send)
             return
+        self.mock.current_user = self.mock.auth.last_user if has_auth else ""
         await self.inner(scope, receive, send)

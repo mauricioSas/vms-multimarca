@@ -18,7 +18,7 @@ documentación pública» o «Experimental») junto a los avisos y pasos previos
 | Flujo principal: H.264 o H.265 | se graba tal cual; H.265 ahorra disco (la reproducción descargada funciona; en el navegador depende del equipo) |
 | Desactivar «H.264+ / H.265+ / Smart Codec» | generan cambios de GOP que dan imagen gris o cortes en WebRTC |
 | GOP (intervalo de I-frame) ≤ 2× fps (p. ej. 25 o 50 con 25 fps) | la vista en vivo arranca antes |
-| Hora por NTP y zona horaria correcta | las grabaciones y conteos se cuadran por hora |
+| Hora y zona horaria correctas: NTP si la red tiene un servidor de hora; si no, hora manual y «Poner en hora con este PC» (Estado del sistema > Hora de los equipos; lo pulsa un administrador del programa, pide el administrador del equipo y no lo guarda) | las grabaciones llevan la hora del PC, pero la fecha que sale en la imagen es la del equipo y tiene que cuadrar para que el vídeo valga como prueba |
 | ONVIF activado (si el alta es por ONVIF o para el descubrimiento) | — |
 | Firmware actualizado | corrige fallos de RTSP y de seguridad |
 

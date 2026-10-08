@@ -21,12 +21,20 @@ AuthMode = Literal["digest", "digest-sha256", "digest-both", "basic", "none"]
 
 
 class HttpAuthChecker:
-    def __init__(self, username: str, password: str, realm: str, mode: AuthMode = "digest") -> None:
+    def __init__(self, username: str, password: str, realm: str, mode: AuthMode = "digest", *,
+                 extra_users: dict[str, str] | None = None) -> None:
         self.username, self.password, self.realm, self.mode = username, password, realm, mode
+        self.extra_users = dict(extra_users or {})   # más usuarios del equipo (p. ej. «admin» además del de lectura)
+        self.last_user = ""            # usuario de la última petición aceptada
         self._nonces: set[str] = set()
         self.failures = 0              # peticiones rechazadas (también el primer reto sin credenciales)
         self.credentialed = 0          # peticiones que trajeron Authorization
         self.rejected_credentials = 0  # de esas, las rechazadas (contraseña mala)
+
+    def _password_of(self, user: str) -> str | None:
+        if hmac.compare_digest(user, self.username):
+            return self.password
+        return self.extra_users.get(user)
 
     def challenge(self, body: str = "", media_type: str = "text/plain", status: int = 401) -> Response:
         resp = Response(body, status_code=status, media_type=media_type)
@@ -49,16 +57,23 @@ class HttpAuthChecker:
             self.credentialed += 1
         scheme, _, value = header.partition(" ")
         ok = False
+        user = ""
         if self.mode == "basic" and scheme.lower() == "basic":
             try:
                 user, _, pw = base64.b64decode(value).decode("utf-8").partition(":")
-                ok = hmac.compare_digest(user, self.username) and hmac.compare_digest(pw, self.password)
+                expected = self._password_of(user)
+                ok = expected is not None and hmac.compare_digest(pw, expected)
             except (ValueError, UnicodeDecodeError):
                 ok = False
         elif self.mode.startswith("digest") and scheme.lower() == "digest":
-            ok = verify_digest(header, request.method, self.username, self.password, self.realm, self._nonces)
+            for user, pw in ((self.username, self.password), *self.extra_users.items()):
+                ok = verify_digest(header, request.method, user, pw, self.realm, self._nonces)
+                if ok:
+                    break
             if ok and self.mode == "digest-sha256" and not re.search(r'algorithm="?SHA-256', header, re.IGNORECASE):
                 ok = False
+        if ok:
+            self.last_user = user
         if not ok:
             self.failures += 1
             if header:

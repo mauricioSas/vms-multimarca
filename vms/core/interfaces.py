@@ -143,6 +143,22 @@ class DeviceClockClient(Protocol):
     async def device_time(self) -> DeviceTime: ...
 
 
+@runtime_checkable
+class DeviceClockWriter(Protocol):
+    """Capacidad opcional `TIME_WRITE`: «Poner en hora con este PC» (CONTRATO §18.3), una sola escritura que pide
+    la persona. Escribe la hora de este PC en el reloj del equipo **sin cambiar su zona horaria** y devuelve la hora
+    leída de nuevo para comprobarla. Solo si el equipo tiene la hora puesta a mano: si la pone otro sistema (NTP,
+    HikCentral/iVMS por SDK, el grabador…) se niega con `DeviceClockManaged` sin escribir nada.
+
+    `admin_username`/`admin_password`: credenciales de administrador TEMPORALES (no se guardan ni se registran;
+    solo Digest, nunca Basic). Vacías = el usuario guardado. Si ese usuario no tiene permiso para cambiar ajustes,
+    lanza `DeviceWriteDenied` (no es una contraseña mala: no cuenta para el bloqueo). Si el equipo acepta la hora
+    pero falla la lectura de comprobación, lanza `DeviceTimeUnverified` (código `clock_set_unverified`): la hora sí
+    se escribió."""
+
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime: ...
+
+
 class DeviceSecuritySettings(BaseModel):
     """Ajustes de seguridad leídos con credenciales de administrador TEMPORALES (CONTRATO §18.12).
 
@@ -180,6 +196,7 @@ class Capability(StrEnum):
     DISCOVERY_SADP = "discovery_sadp"
     DISCOVERY_DHIP = "discovery_dhip"
     TIME_READ = "time_read"            # v2 (B6): hora y modo NTP del equipo
+    TIME_WRITE = "time_write"          # v2: «Poner en hora con este PC» (escritura única que pide la persona)
     SECURITY_READ = "security_read"    # v2 (B6): ajustes de seguridad con credenciales de administrador temporales
     RTSPS = "rtsps"                    # v2.1
     MJPEG_HTTP = "mjpeg_http"          # v2.1

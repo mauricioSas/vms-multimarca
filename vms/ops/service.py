@@ -5,7 +5,11 @@ así no se toca `vms/api/app.py`) y queda en `app.state.ops`. Tareas:
 
 - **salud de imagen**: una comprobación por cámara cada `settings.health.check_interval_s` (180 s),
   repartidas en el intervalo, con `asyncio.to_thread` (nunca decodifica de forma continua);
-- **hora**: cada hora, desfase de cada equipo (capacidad `time_read`) y del PC;
+- **hora**: cada hora, desfase de cada equipo (capacidad `time_read`) y del PC; además, en cuanto una cámara
+  vuelve a dar vídeo tras estar caída, se mira la hora de su equipo (las que no tienen pila de reloj vuelven
+  con la fecha de fábrica tras un corte de luz); esa relectura solo avisa si la hora está peor que en la última
+  medida, así una cámara que pierde el vídeo a ratos no repite el aviso. La hora solo se ESCRIBE cuando un
+  administrador pulsa «Poner en hora con este PC» (`clock_set`, capacidad `time_write`): nunca sola;
 - **vigilancia**: cada 30 s, cámaras sin vídeo (avisos agrupados) y, cada 10 min, el resumen del informe
   de salud para el latido (`ops/health-summary.json`) y la previsión de grabación;
 - **mantenimiento**: cada hora, caducidad de tramos protegidos (y reintento de borrar copias que no se
@@ -18,6 +22,7 @@ da por fallidas las exportaciones que quedaron a medias (el proceso se cortó) b
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import secrets
 import time
@@ -28,9 +33,10 @@ from typing import Any, Literal
 
 from vms import __version__
 from vms.core.audit import audit
-from vms.core.errors import DeviceAuthFailed, EngineUnavailable, NotFoundError, VmsError
-from vms.core.interfaces import DeviceClockClient
+from vms.core.errors import ConflictError, DeviceAuthFailed, EngineUnavailable, NotFoundError, VmsError
+from vms.core.interfaces import DeviceClockClient, DeviceClockWriter, DeviceTime
 from vms.core.models import Camera, Device
+from vms.core.rtsp import redact
 
 from . import drivers, netroute
 from .diagnose import DiagnoseInput, Diagnoser, llm_rewriter_from_settings
@@ -45,15 +51,15 @@ from .health.references import ReferenceStore
 from .health.snapshot import AuthBackoff, grab
 from .health.tracker import HealthTracker, Transition
 from .host import EVENT_BOOKMARK, EVENT_EVIDENCE, EVENT_HEALTH, EVENT_NOTICE, OpsHost
-from .models import (CameraHealth, ClockCheck, HealthCause, HealthMetrics, DiagnosisResult, Severity, EvidenceExport,
-                     EvidenceExportRequest, HealthCheck, HealthReport, RetentionForecast, SecurityAuditReport,
-                     TimelineEvent)
+from .models import (CameraHealth, ClockCheck, ClockSetResult, HealthCause, HealthMetrics, DiagnosisResult, Severity,
+                     EvidenceExport, EvidenceExportRequest, HealthCheck, HealthReport, RetentionForecast,
+                     SecurityAuditReport, TimelineEvent)
 from .notify import Alert, Notifier
 from .onboarding import OnboardingStore
 from .report import CameraInput, build, day_bounds, gaps, read_smart, site_tz, write_summary
 from .security.advisories import load_table
 from .security.audit import AuditDeps, run_audit
-from .drivers import TIME_READ
+from .drivers import TIME_READ, TIME_WRITE
 from .store import OpsStore
 
 log = logging.getLogger("vms.ops")
@@ -64,6 +70,10 @@ CAMERA_DOWN_POLLS = 2                 # 2 sondeos de 30 s sin vídeo = aviso
 MONITOR_PERIOD_S = 30.0
 SUMMARY_PERIOD_S = 600.0
 CLOCK_PERIOD_S = 3600.0
+CLOCK_RECHECK_MIN_S = 60.0            # como mucho una lectura de hora por equipo y minuto al volver el vídeo
+CLOCK_CONFIRM_S = 180.0               # hora que pone otro sistema (NTP…): margen para que la reciba antes de avisar
+CLOCK_RANK = {"ok": 0, "unknown": 0, "warning": 1, "critical": 2}   # para saber si una relectura EMPEORA la hora
+CLOCK_WRITE_DENIED_S = 1800.0         # «Poner en hora» no reintenta con un usuario guardado que el equipo rechazó así
 MAINTENANCE_PERIOD_S = 3600.0
 EXPORT_RETENTION_DEFAULT_DAYS = 30
 EXPORT_RETENTION_KEY = "export_retention_days"
@@ -75,6 +85,17 @@ RECOVERY_KINDS = {"camera_down": "camera_up", "tamper": "tamper_cleared", "recor
 
 def _utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _fingerprint(password: str) -> str:
+    """Huella de una contraseña para saber si ha cambiado (nunca se guarda la contraseña)."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def _noun(dev: Device) -> str:
+    """Cómo se nombra el equipo en los textos de hora: «la cámara», «el grabador» o «el equipo»."""
+    return "la cámara" if dev.kind == "camera" else "el grabador" if dev.kind in ("nvr", "dvr", "xvr") else \
+        "el equipo"
 
 
 class OpsService:
@@ -118,6 +139,13 @@ class OpsService:
         self._background: set[asyncio.Task[Any]] = set()
         self._key: EvidenceKey | None = None
         self._check_locks: dict[str, asyncio.Lock] = {}
+        self._clock_set_locks: dict[str, asyncio.Lock] = {}
+        self._clock_rechecked: dict[str, float] = {}             # equipo → monotonic de la última relectura
+        self._clock_rechecking: set[str] = set()                 # equipos con una relectura en curso
+        self._clock_first_pending = False   # arrancado y sin la primera comprobación horaria (que lee todos los equipos)
+        # equipo → (huella de la contraseña guardada, hasta): su usuario no puede poner la hora y el equipo lo
+        # rechazó como a una contraseña mala (401, NotAuthorized), así que pudo contarlo como intento fallido
+        self._clock_write_denied: dict[str, tuple[str, float]] = {}
         self.auth_backoff = AuthBackoff()
 
     # ================================================================== ciclo de vida
@@ -129,6 +157,7 @@ class OpsService:
             log.exception("No se pudo preparar la clave de firma de evidencias")
         log.info("Operación: revisando exportaciones cortadas")
         await asyncio.to_thread(self.recover_exports)
+        self._clock_first_pending = True
         loop = asyncio.get_running_loop()
         for name, coro in (("ops-health", self._health_loop()), ("ops-clock", self._clock_loop()),
                            ("ops-monitor", self._monitor_loop()), ("ops-maintenance", self._maintenance_loop())):
@@ -356,19 +385,73 @@ class OpsService:
             if not dev.enabled:
                 continue
             chk = await self._device_clock(dev, hs.clock_warn_s, hs.clock_critical_s)
-            await asyncio.to_thread(self.store.add_clock_check, chk)
+            await self._record_device_clock(dev, chk)
             out.append(chk)
-            if chk.status in ("warning", "critical"):
-                now = datetime.now(timezone.utc)
-                for cam in cfg.cameras_of(dev.id):
-                    self.store.add_timeline_event(TimelineEvent(camera_id=cam.id, layer="clock", start=now,
-                                                                severity=chk.status,
-                                                                title_es=chk.message_es[:200]))
-                if chk.status == "critical":
-                    await self.notifier.emit(Alert(kind="clock_skew", severity="critical",
-                                                   title_es=f"Hora desajustada: {dev.name}",
-                                                   details={"skew_s": chk.skew_s, "time_mode": chk.time_mode}))
         return pc, out
+
+    async def _record_device_clock(self, dev: Device, chk: ClockCheck, *, notify: bool = True) -> None:
+        """Guarda la medida y, si está mal, la deja en la línea de tiempo de sus cámaras (y avisa si es grave).
+        `notify=False`: solo se guarda (una relectura que no empeora lo que ya se sabía)."""
+        await asyncio.to_thread(self.store.add_clock_check, chk)
+        if notify and chk.status in ("warning", "critical"):
+            now = datetime.now(timezone.utc)
+            for cam in self.state.config().cameras_of(dev.id):
+                self.store.add_timeline_event(TimelineEvent(camera_id=cam.id, layer="clock", start=now,
+                                                            severity=chk.status, title_es=chk.message_es[:200]))
+            if chk.status == "critical":
+                await self.notifier.emit(Alert(kind="clock_skew", severity="critical",
+                                               title_es=f"Hora desajustada: {dev.name}",
+                                               details={"skew_s": chk.skew_s, "time_mode": chk.time_mode}))
+
+    def _recheck_clock_soon(self, camera_id: str) -> None:
+        """Una cámara vuelve a dar vídeo: si se quedó sin corriente y no tiene pila de reloj, vuelve con la fecha de
+        fábrica (01-01-1970) y hasta la comprobación horaria la imagen saldría con esa fecha sin que nadie lo sepa.
+        Se lee la hora de su equipo en seguida (solo lectura: el programa nunca la escribe solo).
+
+        Al arrancar no: la vigilancia ve las cámaras caídas mientras el motor las conecta y las ve volver justo cuando
+        llega la primera comprobación horaria; eran dos lecturas seguidas de cada equipo (y dos avisos graves y dos
+        eventos con la hora mal). Esa primera comprobación ya lee todos los equipos."""
+        if self._clock_first_pending:
+            return
+        cfg = self.state.config()
+        cam = cfg.camera(camera_id)
+        dev = cfg.device(cam.device_id) if cam is not None else None
+        if dev is None or not dev.enabled:
+            return
+        now = time.monotonic()
+        if dev.id in self._clock_rechecking or \
+                now - self._clock_rechecked.get(dev.id, -CLOCK_RECHECK_MIN_S) < CLOCK_RECHECK_MIN_S:
+            return
+        self._clock_rechecked[dev.id] = now
+        self._clock_rechecking.add(dev.id)
+        self._spawn(self._recheck_clock(dev), f"ops-clock-recheck-{dev.id}")
+
+    async def _recheck_clock(self, dev: Device) -> None:
+        """Avisa (línea de tiempo y aviso `clock_skew`) solo si la hora está PEOR que en la última medida guardada.
+        Una cámara que pierde el vídeo a ratos con la hora ya mal daba un aviso grave en cada vuelta, y los graves se
+        saltan las horas de silencio; de esa ya avisa la comprobación de cada hora. Aquí solo se guarda la medida.
+
+        Si la hora la pone otro sistema (NTP, HikCentral, el grabador…), tras un corte de luz puede tardar unos minutos
+        en recibirla: antes de avisar se vuelve a leer pasados `CLOCK_CONFIRM_S`. Una lectura fallida no se guarda
+        (no dice nada nuevo; el equipo acaba de volver)."""
+        try:
+            hs = self.state.config().settings.health
+            chk = await self._device_clock(dev, hs.clock_warn_s, hs.clock_critical_s)
+            if self._clock_worse(dev, chk) and chk.time_mode != "manual":
+                await asyncio.sleep(CLOCK_CONFIRM_S)
+                chk = await self._device_clock(dev, hs.clock_warn_s, hs.clock_critical_s)
+            if chk.status == "unknown":
+                log.info("Sin lectura de la hora de %s al volver el vídeo: %s", dev.id, chk.message_es)
+                return
+            await self._record_device_clock(dev, chk, notify=self._clock_worse(dev, chk))
+        except Exception:  # noqa: BLE001 - una relectura fallida no para la vigilancia
+            log.exception("Error releyendo la hora de %s al volver el vídeo", dev.id)
+        finally:
+            self._clock_rechecking.discard(dev.id)
+
+    def _clock_worse(self, dev: Device, chk: ClockCheck) -> bool:
+        prev = self.store.latest_clock_checks().get(dev.id)
+        return CLOCK_RANK.get(chk.status, 0) > (CLOCK_RANK.get(prev.status, 0) if prev is not None else 0)
 
     async def _device_clock(self, dev: Device, warn: float, critical: float) -> ClockCheck:
         """Hora de un equipo. Nunca lanza: un equipo sin API, con otra marca o con la contraseña mala da un
@@ -391,11 +474,19 @@ class OpsService:
             dt = await client.device_time()
             if dt.credentials_rejected:
                 self.auth_backoff.block(dev.id, password)   # la hora vale, pero no se vuelve a gastar un intento
-            return clockmod.device_check(dev.id, cam_id, dt, warn, critical)
+            return clockmod.device_check(dev.id, cam_id, dt, warn, critical, noun=_noun(dev),
+                                         can_set=TIME_WRITE in drivers.capabilities(dev.vendor))
         except DeviceAuthFailed as exc:
             self.auth_backoff.block(dev.id, password)
             return clockmod.failed_check(dev.id, cam_id, f"No se pudo leer la hora: {exc.message}")
         except VmsError as exc:
+            if exc.details.get("low_privilege"):
+                # ISAPI `lowPrivilege` al LEER: el usuario entra, pero no puede ver ni la hora (usuario muy limitado)
+                de = clockmod.de_noun(_noun(dev))
+                return clockmod.failed_check(
+                    dev.id, cam_id, f"No se pudo leer la hora: el usuario guardado {de} no tiene permiso para verla. "
+                    f"Qué hacer: en la web {de} (apartado de usuarios), dale permiso para ver la configuración, o "
+                    "pon en la ficha del equipo otro usuario de solo lectura que sí pueda verla.")
             return clockmod.failed_check(dev.id, cam_id, f"No se pudo leer la hora: {exc.message}")
         except Exception:  # noqa: BLE001
             log.exception("Error leyendo la hora de %s", dev.id)
@@ -407,6 +498,220 @@ class OpsService:
                 except Exception:  # noqa: BLE001
                     log.debug("Error cerrando el cliente", exc_info=True)
 
+    async def clock_set(self, device_id: str, user: str, ip: str, *, admin_username: str = "",
+                        admin_password: str = "") -> ClockSetResult:
+        """«Poner en hora con este PC» (CONTRATO §18.3): UNA escritura de la hora de este PC en el reloj del equipo,
+        sin cambiar su zona horaria, comprobada leyéndola de nuevo. Solo cuando lo pide un administrador; queda en
+        audit.log (`camera_clock_set`) con el resultado, nunca con contraseñas.
+
+        No es «Corregir códec»: no hay nada que deshacer (solo cambia la hora, y solo si el equipo la tiene puesta a
+        mano; si la pone otro sistema —NTP, HikCentral/iVMS, el grabador— se niega sin escribir). Credenciales
+        temporales de administrador opcionales: se usan una vez y no se guardan. Un usuario de solo lectura
+        (lo recomendado) da `device_write_denied` y NO cuenta como contraseña mala (no bloquea las lecturas).
+        Si el equipo acepta la hora pero falla la lectura de comprobación, no es un error: `ok=False` con «se ha
+        escrito, pero no se ha podido comprobar» (`written_unverified` en audit.log)."""
+        cfg = self.state.config()
+        dev = cfg.device(device_id)
+        if dev is None:
+            raise NotFoundError("El equipo no existe")
+        hs = cfg.settings.health
+        cams = cfg.cameras_of(dev.id)
+        cam_id = cams[0].id if len(cams) == 1 else None
+        noun = _noun(dev)
+        de, pon = clockmod.de_noun(noun), clockmod.pon_en_hora(noun)     # «ponla» (la cámara) / «ponlo» (el equipo)
+        temp = bool(admin_username and admin_password)
+        prev = self.store.latest_clock_checks().get(dev.id)
+
+        def done(result: str, skew_after: float | None = None) -> None:
+            audit("camera_clock_set", user=user, ip=ip, device_id=dev.id, device=dev.name, result=result,
+                  skew_before_s=prev.skew_s if prev else None, skew_after_s=skew_after, admin_credentials_used=temp)
+
+        def refused(err: VmsError) -> VmsError:
+            done(err.code)          # también las negativas sin hablar con el equipo quedan en audit.log
+            return err
+
+        if TIME_WRITE not in drivers.capabilities(dev.vendor) or not drivers.has_api(dev.vendor):
+            raise refused(VmsError(f"Los equipos «{drivers.driver_name(dev.vendor)}» no permiten poner la hora desde "
+                                   f"el programa. Qué hacer: pon en hora {noun} desde su web (apartado de fecha y "
+                                   "hora).", code="clock_set_unsupported", status=422))
+        password = self.state.creds.get_device_password(dev.id)
+        if not temp and self.auth_backoff.blocked(dev.id, password):
+            raise refused(VmsError(f"{clockmod.cap_first(noun)} rechazó hace poco la contraseña guardada y no se "
+                                   "vuelve a probar para no bloquear el usuario. Qué hacer: corrige la contraseña en "
+                                   "la ficha del equipo o escribe aquí el usuario y la contraseña de administrador.",
+                                   code="device_auth_failed", status=502))
+        if not temp and self._stored_cannot_write(dev.id, password):
+            # cada clic con ese usuario podía gastar un intento de contraseña del equipo (y un bloqueo corta también
+            # su vídeo): mientras la contraseña guardada no cambie, solo con el administrador temporal
+            raise refused(self._clock_set_error(VmsError("", code="device_write_denied", details={"remembered": True}),
+                                                noun, temp))
+        lock = self._clock_set_locks.setdefault(dev.id, asyncio.Lock())
+        if lock.locked():
+            raise refused(ConflictError(f"Ya se está poniendo en hora {noun}. Qué hacer: espera unos segundos."))
+        async with lock:
+            client: Any = None
+            dt: DeviceTime | None = None
+            unverified: VmsError | None = None
+            try:
+                client = self.state.client_factory(dev, password)
+                writer = client if isinstance(client, DeviceClockWriter) else None
+                if writer is None:
+                    raise VmsError(f"Esta versión aún no sabe poner en hora {noun}. Qué hacer: {pon} desde su web "
+                                   "(apartado de fecha y hora).", code="clock_set_unsupported", status=422)
+                dt = await (writer.set_device_time(admin_username, admin_password) if temp
+                            else writer.set_device_time())
+            except VmsError as exc:
+                if exc.code != "clock_set_unverified":
+                    if exc.code in ("device_auth_failed", "device_locked") and not temp:
+                        self.auth_backoff.block(dev.id, password)   # la contraseña guardada: como en la lectura
+                    if exc.code == "device_write_denied" and not temp and exc.details.get("auth_rejection"):
+                        self._clock_write_denied[dev.id] = (_fingerprint(password),
+                                                            time.monotonic() + CLOCK_WRITE_DENIED_S)
+                    done(exc.code)
+                    raise self._clock_set_error(exc, noun, temp) from exc
+                unverified = exc         # la hora se escribió: falló solo la lectura de comprobación
+            except Exception as exc:  # noqa: BLE001 - se explica en vez de dar «Error interno»
+                log.exception("Error poniendo en hora %s", dev.id)
+                done("error")
+                raise VmsError(f"No se pudo poner en hora {noun}. Qué hacer: vuelve a probar en un momento; si se "
+                               f"repite, {pon} desde la web {de} (apartado de fecha y hora).",
+                               code="clock_set_failed", status=502) from exc
+            finally:
+                if client is not None:
+                    try:
+                        await client.aclose()
+                    except Exception:  # noqa: BLE001
+                        log.debug("Error cerrando el cliente", exc_info=True)
+        now = datetime.now(timezone.utc)
+        if dt is None:
+            # antes se decía que no se había podido poner en hora (y audit.log anotaba el fallo de la lectura), pero la
+            # hora sí estaba escrita. No se guarda medida: la última sigue hasta «Comprobar ahora» o la siguiente hora
+            assert unverified is not None
+            reason = redact(str(unverified.details.get("reason") or ""))[:160]
+            msg = (f"Se ha escrito la hora de este PC en {noun}, pero después no se ha podido leer para comprobarla"
+                   f"{f' ({reason})' if reason else ''}. Qué hacer: espera un minuto y pulsa «Comprobar ahora» en Hora "
+                   "de los equipos; si sigue mal, vuelve a pulsar «Poner en hora con este PC».")
+            done("written_unverified")
+            for cam in cams:
+                self.store.add_timeline_event(TimelineEvent(
+                    camera_id=cam.id, layer="clock", start=now, severity="warning",
+                    title_es=f"Hora escrita por {user}, sin poder comprobarla"[:200]))
+            log.info("Puesta en hora de %s por «%s»: escrita sin comprobar", dev.id, user)
+            return ClockSetResult(ok=False, message_es=msg, check=clockmod.failed_check(dev.id, cam_id, msg),
+                                  admin_credentials_used=temp)
+        chk = clockmod.device_check(dev.id, cam_id, dt, hs.clock_warn_s, hs.clock_critical_s, noun=noun)
+        await asyncio.to_thread(self.store.add_clock_check, chk)
+        ok = chk.skew_s is not None and abs(chk.skew_s) < hs.clock_warn_s
+        if ok:
+            msg = (f"{clockmod.cap_first(noun)} ya está en hora: coincide con este PC (diferencia: "
+                   f"{clockmod.fmt_skew(chk.skew_s).lstrip('+−')}).")
+            zone = clockmod.zone_mismatch(dt, noun=noun)
+            if zone is not None:
+                msg += (f" Ojo: {zone[:1].lower()}{zone[1:]} Qué hacer: cambia la zona horaria en la web {de} "
+                        "(apartado de fecha y hora) a la de la tienda; este botón no la cambia.")
+        else:
+            msg = (f"{clockmod.cap_first(noun)} ha aceptado el cambio, pero al leerla de nuevo sigue con otra hora "
+                   f"({clockmod.fmt_skew(chk.skew_s)}). Qué hacer: pulsa otra vez «Poner en hora con este PC»; si se "
+                   f"repite, {pon} desde la web {de} (apartado de fecha y hora).")
+        done("ok" if ok else "not_verified", chk.skew_s)
+        for cam in cams:
+            self.store.add_timeline_event(TimelineEvent(
+                camera_id=cam.id, layer="clock", start=now, severity="info" if ok else "warning",
+                title_es=(f"Hora puesta con la de este PC por {user}" if ok else
+                          f"Puesta en hora sin confirmar ({clockmod.fmt_skew(chk.skew_s)})")[:200]))
+        log.info("Puesta en hora de %s por «%s»: %s", dev.id, user, "correcta" if ok else "sin confirmar")
+        return ClockSetResult(ok=ok, message_es=msg, check=chk, admin_credentials_used=temp)
+
+    def _stored_cannot_write(self, device_id: str, password: str) -> bool:
+        """¿El usuario guardado, con ESTA contraseña, ya recibió hace poco un «no» a la escritura que el equipo pudo
+        contar como intento fallido? Se olvida al cambiar la contraseña guardada o pasados `CLOCK_WRITE_DENIED_S`."""
+        entry = self._clock_write_denied.get(device_id)
+        if entry is None:
+            return False
+        fp, until = entry
+        if fp != _fingerprint(password) or time.monotonic() >= until:
+            del self._clock_write_denied[device_id]
+            return False
+        return True
+
+    @staticmethod
+    def _clock_set_error(exc: VmsError, noun: str, temp: bool) -> VmsError:
+        """Error de «Poner en hora» en lenguaje de tienda, con qué hacer (sin contraseñas)."""
+        cap, de, pon = clockmod.cap_first(noun), clockmod.de_noun(noun), clockmod.pon_en_hora(noun)
+        a_o = "a" if noun.startswith("la ") else "o"          # «encendida» / «encendido»
+        web = f"desde la web {de} (apartado de fecha y hora)"
+        code = exc.code
+        if code == "device_clock_managed":
+            mode = str(exc.details.get("time_mode") or "")
+            server = str(exc.details.get("ntp_server") or "")
+            low = mode.lower()
+            if low == "ntp":
+                who = f"un servidor de hora (NTP{f', {server}' if server else ''})"
+                what = f"si va mal, revisa que {noun} llegue a ese servidor o pon otro {web}"
+            elif low == "timecorrect":
+                who, what = f"el grabador al que está conectad{a_o}", "corrígela en el grabador"
+            elif low == "satellite":
+                who, what = "un receptor GPS", "revisa el GPS o la hora " + web
+            else:
+                who = f"otro programa (por ejemplo HikCentral o iVMS-4200; modo «{mode}»)"
+                what = ("corrígela en ese programa o, si ya no se usa, pon la hora manual " + web +
+                        " y vuelve a pulsar «Poner en hora con este PC»")
+            return VmsError(f"La hora {de} la pone {who}: el programa no la cambia para no pelearse con él. "
+                            f"Qué hacer: {what}.", code=code, status=409, details={"time_mode": mode})
+        if code == "device_write_denied":
+            if temp:
+                return VmsError(f"El usuario que has escrito no tiene permiso para cambiar la hora {de}. Qué hacer: "
+                                "escribe el usuario administrador (normalmente «admin») y su contraseña.",
+                                code=code, status=403)
+            if exc.details.get("remembered"):
+                lead = (f"El usuario guardado {de} no puede cambiar la hora: se probó hace poco y {noun} lo rechazó "
+                        "como a una contraseña mala, así que no se vuelve a probar con él para no bloquearlo.")
+            else:
+                lead = f"El usuario guardado {de} es de solo lectura (así debe ser) y no puede cambiar la hora."
+                if exc.details.get("auth_rejection"):
+                    left = exc.details.get("remaining_attempts")
+                    if not isinstance(left, int):
+                        count = ""
+                    elif left <= 0:
+                        count = " (ya no le quedan intentos antes de bloquear el usuario)"
+                    else:
+                        count = (f" (le {'queda 1 intento' if left == 1 else f'quedan {left} intentos'} antes de "
+                                 "bloquear el usuario)")
+                    lead += (f" {cap} lo rechaza como a una contraseña mala y puede contarlo como intento "
+                             f"fallido{count}: durante {int(CLOCK_WRITE_DENIED_S // 60)} minutos no se vuelve a "
+                             "probar con él.")
+            return VmsError(f"{lead} Qué hacer: pulsa otra vez «Poner en hora con este PC» y escribe el usuario y la "
+                            f"contraseña de administrador {de}; se usan una vez y no se guardan.",
+                            code=code, status=403)
+        if code == "device_locked":
+            minutes = exc.details.get("lockout_minutes") or 30
+            return VmsError(f"El usuario está bloqueado en {noun} por demasiados intentos fallidos. Qué hacer: espera "
+                            f"{minutes} minutos antes de volver a probar; si no, el bloqueo se alarga.",
+                            code=code, status=502)
+        if code == "device_basic_not_allowed":
+            return VmsError(f"{cap} solo admite autenticación Basic, que envía la contraseña sin cifrar, y la "
+                            f"contraseña de administrador nunca se manda así. Qué hacer: activa la autenticación "
+                            f"Digest en la web {de} (apartado de seguridad) o {pon} {web}.",
+                            code=code, status=502)
+        if code == "device_auth_failed":
+            if temp:
+                return VmsError(f"{cap} no ha aceptado el usuario o la contraseña de administrador. Qué hacer: "
+                                f"revísalos y vuelve a probar; tras varios intentos fallidos {noun} bloquea el usuario "
+                                "un rato.", code=code, status=502)
+            return VmsError(f"{cap} rechaza la contraseña guardada. Qué hacer: corrígela en la ficha del equipo o "
+                            "escribe aquí el usuario y la contraseña de administrador.", code=code, status=502)
+        if code == "device_unreachable":
+            return VmsError(f"No se ha podido poner en hora {noun} porque no responde. Qué hacer: comprueba que está "
+                            f"encendid{a_o} y con el cable de red conectado, y vuelve a intentarlo.",
+                            code=code, status=502)
+        if code == "device_unsupported":
+            return VmsError(f"{cap} no deja cambiar la hora desde el programa. Qué hacer: {pon} {web}.",
+                            code=code, status=501)
+        if exc.code in ("clock_set_unsupported", "not_found", "conflict"):
+            return exc
+        return VmsError(f"{cap} no ha aceptado el cambio de hora ({redact(exc.message)[:160]}). Qué hacer: {pon} "
+                        f"{web}.", code=code or "clock_set_failed", status=502)
+
     async def _clock_loop(self) -> None:
         await asyncio.sleep(self.initial_delay + 15)
         while True:
@@ -414,6 +719,8 @@ class OpsService:
                 await self.clock_check_all()
             except Exception:  # noqa: BLE001
                 log.exception("Error comprobando la hora de los equipos")
+            finally:
+                self._clock_first_pending = False
             await asyncio.sleep(CLOCK_PERIOD_S)
 
     # ================================================================== previsión e informe
@@ -552,7 +859,10 @@ class OpsService:
                                                    camera_id=cid, camera_name=names.get(cid, cid),
                                                    details={"last_error": (c.get("last_error") or "")[:200]}))
             else:
-                self._down.pop(cid, None)
+                if self._down.pop(cid, 0):
+                    # vuelve el vídeo (aunque no llegara a avisar de «sin vídeo»): un corte de luz corto basta para
+                    # que una cámara sin pila de reloj vuelva con la fecha de fábrica
+                    self._recheck_clock_soon(cid)
                 if cid in self._down_alerted:
                     self._down_alerted.discard(cid)
                     await self.notifier.emit(Alert(kind="camera_up", severity="info",

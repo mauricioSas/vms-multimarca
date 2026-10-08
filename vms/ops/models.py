@@ -122,6 +122,15 @@ class ClockCheck(_Ops):
     message_es: str = ""
 
 
+class ClockSetResult(_Ops):
+    """Resultado de «Poner en hora con este PC» (`POST /api/clock/devices/{device_id}/set`, CONTRATO §18.3)."""
+
+    ok: bool                                 # la hora leída de nuevo coincide con la del PC (< clock_warn_s)
+    message_es: str
+    check: ClockCheck                        # la lectura de comprobación (también queda guardada)
+    admin_credentials_used: bool = False     # se usaron credenciales de administrador temporales (no se guardan)
+
+
 # =========================================================================== §18.4 previsión de grabación
 class CameraForecast(_Ops):
     camera_id: EntityId

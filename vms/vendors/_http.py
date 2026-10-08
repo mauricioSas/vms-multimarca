@@ -22,7 +22,8 @@ from vms.core.errors import DeviceAuthFailed, DeviceProtocolError, DeviceUnreach
 from vms.core.models import DeviceBase
 
 from . import auth as vauth
-from .errors import BasicNotAllowed, DeviceLocked, bad_password_message, hik_user_check, text_lock_hint
+from .errors import (BasicNotAllowed, DeviceLocked, DevicePermissionDenied, bad_password_message, hik_user_check,
+                     text_lock_hint)
 
 log = logging.getLogger("vms.vendors.http")
 
@@ -32,16 +33,26 @@ USER_AGENT = "VMSMultimarca/2.0"
 
 _NOT_SUPPORTED_RE = re.compile(r"<subStatusCode>\s*notSupport\s*</subStatusCode>|"
                                r"<statusString>\s*Invalid Operation\s*</statusString>", re.IGNORECASE)
+_LOW_PRIVILEGE_RE = re.compile(r"<subStatusCode>\s*lowPrivilege\s*</subStatusCode>", re.IGNORECASE)
 
 
 def not_supported(resp: httpx.Response) -> bool:
     """¿Es la respuesta ISAPI «el equipo no tiene ese recurso» (statusCode 4, `notSupport` / «Invalid Operation»)?
 
     Algunos firmwares Hikvision la dan con un 403 en recursos que no tienen (p. ej. Telnet en los que ya no lo
-    traen): no es un rechazo de la contraseña ni de permisos."""
+    traen): no es un rechazo de la contraseña ni de permisos. `lowPrivilege` también trae «Invalid Operation», pero
+    es falta de permisos del usuario (p. ej. escribir la hora con el usuario de solo lectura): no cuenta."""
     if not resp.content or len(resp.content) > 65536:
         return False
-    return _NOT_SUPPORTED_RE.search(resp.text) is not None
+    text = resp.text
+    return _NOT_SUPPORTED_RE.search(text) is not None and _LOW_PRIVILEGE_RE.search(text) is None
+
+
+def low_privilege(resp: httpx.Response) -> bool:
+    """¿Es la respuesta ISAPI «el usuario no tiene permiso para esto» (`lowPrivilege`)? La contraseña vale."""
+    if not resp.content or len(resp.content) > 65536:
+        return False
+    return _LOW_PRIVILEGE_RE.search(resp.text) is not None
 
 
 def base_url(device: DeviceBase, port: int | None = None) -> str:
@@ -141,6 +152,14 @@ class VendorHttp:
     def credentialed_requests(self) -> int:
         return self.auth.credentialed if self.auth else 0
 
+    def keep_credentials(self) -> None:
+        """Deshace el «fundido» tras un 401: SOLO cuando otra petición con estas mismas credenciales acaba de valer en
+        este mismo cliente (la contraseña es buena y el rechazo era de permisos, p. ej. una escritura con el usuario
+        de solo lectura)."""
+        self._failure = None
+        if self.auth is not None:
+            self.auth.rejected = False
+
     def _auth_error(self, resp: httpx.Response) -> DeviceAuthFailed:
         body = resp.text if resp.content and len(resp.content) < 65536 else ""
         if self.auth is not None and self.auth.basic_only:
@@ -156,7 +175,8 @@ class VendorHttp:
         if locked:
             return DeviceLocked(self.label, minutes)
         if resp.status_code == 403:
-            return DeviceAuthFailed(f"El usuario no tiene permisos suficientes en {self.label}")
+            return DeviceAuthFailed(f"El usuario no tiene permisos suficientes en {self.label}",
+                                    details={"status": 403})
         return DeviceAuthFailed(bad_password_message(self.label))
 
     async def request(self, method: str, path: str, *,
@@ -177,6 +197,9 @@ class VendorHttp:
                                     "HTTP y que el equipo esté encendido") from exc
         except httpx.HTTPError as exc:
             raise DeviceUnreachable(f"Error de red al hablar con {self.label}: {type(exc).__name__}") from exc
+        if resp.status_code == 403 and low_privilege(resp):
+            # el usuario entra pero no tiene permiso para esto: ni contraseña mala ni bloqueo (no funde el cliente)
+            raise DevicePermissionDenied(self.label, path)
         if resp.status_code == 403 and not_supported(resp):
             # recurso que este equipo no tiene: ni contraseña mala ni falta de permisos (no funde el cliente)
             raise DeviceUnsupported(f"{self.label} no admite {path}", details={"status": 403})
@@ -186,7 +209,7 @@ class VendorHttp:
                 self._failure = err
             raise err
         if resp.status_code == 403:
-            raise DeviceAuthFailed(f"El usuario no tiene permisos suficientes en {self.label}")
+            raise DeviceAuthFailed(f"El usuario no tiene permisos suficientes en {self.label}", details={"status": 403})
         if resp.status_code == 404 and ok_404:
             return resp
         if resp.status_code >= 400:

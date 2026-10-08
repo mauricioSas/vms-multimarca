@@ -37,8 +37,8 @@ from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings,
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import USER_AGENT, VendorAuth, VendorHttp, device_label
-from .errors import BasicNotAllowed
-from .clock import Stopwatch
+from .errors import BasicNotAllowed, DeviceClockManaged, DeviceTimeUnverified, DeviceWriteDenied
+from .clock import Stopwatch, round_offset
 from .codec import normalize_codec
 
 log = logging.getLogger("vms.vendors.onvif")
@@ -160,6 +160,10 @@ class OnvifClient:
         self._info: DeviceInfo | None = None
         self.device_utc: datetime | None = None
         self.time_mode: Literal["ntp", "manual", "unknown"] = "unknown"
+        self.time_zone = ""                # TZ POSIX que dio el equipo (se reenvía igual al ponerlo en hora)
+        self.daylight_savings = ""         # «true»/«false» tal cual
+        self.local_offset: timedelta | None = None   # LocalDateTime − UTCDateTime: la fecha que marca el equipo
+        self._auth_ok = False             # una petición CON credenciales ya fue aceptada (la contraseña vale)
         self._measured = datetime.now(timezone.utc)
         self._rtt = 0.0
         if device.vendor and device.vendor != "onvif":
@@ -221,7 +225,8 @@ class OnvifClient:
         self._failure = err
         return err
 
-    async def _soap(self, url: str, ns: str, op: str, body: str = "", *, auth: bool = True) -> ET.Element:
+    async def _soap(self, url: str, ns: str, op: str, body: str = "", *, auth: bool = True,
+                    write: bool = False) -> ET.Element:
         """Una operación SOAP con **una sola** petición con credenciales como mucho.
 
         Modos de autenticación (`_auth_mode`), aprendidos sin gastar la contraseña:
@@ -233,6 +238,9 @@ class OnvifClient:
         - «http»: Digest (o Basic con `allow_basic`) firmado a la primera, sin UsernameToken.
         Las operaciones sin autenticar (`auth=False`, p. ej. la hora) nunca llevan credenciales; si responden 401,
         solo sirven para aprender el reto.
+        `write=True` (escrituras, p. ej. `SetSystemDateAndTime`): si el equipo ya aceptó estas credenciales en una
+        lectura, un rechazo es falta de permisos (`DeviceWriteDenied`, ONVIF Core: el usuario no tiene la clase de
+        acceso WRITE_SYSTEM), no una contraseña mala: ni funde el cliente ni se informa de contraseña incorrecta.
         """
         if self._failure is not None:
             raise self._failure
@@ -241,11 +249,11 @@ class OnvifClient:
         if not auth or self._auth is None:
             return await self._exchange(url, ns, op, body, kind="pre")
         if self._auth_mode == "unknown":
-            return await self._exchange(url, ns, op, body, kind="learn")
-        return await self._exchange(url, ns, op, body, kind=self._auth_mode)
+            return await self._exchange(url, ns, op, body, kind="learn", write=write)
+        return await self._exchange(url, ns, op, body, kind=self._auth_mode, write=write)
 
     async def _exchange(self, url: str, ns: str, op: str, body: str, *,
-                        kind: Literal["pre", "learn", "ws", "http"]) -> ET.Element:
+                        kind: Literal["pre", "learn", "ws", "http"], write: bool = False) -> ET.Element:
         header = self._security_header() if kind == "ws" else ""
         resp = await self._post(url, ns, op, body, header=header, http_auth=kind == "http")
         text = resp.text
@@ -265,12 +273,12 @@ class OnvifClient:
                     raise self._fuse(BasicNotAllowed(self.label))
                 else:
                     self._auth_mode = "ws"
-                return await self._exchange(url, ns, op, body, kind=self._auth_mode)
+                return await self._exchange(url, ns, op, body, kind=self._auth_mode, write=write)
             if resp.status_code in (404, 405) and root is None:
                 raise DeviceUnsupported(f"{self.label} no responde a ONVIF en {urlsplit(url).path}. {ONVIF_OFF_HINT}")
             self._auth_mode = "ws"
             if not_authorized or fault is not None or resp.status_code >= 400:
-                return await self._exchange(url, ns, op, body, kind="ws")
+                return await self._exchange(url, ns, op, body, kind="ws", write=write)
             # respondió sin credenciales: se usa la respuesta (el equipo admite ONVIF anónimo para esta operación)
         if resp.status_code == 401 or not_authorized:
             if kind == "pre":
@@ -279,6 +287,13 @@ class OnvifClient:
                         and self._auth.learn(resp):
                     self._auth_mode = "http"
                 raise self._bad_password()
+            if write and self._auth_ok:
+                # la contraseña ya se aceptó en una lectura: es falta de permisos, no una contraseña mala. VendorAuth
+                # se habrá marcado como rechazado tras el 401 firmado; se deshace porque la contraseña es buena
+                if self._auth is not None:
+                    self._auth.rejected = False
+                # pero es la misma respuesta que a una contraseña mala: el equipo pudo contarla como intento fallido
+                raise DeviceWriteDenied(self.label, details={"operation": op, "auth_rejection": True})
             raise self._fuse(self._bad_password())
         if fault is not None or resp.status_code >= 400:
             reason = _t(fault, ".//Text") if fault is not None else ""
@@ -292,6 +307,8 @@ class OnvifClient:
         body_el = root.find("Body")
         if body_el is None or not len(body_el):
             raise DeviceProtocolError(f"{self.label} respondió a {op} sin contenido")
+        if kind in ("ws", "http"):
+            self._auth_ok = True
         return body_el[0]
 
     # ------------------------------------------------------------------ hora y servicios
@@ -324,11 +341,23 @@ class OnvifClient:
         self._measured = sw.midpoint
         self._rtt = sw.round_trip_ms
         self.clock_offset = dev - sw.midpoint
+        self.local_offset = None
+        loc = sdt.find("LocalDateTime") if sdt is not None else None
+        if loc is not None:
+            try:
+                local = datetime(int(_t(loc, "Date/Year")), int(_t(loc, "Date/Month")), int(_t(loc, "Date/Day")),
+                                 int(_t(loc, "Time/Hour")), int(_t(loc, "Time/Minute")), int(_t(loc, "Time/Second")))
+                off = timedelta(seconds=round_offset(local - dev.replace(tzinfo=None)))
+                self.local_offset = off if abs(off) <= timedelta(hours=14) else None
+            except ValueError:
+                pass
         if abs(self.clock_offset) > timedelta(seconds=5):
             log.info("%s tiene el reloj desfasado %.0f s; se ajusta la autenticación ONVIF", self.label,
                      self.clock_offset.total_seconds())
         dtype = _t(sdt, "DateTimeType").lower()
         self.time_mode = "ntp" if dtype == "ntp" else "manual" if dtype == "manual" else "unknown"
+        self.time_zone = _t(sdt, "TimeZone/TZ")
+        self.daylight_savings = _t(sdt, "DaylightSavings").lower()
 
     async def _services(self) -> None:
         if self._services_done:
@@ -493,9 +522,73 @@ class OnvifClient:
                 rejected = True
             except DeviceError as exc:
                 log.debug("GetNTP no disponible en %s: %s", self.label, exc)
-        return DeviceTime(device_time=self.device_utc, measured_at=self._measured,
+        # mismo instante, expresado en la hora local que da el propio equipo (LocalDateTime): así «marca el
+        # 01-01-1970» dice la fecha que se ve en su imagen y no la de UTC (31-12-1969 en una cámara a UTC+8).
+        # `utc_offset_s` sigue sin informarse: no se estrena aquí el aviso de zona para todos los equipos ONVIF
+        shown = self.device_utc if self.local_offset is None else self.device_utc.astimezone(timezone(self.local_offset))
+        return DeviceTime(device_time=shown, measured_at=self._measured,
                           round_trip_ms=round(self._rtt, 1), time_mode=self.time_mode, ntp_server=ntp, source="onvif",
                           credentials_rejected=rejected)
+
+    # ------------------------------------------------------------------ TIME_WRITE
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime:
+        """«Poner en hora con este PC» por ONVIF `SetSystemDateAndTime` (CONTRATO §18.3): `DateTimeType` Manual, la
+        hora UTC de este PC y la MISMA zona (`TZ`) y horario de verano que dio el equipo. Solo si ya está en hora
+        manual: con NTP se lanza `DeviceClockManaged` sin escribir. Antes de escribir se comprueba la contraseña con
+        una lectura autenticada (`GetDeviceInformation`, repetida con credenciales si el equipo la contesta sin
+        ellas: ONVIF anónimo), así un rechazo de la escritura es falta de permisos
+        (`DeviceWriteDenied`: en la política por defecto solo el Administrator tiene WRITE_SYSTEM). Después se lee
+        de nuevo la hora. Con `admin_username`, credenciales de administrador temporales (no se guardan; sin Basic)."""
+        if not admin_username:
+            return await self._set_time()
+        dev = self.device.model_copy(update={"username": admin_username, "allow_basic": False})
+        writer = OnvifClient(dev, admin_password, timeout=self.timeout, transport=self._transport, port=self.port)
+        try:
+            return await writer._set_time()
+        finally:
+            await writer.aclose()
+
+    async def _set_time(self) -> DeviceTime:
+        before = await self.device_time()
+        if before.credentials_rejected:
+            # GetNTP ya rechazó la contraseña: se dice eso (quien llama la deja en pausa) y no se gasta otro intento
+            raise self._failure or self._bad_password()
+        if before.time_mode == "ntp":
+            raise DeviceClockManaged(self.label, "NTP", before.ntp_server)
+        await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
+        if not self._auth_ok and self._auth is not None:
+            # equipo con ONVIF anónimo: contestó SIN credenciales (así se aprende el modo) y la contraseña sigue sin
+            # comprobar. Se repite ya con ellas: si no, un rechazo de la escritura se tomaba por contraseña mala
+            # (cliente fundido y 30 min sin leer la hora ni sacar instantáneas) cuando lo normal es un usuario sin
+            # permiso para cambiarla
+            await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
+        zones =[self.time_zone, ""] if self.time_zone else [""]
+        for i, tz in enumerate(zones):
+            u = (datetime.now(timezone.utc) + timedelta(milliseconds=500)).replace(microsecond=0)
+            body = ("<m:DateTimeType>Manual</m:DateTimeType>"
+                    f"<m:DaylightSavings>{'true' if self.daylight_savings == 'true' else 'false'}</m:DaylightSavings>"
+                    + (f"<m:TimeZone><tt:TZ>{escape(tz)}</tt:TZ></m:TimeZone>" if tz else "")
+                    + "<m:UTCDateTime><tt:Time>"
+                    f"<tt:Hour>{u.hour}</tt:Hour><tt:Minute>{u.minute}</tt:Minute><tt:Second>{u.second}</tt:Second>"
+                    f"</tt:Time><tt:Date><tt:Year>{u.year}</tt:Year><tt:Month>{u.month}</tt:Month>"
+                    f"<tt:Day>{u.day}</tt:Day></tt:Date></m:UTCDateTime>")
+            try:
+                await self._soap(self.device_xaddr, NS_DEVICE, "SetSystemDateAndTime", body, write=True)
+                break
+            except DeviceProtocolError as exc:
+                if i + 1 == len(zones):
+                    raise
+                # hay equipos que no aceptan de vuelta la zona que ellos mismos dan (InvalidTimeZone): sin zona,
+                # se quedan con la que tienen
+                log.info("%s no aceptó su propia zona horaria al ponerlo en hora (%s); se repite sin zona",
+                         self.label, exc.message)
+        # el reloj del equipo ya es el del PC: el «Created» de las siguientes peticiones firmadas, también
+        self.clock_offset = timedelta(0)
+        log.info("Hora de %s puesta con la de este PC por ONVIF (zona del equipo sin cambios)", self.label)
+        try:
+            return await self.device_time()
+        except DeviceError as exc:          # escrita: lo que falla es solo la comprobación
+            raise DeviceTimeUnverified(self.label, exc) from exc
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:

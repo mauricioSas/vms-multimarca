@@ -35,7 +35,7 @@ from vms.core.rtsp import preset_paths, redact
 from vms.core.sources import camera_paths
 
 from . import drivers, netroute
-from .health.clock import device_check
+from .health.clock import assess_device
 from .host import dynamic
 from .models import DiagnosisResult, DiagnosisStep
 
@@ -261,9 +261,12 @@ class Diagnoser:
             t0 = time.perf_counter()
             try:
                 dt = await client.device_time()
-                chk = device_check(inp.device_id or "dev-diag", None, dt, *self.clock_thresholds)
-                add("clock", chk.status == "ok", chk.message_es,
-                    "" if chk.status == "ok" else "Activa NTP en el equipo apuntando a este PC.", t0)
+                # causa y acción por separado: la interfaz ya pone «Qué hacer:» delante de la acción
+                verdict = assess_device(dt, *self.clock_thresholds,
+                                        can_set=drivers.TIME_WRITE in drivers.capabilities(d.vendor),
+                                        noun="la cámara" if d.kind == "camera" else "el grabador"
+                                        if d.kind in ("nvr", "dvr", "xvr") else "el equipo")
+                add("clock", verdict.status == "ok", verdict.cause, verdict.action, t0)
             except DeviceError as exc:
                 add("clock", None, f"No se pudo leer la hora: {redact(exc.message)}", "", t0)
             except Exception:  # noqa: BLE001 - un fallo leyendo la hora no tumba el diagnóstico entero

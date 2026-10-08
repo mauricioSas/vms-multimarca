@@ -65,7 +65,7 @@ async def test_wrong_factory_zone_same_verdict_for_hikvision_and_dahua() -> None
         assert t.utc_offset_s == 8 * 3600, vendor
         chk = device_check("dev-00000001", None, t, 2.0, 30.0, pc_offset_s=PC_MADRID_SUMMER)
         verdicts[vendor] = chk.status
-        assert "otra zona horaria (UTC+8)" in chk.message_es and "UTC+2" in chk.message_es
+        assert "zona horaria (UTC+8) distinta de la de este PC" in chk.message_es and "UTC+2" in chk.message_es
     assert verdicts == {"hikvision": "warning", "dahua": "warning"}
 
 

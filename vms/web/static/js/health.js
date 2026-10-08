@@ -176,6 +176,73 @@ function masksDialog(cam, refs) {
 }
 
 // ================================================================== hora
+/** Desfase legible: «+12 s», «−3 min», «+2,5 h», «−5 días», «−57 años» (una cámara sin hora marca 1970). */
+function fmtSkew(s) {
+  if (s == null || !Number.isFinite(Number(s))) return "—";
+  const a = Math.abs(s);
+  let t;
+  if (a < 60) t = `${fmtNum(a, 1)} s`;
+  else if (a < 3600) t = `${fmtNum(Math.round(a / 60))} min`;
+  else if (a < 86400) t = `${fmtNum(a / 3600, 1)} h`;
+  else if (a < 365 * 86400) { const n = Math.round(a / 86400); t = `${n} ${n === 1 ? "día" : "días"}`; }
+  else { const n = Math.round(a / (365.25 * 86400)); t = `${n} ${n === 1 ? "año" : "años"}`; }
+  return `${s >= 0 ? "+" : "−"}${t}`;
+}
+
+const SET_LABEL = "Poner en hora con este PC";
+
+/** «Poner en hora con este PC»: confirmación en la página (sin confirm()) y, si hace falta, usuario administrador
+ * temporal del equipo (se usa una vez y no se guarda). CONTRATO §18.3. */
+function clockSetDialog(dev, body) {
+  const m = modal(`${SET_LABEL} · ${dev.name}`);
+  // sin la hora del navegador: si la página se abre desde otro ordenador, no es la del PC que la escribe
+  m.body.append(
+    h("p", {}, "Se escribirá en el reloj del equipo la hora del PC donde está instalado el programa, una sola vez. " +
+      "No cambia su zona horaria ni ningún otro ajuste y queda anotado en el registro de accesos."),
+    h("p", { class: "muted small" }, "Si la hora del equipo la pone otro programa (HikCentral, iVMS-4200, un grabador o " +
+      "un servidor de hora), no se cambia y se explica por qué."));
+  const u = h("input", { class: "input", autocomplete: "off", placeholder: "admin", "aria-label": "Usuario administrador del equipo" });
+  const p = h("input", { class: "input", type: "password", autocomplete: "new-password", "aria-label": "Contraseña de administrador del equipo" });
+  const creds = h("details", { class: "ops-clock-admin" },
+    h("summary", {}, "Usar el usuario administrador del equipo (solo si hace falta)"),
+    h("p", { class: "muted small" }, "El usuario guardado del VMS suele ser de solo lectura y no puede cambiar la hora. " +
+      "Escribe el usuario y la contraseña de administrador del equipo: se usan una vez y no se guardan."),
+    h("div", { class: "ops-row" }, h("label", { class: "field" }, h("span", {}, "Usuario"), u),
+      h("label", { class: "field" }, h("span", {}, "Contraseña"), p)));
+  const out = h("div", { role: "status", class: "ops-clock-result" });
+  m.body.append(creds, out);
+  m.foot.append(h("div", { class: "right" },
+    h("button", { type: "button", class: "btn btn-primary", onclick: async (e) => {
+      const user = u.value.trim();
+      // solo uno de los dos: antes se mandaba sin ninguno (el usuario guardado, de solo lectura) sin decir nada y
+      // volvía el mismo «es de solo lectura» con la contraseña borrada
+      if (Boolean(user) !== Boolean(p.value)) {
+        creds.open = true;
+        clear(out).append(h("p", { class: "form-error" }, "Escribe el usuario y la contraseña de administrador del " +
+          "equipo; si dejas los dos vacíos, se usa el usuario guardado."));
+        (user ? p : u).focus();
+        return;
+      }
+      const payload = user ? { username: user, password: p.value } : {};
+      p.value = "";
+      await busy(e.currentTarget, async () => {
+        try {
+          const res = await post(`/api/clock/devices/${enc(dev.id)}/set`, payload);
+          clear(out).append(h("div", { class: `banner ${res.ok ? "info" : "bad"}` }, res.message_es));
+          toast(res.ok ? `Hora puesta en «${dev.name}»` : res.message_es, res.ok ? "ok" : "bad", 7000);
+          await renderClock(body);
+        } catch (err) {
+          clear(out).append(h("p", { class: "form-error" }, err.message));
+          // los dos mensajes piden escribir aquí el administrador del equipo
+          if (err instanceof ApiError && ["device_write_denied", "device_auth_failed"].includes(err.code)) {
+            creds.open = true;
+            u.focus();
+          }
+        }
+      });
+    } }, "Poner en hora")));
+}
+
 async function renderClock(body) {
   clear(body);
   let data;
@@ -191,15 +258,33 @@ async function renderClock(body) {
     return;
   }
   const devs = await get("/api/devices").catch(() => []);
-  const names = Object.fromEntries(devs.map((d) => [d.id, d.name]));
-  body.append(h("div", { class: "card table-wrap" }, h("table", { class: "table" },
+  const byId = Object.fromEntries(devs.map((d) => [d.id, d]));
+  // qué marcas saben ponerse en hora (capacidad time_write del registro de drivers); solo para administradores
+  const writable = new Set();
+  if (ui.admin) {
+    const vendors = await get("/api/vendors").catch(() => []);
+    for (const v of vendors) if ((v.capabilities || []).includes("time_write")) writable.add(v.id);
+  }
+  const action = (d) => {
+    const dev = byId[d.device_id];
+    // solo con la hora puesta a mano: con NTP o con otro sistema (HikCentral/SDK, plataforma, grabador, GPS: modo
+    // «unknown») el botón siempre se negaría; «ok» o sin lectura: nada que corregir
+    if (!dev || !writable.has(dev.vendor) || !["warning", "critical"].includes(d.status) || d.time_mode !== "manual") return "";
+    return h("button", { type: "button", class: "btn btn-sm", dataset: { clockSet: dev.id },
+      onclick: () => clockSetDialog(dev, body) }, SET_LABEL);
+  };
+  body.append(h("div", { class: "card table-wrap" }, h("table", { class: "table", id: "ops-clock-table" },
     h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Equipo"), h("th", { scope: "col" }, "Estado"),
-      h("th", { scope: "col" }, "Diferencia"), h("th", { scope: "col" }, "Sincronización"), h("th", { scope: "col" }, "Detalle"))),
-    h("tbody", {}, data.devices.map((d) => h("tr", {},
-      h("td", {}, names[d.device_id] || d.device_id), h("td", {}, statusPill(d.status)),
-      h("td", { class: "mono" }, d.skew_s == null ? "—" : `${d.skew_s > 0 ? "+" : ""}${fmtNum(d.skew_s, 1)} s`),
+      h("th", { scope: "col" }, "Diferencia"), h("th", { scope: "col" }, "Sincronización"), h("th", { scope: "col" }, "Detalle"),
+      ui.admin ? h("th", { scope: "col" }, h("span", { class: "sr-only" }, "Acciones")) : null)),
+    h("tbody", {}, data.devices.map((d) => h("tr", { dataset: { device: d.device_id } },
+      h("td", {}, byId[d.device_id]?.name || d.device_id), h("td", {}, statusPill(d.status)),
+      h("td", { class: "mono" }, fmtSkew(d.skew_s)),
       h("td", {}, { ntp: "NTP (automática)", manual: "Manual", unknown: "—" }[d.time_mode] || "—"),
-      h("td", { class: "small" }, d.message_es)))))));
+      h("td", { class: "small" }, d.message_es),
+      ui.admin ? h("td", {}, action(d)) : null))))),
+    h("p", { class: "muted small" }, "Las grabaciones usan siempre la hora de este PC. La hora de cada cámara solo " +
+      "cambia la fecha que ella escribe en la imagen."));
 }
 
 async function clockCheck(body) {
@@ -277,7 +362,7 @@ async function renderReport(body, dateInput) {
       h("td", {}, c.name), h("td", { class: "mono" }, `${fmtNum(c.online_ratio * 100, 1)} %`),
       h("td", { class: "mono" }, `${fmtNum(c.recording_gaps_min)} min`),
       h("td", {}, c.health_score_min == null ? "—" : `${c.health_score_min}${c.health_causes.length ? ` · ${c.health_causes.map((x) => CAUSE[x] || x).join(", ")}` : ""}`),
-      h("td", { class: "mono" }, c.clock_skew_s == null ? "—" : `${fmtNum(c.clock_skew_s, 1)} s`),
+      h("td", { class: "mono" }, fmtSkew(c.clock_skew_s)),
       h("td", { class: "mono" }, c.retention_days_real == null ? "—" : fmtNum(c.retention_days_real, 1)),
       h("td", { class: "mono" }, String(c.protected_ranges))))))));
   const disk = rep.disk || {};

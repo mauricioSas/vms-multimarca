@@ -63,6 +63,11 @@ def path_defaults(recording: RecordingSettings, retention: RetentionSettings,
                   recordings_dir: str | Path) -> dict[str, Any]:
     return {
         "rtspTransport": "tcp",
+        # Las grabaciones llevan la hora de ESTE PC: MediaMTX sella cada fotograma al recibirlo, sin usar la hora
+        # que manda la cámara. Una cámara sin hora (01-01-1970 tras un corte de luz) no estropea la línea de tiempo
+        # ni los nombres de los segmentos; solo la fecha que ella sobreimprime. Es el valor por defecto de MediaMTX,
+        # pero se fija para que un cambio de versión o de configuración no lo cambie sin que nadie lo note.
+        "useAbsoluteTimestamp": False,
         "record": False,
         "recordFormat": "fmp4",
         "recordPath": record_path(recordings_dir),

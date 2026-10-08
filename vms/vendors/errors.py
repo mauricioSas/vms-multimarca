@@ -10,7 +10,62 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from vms.core.errors import DeviceAuthFailed
+from vms.core.errors import DeviceAuthFailed, DeviceError, DeviceUnsupported
+
+
+class DevicePermissionDenied(DeviceUnsupported):
+    """ISAPI 403 `lowPrivilege`: la contraseña vale, pero ese usuario no tiene permiso para ese recurso.
+
+    Hereda de `DeviceUnsupported` (mismo código `device_unsupported`) a propósito: quien LEE (salud, hora,
+    diagnóstico) lo trata igual que antes, como «este equipo no lo permite». Nunca es `DeviceAuthFailed`: un usuario
+    sin permiso para una instantánea o para la hora no es una contraseña mala, así que ni funde el cliente ni pausa
+    30 min la API del equipo. «Poner en hora» lo convierte en `DeviceWriteDenied`."""
+
+    def __init__(self, label: str, path: str) -> None:
+        super().__init__(f"El usuario de {label} no tiene permiso para {path}", details={"status": 403,
+                                                                                      "low_privilege": True})
+
+
+class DeviceWriteDenied(DeviceError):
+    """El usuario entra (la contraseña vale) pero no tiene permiso para CAMBIAR ajustes: ISAPI 403 `lowPrivilege`
+    (o un 401 en la escritura justo después de que la misma contraseña valiera para leer), ONVIF `NotAuthorized` en
+    una escritura tras una lectura autenticada correcta.
+
+    No hereda de `DeviceAuthFailed` a propósito: no es una contraseña mala, así que ni funde el cliente ni cuenta
+    para la espera de 30 min de B6 (el usuario de solo lectura del VMS es lo recomendado, ALTA-EQUIPOS.md).
+    `details["auth_rejection"]`: el equipo contestó como a una contraseña mala (401, `NotAuthorized`) y pudo contarlo
+    como intento fallido; `details["remaining_attempts"]`, los intentos que le quedan si los dijo."""
+
+    code, status = "device_write_denied", 403
+
+    def __init__(self, label: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(f"El usuario de {label} puede leer pero no tiene permiso para cambiar ajustes",
+                         details=details)
+
+
+class DeviceTimeUnverified(DeviceError):
+    """«Poner en hora»: el equipo ACEPTÓ la hora, pero la lectura de comprobación de después falló (p. ej. dejó de
+    responder justo entonces). La hora sí se escribió: quien llama no debe decir que no se pudo poner en hora.
+    `details["cause"]` = código del fallo de la lectura y `details["reason"]` = su texto."""
+
+    code, status = "clock_set_unverified", 502
+
+    def __init__(self, label: str, cause: DeviceError) -> None:
+        super().__init__(f"{label} aceptó la hora, pero no se pudo leer de nuevo para comprobarla: {cause.message}",
+                         details={"cause": cause.code, "reason": cause.message})
+
+
+class DeviceClockManaged(DeviceError):
+    """La hora del equipo la pone otro sistema (NTP, HikCentral/iVMS por SDK, una plataforma, el grabador, GPS):
+    «Poner en hora con este PC» no escribe nada para no pelearse con él. `details["time_mode"]` = modo crudo del
+    equipo («NTP», «SDK», «platform», «timecorrect»…) y `details["ntp_server"]` si se sabe."""
+
+    code, status = "device_clock_managed", 409
+
+    def __init__(self, label: str, time_mode: str, ntp_server: str = "") -> None:
+        self.time_mode, self.ntp_server = time_mode, ntp_server
+        super().__init__(f"La hora de {label} la pone otro sistema (modo «{time_mode}»)",
+                         details={"time_mode": time_mode, "ntp_server": ntp_server})
 
 
 class DeviceLocked(DeviceAuthFailed):
@@ -96,4 +151,5 @@ def text_lock_hint(text: str) -> tuple[bool, int | None]:
     return True, None
 
 
-__all__ = ["BasicNotAllowed", "DeviceLocked", "bad_password_message", "hik_user_check", "text_lock_hint"]
+__all__ = ["BasicNotAllowed", "DeviceClockManaged", "DeviceLocked", "DevicePermissionDenied", "DeviceTimeUnverified",
+           "DeviceWriteDenied", "bad_password_message", "hik_user_check", "text_lock_hint"]

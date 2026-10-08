@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ..health.clock import fmt_skew
 from ..models import EvidenceExport, EvidenceFile, EvidenceManifest
 from .keys import EvidenceKey
 from .segments import segments_in_range
@@ -314,6 +315,16 @@ def _utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
+def _skew_text(skew: float | None) -> str:
+    """Desfase del acta: exacto en segundos («+3,2 s») y, si es grande, también legible: «−57 años
+    (−1.791.489.509,3 s)» para una cámara sin la hora puesta (marca 1970), que antes salía solo en segundos."""
+    if skew is None:
+        return "—"
+    number = f"{abs(skew):,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    exact = f"{'+' if skew >= 0 else '−'}{number} s"
+    return exact if abs(skew) < 60 else f"{fmt_skew(skew)} ({exact})"
+
+
 def _viewer_html(exp: EvidenceExport, ctx: ExportContext) -> str:
     info = {"export_id": exp.export_id, "created_by": exp.created_by, "created_at": exp.created_at.isoformat(),
             "site": ctx.site.get("name", ""), "timezone": ctx.site.get("timezone", "UTC")}
@@ -333,7 +344,7 @@ def _acta_html(exp: EvidenceExport, ctx: ExportContext, cams: list[CameraInfo], 
     h265 = any("265" in (c.codec or "") or "hevc" in (c.codec or "").lower() for c in cams)
     rows_cam = "".join(
         f"<tr><td>{e(c.name)}</td><td class=mono>{e(c.camera_id)}</td><td>{e(c.device)}</td><td>{e(c.codec or '—')}</td>"
-        f"<td>{'—' if c.clock_skew_s is None else e(f'{c.clock_skew_s:+.1f} s')}</td></tr>" for c in cams)
+        f"<td>{e(_skew_text(c.clock_skew_s))}</td></tr>" for c in cams)
     rows_files = "".join(
         f"<tr><td class=mono>{e(f.path)}</td><td class=num>{f'{f.bytes:,}'.replace(',', '.')}</td>"
         f"<td class='mono hash'>{f.sha256}</td></tr>"

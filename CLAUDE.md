@@ -221,9 +221,12 @@ Publícalos en la próxima beta junto con el arreglo del motor.
    `engine.log` o el error de MediaMTX, para que el usuario no tenga que abrir PowerShell. El backend corre como
    `NT SERVICE\VMSBackend`, así que revisa las ACL de `logs\`. `vmsctl` puede dejar un resumen legible en
    `run-status`.
-3. Cuando el motor funcione, comprobar con el usuario que la cámara se ve en el muro y graba. Después, ayudarle a
-   poner la **hora de la cámara**: NTP apuntando al PC, o la hora del PC por ONVIF/ISAPI. Sin eso, las
-   grabaciones salen con fecha de 1970.
+3. Cuando el motor funcione, comprobar con el usuario que la cámara se ve en el muro y graba. Después, poner la
+   **hora de la cámara** con el botón «Poner en hora con este PC» (Estado del sistema → Hora de los equipos;
+   CONTRATO §18.3). Las grabaciones llevan siempre la hora de este PC: con la cámara en 1970 solo sale mal la
+   fecha que ella escribe en la imagen. Este PC no sirve la hora por NTP, así que no sirve «NTP apuntando al PC».
+   El botón no cambia la zona horaria de la cámara: hay que ponerla en su web. Falta probarlo con su cámara
+   (firmware V5.5.0).
 4. Comprobar que **actualizar desde el visor** funciona de verdad en su PC: de beta.2 a la siguiente. Es la
    primera vez que se prueba en real.
 5. «¿Por qué no conecta?» abierto desde la lista de equipos dijo «Este equipo aún no tiene cámaras dadas de

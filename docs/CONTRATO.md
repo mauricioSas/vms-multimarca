@@ -970,6 +970,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | reproducción | Reproducción y «Grabando» sin mentir (todo aditivo salvo lo marcado): `EngineError` (502 `engine_error`) en `vms.core.errors`; §5.2 `list_recordings` mira la carpeta antes de preguntar a MediaMTX y solo «carpeta inexistente»/404 son «sin grabaciones» (antes, cualquier 400, que escondía p. ej. una carpeta sin permiso); §5.2/§6.8 `recording` exige segmentos recientes y `PathStatus`/`/api/status` llevan `recording_error` y `last_recorded_at`; §6.7 `notice` en la línea de tiempo y **`/video` de una cámara que nunca grabó responde 404 (antes 400 `playback_rejected`)**, también el de una cámara desactivada sin ruta en el motor (antes 502); §5.2 un día sin segmentos no se pregunta tal cual a MediaMTX (404 + ERR en su registro); §4.3 rutas inertes de retención para cámaras borradas, desactivadas o en pausa. |
 | 2026-10-08 | energía | §6.8 (aditivo): `GET /api/status` trae `power` en Windows (batería, suspensión con corriente y con batería, acción de la tapa y avisos con «Qué hacer:»), solo lectura y sin tocar `status`/`problems`. §18.9: `#power-alerts` y `#power-root` con `power.js` en `status.html`; `status.js` lanza el evento `vms:status` tras cada lectura. Motivo: un portátil de tienda dejó de grabar a batería (suspensión a los 3 min) y con la tapa cerrada sin que nada lo avisara. |
 | 2026-10-08 | diagnóstico | §18.11 (aditivo): paso nuevo `route` al principio (`vms/ops/netroute.py`, solo con una IPv4 de red local y sin tráfico nuevo: por qué tarjeta de red sale este PC hacia el equipo) y campo `DiagnosisStep.warning` (`false` por defecto; la web lo marca «Aviso» y el resumen cuenta los avisos). **Cambio de comportamiento:** un equipo guardado sin cámaras da `path_ready` en fallo (antes `ok: null`) con la acción de darlas de alta; con todas sus cámaras desactivadas, la acción es activarlas (antes «espera un minuto»), y el resumen solo dice que el vídeo llega si `path_ready` está bien. Motivo: en el PC del usuario, una cámara guardada con la contraseña mala quedó sin su vídeo y el diagnóstico decía que no tenía cámaras o incluso «Todo correcto»; y con el cable del PC desconectado el tráfico salía por el WiFi de la misma red sin que nada lo dijera. |
+| 2026-10-08 | hora de las cámaras | §16.2 nueva capacidad `time_write` (`DeviceClockWriter`; Hikvision y todos los perfiles con `OnvifClient`). §18.3 nueva ruta `POST /api/clock/devices/{device_id}/set` («Poner en hora con este PC», A, auditada), relectura de la hora al volver el vídeo, textos de hora con causa y acción separadas, `useAbsoluteTimestamp: false` fijado en `pathDefaults` y servidor SNTP sin sincronizar descartado. Compatibles: `ClockCheck` no cambia; `DeviceAuthFailed` de un 403 lleva `details.status = 403`; `not_supported()` ya no toma `lowPrivilege` por «recurso que no existe»: ahora es `DevicePermissionDenied`, subclase de `DeviceUnsupported` con el mismo código, así las lecturas se comportan como antes. Revisión del mismo día: la relectura al volver el vídeo solo avisa si la hora empeora (y espera 3 min si la pone otro sistema); `audit.log` también anota las negativas sin hablar con el equipo; ONVIF expresa la hora en su `LocalDateTime`; el botón de la web solo sale con hora manual. Segunda revisión: 422 `validation_error` si llega solo el usuario o solo la contraseña del administrador temporal (antes se descartaban y se probaba el usuario guardado); `DeviceWriteDenied` lleva `details.auth_rejection`/`remaining_attempts` y un rechazo así no se reintenta con la misma contraseña guardada en 30 min; ONVIF comprueba la contraseña con credenciales aunque el equipo conteste sin ellas; un 200 con `lowPrivilege` también es `DevicePermissionDenied`; hora escrita sin poder comprobarla = 200 con `ok: false` (`DeviceTimeUnverified`, `written_unverified`); al arrancar no se relee la hora antes de la primera comprobación horaria. |
 
 ---
 
@@ -1337,13 +1338,15 @@ firmas (§5.1) no cambian.
 
 `api_probe`, `api_channels`, `api_snapshot`, `api_codec_fix`, `onvif`, `onvif_media2`, `discovery_wsd`,
 `discovery_sadp`, `discovery_dhip`, **`time_read`** (implementa `DeviceClockClient.device_time() ->
-DeviceTime`; lo usa B6) y **`security_read`** (implementa `DeviceSecurityClient.security_settings(admin_username,
+DeviceTime`; lo usa B6), **`time_write`** (implementa `DeviceClockWriter.set_device_time(admin_username="",
+admin_password="") -> DeviceTime`, «Poner en hora con este PC», §18.3; Hikvision por ISAPI y todo lo que usa
+`OnvifClient`; Dahua todavía no) y **`security_read`** (implementa `DeviceSecurityClient.security_settings(admin_username,
 admin_password) -> DeviceSecuritySettings`; lo usa B6 con credenciales temporales que no se guardan ni se
 registran); `rtsps` y `mjpeg_http` (v2.1); `events` y `ptz` (fuera de la v2).
 
 Las capacidades se cumplen en los dos sentidos (`tests/vendors/test_capabilities.py`): el driver que las
 declara tiene un cliente que las implementa, y el cliente que las implementa las declara (los perfiles «+ ONVIF»
-reciben `OnvifClient` y declaran `time_read` y `security_read`). B6 **pregunta al registro** (`vms/ops/drivers.py`:
+reciben `OnvifClient` y declaran `time_read`, `time_write` y `security_read`). B6 **pregunta al registro** (`vms/ops/drivers.py`:
 capacidad y `has_api`) antes de pedir un cliente: a un equipo sin API (Ezviz, Reolink, RTSP manual) no se le
 pide, porque `client_for()` lanza `DeviceUnsupported`.
 
@@ -1457,13 +1460,79 @@ analizar texto). Desfase = hora del equipo − hora del PC a mitad del viaje. Um
 **Misma semántica en todas las marcas (revisión v2):** `DeviceTime.device_time` es el instante real del reloj
 del equipo y el desfase se mide en UTC; `DeviceTime.utc_offset_s` es la zona con la que el equipo sobreimprime
 la hora (Hikvision: `localTime`/`timeZone` POSIX con su horario de verano; Dahua: `NTP.TimeZone` + `Locales`;
-ONVIF: sin dato). Si se conoce y no coincide con la del PC, `warning` aparte («la hora que sale en la imagen no
-es la de la tienda»), aunque el reloj esté en hora. Una hora local sin zona cuya regla no se entiende no se
+ONVIF: sin dato, aunque si el equipo da `LocalDateTime` el instante se expresa en esa hora local para que «marca
+el 01-01-1970» diga la fecha de su imagen y no la UTC). Si se conoce y no coincide con la del PC, `warning` aparte
+(«la hora que sale en la imagen no es la de la tienda»), aunque el reloj esté en hora. Una hora local sin zona cuya regla no se entiende no se
 adivina (lectura fallida, «Desconocido»). Si ONVIF lee la hora sin autenticar pero rechaza la contraseña en
 `GetNTP`, devuelve la hora con `credentials_rejected` y B6 deja de usar esa contraseña 30 min (como con un
 `DeviceAuthFailed`) para no bloquear el usuario del equipo.
 Cada medida se guarda (§18.17) y la exportación incluye la última en el manifiesto.
 Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck]}`; `POST /api/clock/check` (A).
+
+**Las grabaciones llevan la hora de este PC**, no la de la cámara: `mtx_config.path_defaults` fija
+`useAbsoluteTimestamp: false` (el valor por defecto de MediaMTX, fijado para que no cambie sin que se note;
+validado con MediaMTX v1.21.1 `--validate-conf`). Un equipo desajustado solo estropea la hora que escribe en la
+imagen y lo que guarde él mismo, y los textos lo dicen así.
+
+**Textos (revisión de la hora de las cámaras):** `health/clock.py` `assess()` devuelve estado, causa y acción por
+separado (`Assessment`); `ClockCheck.message_es` las une con «Qué hacer:» y el paso `clock` de «¿Por qué no
+conecta?» lleva la acción sin ese prefijo (la interfaz ya lo pone). Una fecha anterior a 2015 (01-01-1970,
+01-01-2000…) es «no tiene la hora puesta» (crítico). Desfases grandes en días o años (`fmt_skew`; también en el
+informe y en la web). Una sola acción: «Poner en hora con este PC» si el driver tiene `time_write` (dice que hace
+falta ser administrador del programa y, si el botón no sale, pulsar antes «Comprobar ahora»); si no, la web del
+equipo; con NTP, revisar su servidor; con la zona distinta, cambiarla en la web del equipo. «NTP con la IP de
+este PC» solo se aconseja si este PC sirve la hora (`pc_time_server_enabled()`: W32Time
+`TimeProviders\NtpServer\Enabled` = 1). La consulta SNTP del PC descarta un servidor con LI = 3 o estrato 0
+(`UnsyncedServer`); ese caso y «No responde el servidor de hora» también dicen qué hacer.
+
+**«Poner en hora con este PC»** — `POST /api/clock/devices/{device_id}/set` (A), cuerpo opcional
+`{"username", "password"}` (administrador del equipo TEMPORAL: se usa una vez, solo Digest, no se guarda ni se
+registra) → `ClockSetResult` `{"ok", "message_es", "check": ClockCheck, "admin_credentials_used"}`. Una sola
+escritura que pide la persona; **nunca automática**. Escribe la hora de este PC **sin cambiar la zona del equipo**
+y la lee de nuevo: `ok` = |desfase| < `clock_warn_s`. Si el equipo acepta la hora pero falla la lectura de
+comprobación (el driver lanza `DeviceTimeUnverified`, código `clock_set_unverified`), no es un error: 200 con `ok:
+false`, «se ha escrito, pero no se ha podido comprobar» y qué hacer, `check` sin medida (`unknown`, no se guarda) y
+`written_unverified` en `audit.log`. Hikvision: GET `/ISAPI/System/time`, solo cambia `<localTime>`
+(en la zona del propio equipo y con su mismo formato, con desfase o sin él) y PUT del mismo XML; ONVIF:
+`SetSystemDateAndTime` Manual con la misma `TZ` y horario de verano (si el equipo no acepta su propia zona, se
+repite sin zona). Solo con la hora puesta a mano: con NTP, SDK/`platform` (HikCentral, iVMS-4200), `timecorrect`
+(el grabador), `satellite` u ONVIF la pone otro sistema y responde **409 `device_clock_managed`** sin escribir.
+Errores (todos con «Qué hacer:»): **403 `device_write_denied`** (el usuario guardado es de solo lectura: ISAPI 403
+`lowPrivilege` —en el GET o en el PUT, o en un 200 con `<ResponseStatus>` `lowPrivilege`— o un 401 en el PUT justo
+después de que la misma contraseña valiera en el GET, ONVIF `NotAuthorized` en la escritura tras una lectura
+autenticada correcta, repetida con credenciales si el equipo contestó sin ellas; NO es contraseña mala: ni funde el
+cliente ni bloquea las lecturas 30 min; la web pide entonces el administrador. Con el 401 o `NotAuthorized` el equipo
+contesta como a una contraseña mala y puede contarlo como intento fallido: el mensaje dice los intentos que le quedan
+si el equipo los da y, durante 30 min o hasta que cambie la contraseña guardada, el siguiente clic sin administrador
+temporal responde este mismo 403 sin hablar con el equipo), 409 `device_clock_managed`, 409 `conflict` (ya se está
+poniendo en hora), 422 `clock_set_unsupported`, 422 `validation_error` (contraseña de más de 256 caracteres, o solo
+uno de los dos campos: un usuario vacío o de espacios con contraseña, o al revés; nunca se descarta en silencio para
+probar con el usuario guardado), 501 `device_unsupported` (el equipo no deja cambiarla), 502 `device_auth_failed`
+(también sin probar si la contraseña guardada está en la pausa de 30 min) / `device_locked` / `device_unreachable` /
+`device_basic_not_allowed` / `device_protocol_error` u otro error del equipo / `clock_set_failed` (fallo
+inesperado). Queda en `audit.log` como `camera_clock_set` (`result`, `skew_before_s`, `skew_after_s`,
+`admin_credentials_used`; nunca contraseñas ni el usuario administrador), también las negativas sin hablar con el
+equipo (`clock_set_unsupported`, `device_auth_failed` por la pausa, `device_write_denied` recordado, `conflict`), y
+en la línea de tiempo (capa
+`clock`). En la web el botón solo sale a los administradores, en filas con aviso y la hora puesta a mano
+(`time_mode` `manual`): con NTP u otro sistema el servidor siempre lo rechazaría. Su diálogo no manda nada si solo
+se ha escrito el usuario o la contraseña (lo dice en el propio diálogo) y abre los campos del administrador con
+`device_write_denied` y `device_auth_failed`; no muestra la hora del navegador, que puede ser de otro ordenador.
+**Relectura al volver el vídeo:** cuando una cámara vuelve a dar vídeo (vigilancia de 30 s, aunque no llegara al
+aviso `camera_down`), se lee la hora de su equipo en seguida (como mucho una vez por minuto y una a la vez): una
+cámara sin pila de reloj vuelve con 01-01-1970 tras un corte de luz y queda marcada en segundos, sin escribir nada.
+Al arrancar no se relee hasta que pasa la primera comprobación horaria, que ya lee todos los equipos: las cámaras
+que el motor está conectando «vuelven» justo entonces y salían dos lecturas, dos avisos y dos eventos.
+La medida se guarda siempre (una lectura fallida no), pero el aviso `clock_skew` y el evento de la línea de tiempo
+solo salen si la hora está **peor** que en la última medida guardada (`ok`/`unknown` < `warning` < `critical`): una
+cámara que pierde el vídeo a ratos con la hora ya mal no repite el aviso grave en cada vuelta (de eso ya avisa la
+comprobación de cada hora). Si la hora la pone otro sistema (`time_mode` distinto de `manual`), antes de avisar se
+vuelve a leer pasados 3 minutos (`CLOCK_CONFIRM_S`): tras un corte de luz el NTP tarda un poco en dársela.
+
+**Usuario sin permiso en una LECTURA:** un 403 ISAPI `lowPrivilege` es `DevicePermissionDenied`
+(`vms/vendors/errors.py`), que hereda de `DeviceUnsupported` (mismo código `device_unsupported` que antes) y nunca
+de `DeviceAuthFailed`: un usuario sin permiso para la hora o para una instantánea no funde el cliente ni deja la
+API del equipo en pausa 30 min.
 
 ### 18.4 Previsión de días de grabación (prioridad 4)
 

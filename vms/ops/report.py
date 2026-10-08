@@ -24,6 +24,7 @@ from vms.core.atomic import atomic_write_text
 from vms.core.interfaces import RecordingSpan
 
 from .csvsafe import text_cell
+from .health.clock import fmt_skew
 from .models import HEALTH_CAUSE_ES, CameraDayReport, ClockCheck, HealthReport, RetentionForecast
 
 log = logging.getLogger("vms.ops.report")
@@ -111,7 +112,8 @@ def build(site_id: str, day: date, tz_name: str, cams: list[CameraInput], *, now
         elif c.score_min is not None and c.score_min < 80:
             warn.append(f"{c.name}: {_causes(c.causes) or 'imagen mejorable'} (puntuación {c.score_min})")
         if c.clock and c.clock.status == "critical":
-            crit.append(f"{c.name}: hora desajustada {c.clock.skew_s:+.0f} s" if c.clock.skew_s is not None
+            # «−56 años», no «−1791489509 s»: una cámara sin hora puesta marca 1970
+            crit.append(f"{c.name}: hora desajustada ({fmt_skew(c.clock.skew_s)})" if c.clock.skew_s is not None
                         else f"{c.name}: hora desajustada")
         elif c.clock and c.clock.status == "warning":
             warn.append(f"{c.name}: {c.clock.message_es}")

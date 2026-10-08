@@ -18,6 +18,7 @@ from .host import dynamic
 log = logging.getLogger("vms.ops.drivers")
 
 TIME_READ = "time_read"
+TIME_WRITE = "time_write"    # «Poner en hora con este PC»
 SECURITY_READ = "security_read"
 GENERIC_DRIVERS = frozenset({"onvif", "generic"})   # no dicen la marca real del equipo
 
@@ -81,5 +82,5 @@ def brand_from(vendor: str, manufacturer: str = "", model: str = "") -> str | No
     return None
 
 
-__all__ = ["GENERIC_DRIVERS", "SECURITY_READ", "TIME_READ", "brand_from", "capabilities", "driver_name",
-           "has_api", "spec_of"]
+__all__ = ["GENERIC_DRIVERS", "SECURITY_READ", "TIME_READ", "TIME_WRITE", "brand_from", "capabilities",
+           "driver_name", "has_api", "spec_of"]

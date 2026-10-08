@@ -1,9 +1,10 @@
 """Mock ONVIF (Device + Media ver10 + Media2 ver20) con WS-Security UsernameToken (PasswordDigest).
 
-Operaciones: GetSystemDateAndTime (sin autenticar), GetServices, GetCapabilities, GetDeviceInformation,
-GetNetworkInterfaces, GetNTP; Media1 GetProfiles/GetStreamUri/GetSnapshotUri; Media2 (Profile T, si
-`media2=True`) tr2:GetProfiles/tr2:GetStreamUri/tr2:GetSnapshotUri. Respuestas SOAP 1.2 con los espacios de
-nombres reales.
+Operaciones: GetSystemDateAndTime (sin autenticar; `UTCDateTime` y `LocalDateTime` en la zona `tz`),
+SetSystemDateAndTime, GetServices, GetCapabilities,
+GetDeviceInformation, GetNetworkInterfaces, GetNTP; Media1 GetProfiles/GetStreamUri/GetSnapshotUri; Media2
+(Profile T, si `media2=True`) tr2:GetProfiles/tr2:GetStreamUri/tr2:GetSnapshotUri. Respuestas SOAP 1.2 con los
+espacios de nombres reales.
 
 Casos de la matriz §4.2: perfil único (`profiles` con uno), reloj desfasado (`clock_offset_s`: la hora del
 equipo y la validación del `Created` del token usan ese reloj; ±`max_skew_s`), ONVIF desactivado
@@ -32,6 +33,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from tools.mocks.http_auth import AuthMode, HttpAuthChecker
+from vms.vendors.clock import posix_zone
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -95,6 +97,11 @@ class OnvifMock:
     clock_offset_s: float = 0.0
     max_skew_s: float = 300.0
     date_time_type: str = "NTP"
+    tz: str = "CET-1CEST,M3.5.0,M10.5.0/3"
+    daylight_savings: bool = False
+    can_write: bool = True                  # False: el usuario lee pero SetSystemDateAndTime da NotAuthorized
+    reject_tz: bool = False                 # SetSystemDateAndTime con zona → InvalidTimeZone
+    set_bodies: list[str] = field(default_factory=list)
     http_auth: AuthMode = "none"            # Digest/Basic HTTP además del UsernameToken (401 + reto si falla)
     ws_token: bool = True                   # False: ignora el UsernameToken (solo Digest HTTP)
     clock_needs_auth: bool = False          # pide credenciales hasta para GetSystemDateAndTime
@@ -195,17 +202,25 @@ class OnvifMock:
                 return denied
         if op == "GetSystemDateAndTime":
             now = self.now()
+            zone = posix_zone(self.tz)
+            off = zone.offset_at_utc(now) if zone is not None else None
+
+            def when(tag: str, t: datetime) -> str:
+                return (f"<tt:{tag}><tt:Time><tt:Hour>{t.hour}</tt:Hour><tt:Minute>{t.minute}</tt:Minute>"
+                        f"<tt:Second>{t.second}</tt:Second></tt:Time><tt:Date><tt:Year>{t.year}</tt:Year>"
+                        f"<tt:Month>{t.month}</tt:Month><tt:Day>{t.day}</tt:Day></tt:Date></tt:{tag}>")
             return self._reply(
                 "<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>"
-                f"<tt:DateTimeType>{self.date_time_type}</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings>"
-                "<tt:TimeZone><tt:TZ>CET-1CEST,M3.5.0,M10.5.0/3</tt:TZ></tt:TimeZone>"
-                f"<tt:UTCDateTime><tt:Time><tt:Hour>{now.hour}</tt:Hour><tt:Minute>{now.minute}</tt:Minute>"
-                f"<tt:Second>{now.second}</tt:Second></tt:Time><tt:Date><tt:Year>{now.year}</tt:Year>"
-                f"<tt:Month>{now.month}</tt:Month><tt:Day>{now.day}</tt:Day></tt:Date></tt:UTCDateTime>"
-                "</tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>")
+                f"<tt:DateTimeType>{self.date_time_type}</tt:DateTimeType>"
+                f"<tt:DaylightSavings>{'true' if self.daylight_savings else 'false'}</tt:DaylightSavings>"
+                f"<tt:TimeZone><tt:TZ>{escape(self.tz)}</tt:TZ></tt:TimeZone>"
+                + when("UTCDateTime", now) + (when("LocalDateTime", now + off) if off is not None else "")
+                + "</tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>")
         denied = self._gate(request, xml)
         if denied is not None:
             return denied
+        if op == "SetSystemDateAndTime":
+            return self._set_date_time(xml, via_http=bool(request.headers.get("authorization")))
         if op == "GetServices":
             def svc(ns: str, path: str) -> str:
                 return (f"<tds:Service><tds:Namespace>{ns}</tds:Namespace><tds:XAddr>{self.base_url}{path}</tds:XAddr>"
@@ -242,6 +257,31 @@ class OnvifMock:
                 "<tt:Type>DNS</tt:Type><tt:DNSname>pool.ntp.org</tt:DNSname></tt:NTPManual></tds:NTPInformation>"
                 "</tds:GetNTPResponse>")
         return Response(_fault("ter:ActionNotSupported", f"{op} not supported"), status_code=400, media_type=SOAP_CT)
+
+    def _set_date_time(self, xml: str, *, via_http: bool = False) -> Response:
+        """SetSystemDateAndTime (ya autenticado): sin permiso de escritura → NotAuthorized (como un usuario sin la
+        clase WRITE_SYSTEM), o 401 con reto si llegó con Digest HTTP; `reject_tz` → InvalidTimeZone si trae zona; si
+        no, el reloj pasa a la hora UTC."""
+        self.set_bodies.append(xml)
+        if not self.can_write:
+            return self.http.challenge() if via_http else self._not_authorized()
+
+        def tag(name: str) -> str:
+            m = re.search(rf"<(?:[\w.\-]+:)?{name}>([^<]*)</", xml)
+            return m.group(1).strip() if m else ""
+        if self.reject_tz and tag("TZ"):
+            return Response(_fault("ter:InvalidArgVal", "Invalid time zone (ter:InvalidTimeZone)"), status_code=400,
+                            media_type=SOAP_CT)
+        try:
+            utc = datetime(int(tag("Year")), int(tag("Month")), int(tag("Day")), int(tag("Hour")), int(tag("Minute")),
+                           int(tag("Second")), tzinfo=timezone.utc)
+        except ValueError:
+            return Response(_fault("ter:InvalidArgVal", "Invalid date or time"), status_code=400, media_type=SOAP_CT)
+        self.clock_offset_s = (utc - datetime.now(timezone.utc)).total_seconds()
+        self.date_time_type = tag("DateTimeType") or self.date_time_type
+        if tag("TZ"):
+            self.tz = tag("TZ")
+        return self._reply("<tds:SetSystemDateAndTimeResponse/>")
 
     # ------------------------------------------------------------------ media (ver10)
     def _profile_xml(self, p: OnvifProfile) -> str:

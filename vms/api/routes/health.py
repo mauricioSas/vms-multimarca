@@ -14,6 +14,7 @@ no hace falta tocar `vms/api/app.py`.
 | `PUT /api/camera-health/{id}/config` | A |
 | `POST /api/camera-health/{id}/check` | A |
 | `GET /api/clock` · `POST /api/clock/check` | O · A |
+| `POST /api/clock/devices/{device_id}/set` («Poner en hora con este PC»; queda en audit.log) | A |
 | `GET /api/clock/settings` · `PUT /api/clock/settings` (`pc_sntp_enabled`) | A |
 | `GET /api/retention-forecast` · `POST /api/retention-forecast/simulate` | O · A |
 | `GET /api/health-report?date=` · `GET /api/health-report.csv?date=` | O |
@@ -29,7 +30,7 @@ from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from starlette.requests import HTTPConnection
 from starlette.responses import Response
 
@@ -254,6 +255,33 @@ async def get_clock(p: Principal = Depends(require_operator), state: AppState = 
 async def clock_check(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
     pc, devices = await ops.clock_check_all()
     return json_response({"pc": pc, "devices": devices})
+
+
+class ClockSetBody(BaseModel):
+    """Credenciales de administrador del equipo, TEMPORALES y opcionales (sin ellas, el usuario guardado). Se usan
+    una vez y no se guardan ni se registran (como en la auditoría de seguridad, CONTRATO §18.12)."""
+
+    username: str = Field("", max_length=64)
+    password: SecretStr = Field(default=SecretStr(""), max_length=256)
+
+    def __repr__(self) -> str:   # nunca la contraseña en trazas
+        return f"ClockSetBody(username={self.username!r})"
+
+
+@router.post("/clock/devices/{device_id}/set")
+async def clock_set(device_id: str, request: Request, body: ClockSetBody = Body(default=ClockSetBody()),
+                    p: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
+    """«Poner en hora con este PC»: una escritura comprobada (CONTRATO §18.3) → `ClockSetResult`."""
+    password = body.password.get_secret_value()
+    username = body.username.strip()
+    if bool(username) != bool(password):
+        # antes se descartaba en silencio y se probaba con el usuario guardado (el de solo lectura): volvía el
+        # mismo «no tiene permiso» sin decir que faltaba un dato
+        raise ValidationFailed("Falta el usuario o la contraseña de administrador del equipo. Qué hacer: escribe los "
+                               "dos, o deja los dos vacíos para usar el usuario guardado.")
+    result = await ops.clock_set(device_id, p.username, client_ip(request), admin_username=username,
+                                 admin_password=password)
+    return json_response(result)
 
 
 class ClockSettings(BaseModel):

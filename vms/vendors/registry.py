@@ -23,7 +23,8 @@ log = logging.getLogger("vms.vendors.registry")
 REGISTRY: dict[str, DriverSpec] = {}
 MATURITY_ORDER = {"experimental": 0, "community": 1, "fixtures": 2, "verified": 3}
 API_CAPABILITIES = frozenset({Capability.API_PROBE, Capability.API_CHANNELS, Capability.API_SNAPSHOT,
-                              Capability.API_CODEC_FIX, Capability.TIME_READ, Capability.SECURITY_READ})
+                              Capability.API_CODEC_FIX, Capability.TIME_READ, Capability.TIME_WRITE,
+                              Capability.SECURITY_READ})
 _ID_RE = re.compile(VENDOR_ID_PATTERN)
 
 

@@ -8,6 +8,7 @@ Endpoints usados (todos de lectura salvo «Corregir códec»):
   GET /ISAPI/Streaming/channels/<N>0<1|2>/picture       snapshot JPEG (solo en memoria)
   GET/PUT /ISAPI/Streaming/channels/<N>02               «Corregir códec» (copia previa y deshacer)
   GET /ISAPI/System/time, /ISAPI/System/time/ntpServers hora y modo (TIME_READ)
+  GET/PUT /ISAPI/System/time                            «Poner en hora con este PC» (TIME_WRITE, solo `localTime`)
   GET /ISAPI/System/Network/{telnetd,ssh,UPnP,EZVIZ}, /ISAPI/Security/adminAccesses   (SECURITY_READ)
 
 Numeración: el canal N corresponde a los flujos N01 (principal) y N02 (subflujo), igual que las rutas RTSP
@@ -20,18 +21,20 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
 
-from vms.core.errors import DeviceError, DeviceProtocolError, DeviceUnsupported
+from vms.core.errors import DeviceAuthFailed, DeviceError, DeviceProtocolError, DeviceUnsupported
 from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings, DeviceTime
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import VendorHttp
 from .clock import Stopwatch, parse_naive_or_aware, posix_zone, round_offset
 from .codec import StreamConfigBackup, normalize_codec
+from .errors import (BasicNotAllowed, DeviceClockManaged, DeviceLocked, DevicePermissionDenied, DeviceTimeUnverified,
+                     DeviceWriteDenied)
 
 log = logging.getLogger("vms.vendors.hikvision")
 
@@ -285,19 +288,26 @@ class HikvisionClient:
     async def restore_stream_config(self, backup: StreamConfigBackup) -> None:
         await self._put_checked(backup.resource, backup.raw)
 
-    async def _put_checked(self, resource: str, xml_text: str) -> None:
-        resp = await self.http.put(resource, xml_text.encode("utf-8"))
+    async def _put_checked(self, resource: str, xml_text: str, *, http: VendorHttp | None = None) -> None:
+        resp = await (http or self.http).put(resource, xml_text.encode("utf-8"))
         if resp.content and b"ResponseStatus" in resp.content:
             root = parse_xml(resp.text, "ResponseStatus")
             code = _text(root, "statusCode")
+            if code not in ("", "1", "7") and _text(root, "subStatusCode").lower() == "lowprivilege":
+                # firmwares que dicen «sin permiso» con un 200: igual que el 403 `lowPrivilege` (no es un fallo del
+                # equipo; con la hora, el usuario de solo lectura)
+                raise DevicePermissionDenied(self.http.label, resource)
             if code not in ("", "1", "7"):   # 1 = OK, 7 = OK y hace falta reiniciar
                 raise DeviceProtocolError(f"{self.http.label} rechazó el cambio: {_text(root, 'subStatusCode')}",
                                           details={"status_code": code})
 
     # ------------------------------------------------------------------ TIME_READ
     async def device_time(self) -> DeviceTime:
+        return await self._read_time(self.http)
+
+    async def _read_time(self, http: VendorHttp) -> DeviceTime:
         with Stopwatch() as sw:
-            resp = await self.http.get("/ISAPI/System/time")
+            resp = await http.get("/ISAPI/System/time")
         root = parse_xml(resp.text, "System/time")
         local = parse_naive_or_aware(_text(root, "localTime"))
         if local is None:
@@ -318,18 +328,98 @@ class HikvisionClient:
         mode_raw = _text(root, "timeMode").lower()
         mode: Literal["ntp", "manual", "unknown"] = "ntp" if mode_raw == "ntp" else \
             "manual" if mode_raw == "manual" else "unknown"
-        ntp = ""
-        if mode == "ntp":
-            try:
-                r = await self.http.get("/ISAPI/System/time/ntpServers", ok_404=True)
-                if r.status_code == 200:
-                    nroot = parse_xml(r.text, "ntpServers")
-                    ntp = _text(nroot, "NTPServer/hostName") or _text(nroot, "NTPServer/ipAddress")
-            except DeviceError as exc:
-                log.debug("ntpServers no disponible en %s: %s", self.http.label, exc)
+        ntp = await self._ntp_server(http) if mode == "ntp" else ""
         return DeviceTime(device_time=dt, measured_at=sw.midpoint, round_trip_ms=round(sw.round_trip_ms, 1),
                           time_mode=mode, ntp_server=ntp, source="isapi",
                           utc_offset_s=round_offset(utc_offset) if utc_offset is not None else None)
+
+    async def _ntp_server(self, http: VendorHttp) -> str:
+        try:
+            r = await http.get("/ISAPI/System/time/ntpServers", ok_404=True)
+            if r.status_code == 200:
+                nroot = parse_xml(r.text, "ntpServers")
+                return _text(nroot, "NTPServer/hostName") or _text(nroot, "NTPServer/ipAddress")
+        except DeviceError as exc:
+            log.debug("ntpServers no disponible en %s: %s", self.http.label, exc)
+        return ""
+
+    # ------------------------------------------------------------------ TIME_WRITE
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime:
+        """«Poner en hora con este PC» (CONTRATO §18.3): GET /ISAPI/System/time, se cambia SOLO `<localTime>` (la
+        hora de este PC en la zona del propio equipo, con el mismo formato que dio el equipo: con desfase o sin él)
+        y PUT del mismo XML, así se conservan el espacio de nombres y los nodos de cada firmware. `timeMode` y
+        `timeZone` no se tocan. Después se lee de nuevo la hora para comprobarla.
+
+        Solo con la hora puesta a mano (`manual`): con NTP, SDK (HikCentral, iVMS-4200), `platform`, `timecorrect`
+        (la pone el grabador), `satellite` u ONVIF la pone otro sistema y se lanza `DeviceClockManaged` sin
+        escribir nada. Un 403 `lowPrivilege` al escribir → `DeviceWriteDenied` (usuario de solo lectura); también un
+        401 en el PUT, porque la misma contraseña acaba de valer en el GET (no se funde el cliente), con
+        `details["auth_rejection"]` (el equipo pudo contarlo como intento fallido) y los intentos que le quedan.
+        Con `admin_username`, credenciales de administrador temporales: solo Digest, no se guardan."""
+        http, temp = self.http, None
+        if admin_username:
+            dev = self.device.model_copy(update={"username": admin_username})
+            http = temp = VendorHttp(dev, admin_password, timeout=self._timeout, transport=self._transport,
+                                     allow_basic=False)
+        try:
+            try:
+                resp = await http.get("/ISAPI/System/time")
+            except DevicePermissionDenied as exc:      # ni siquiera puede leerla: menos aún cambiarla
+                raise DeviceWriteDenied(self.http.label, details={"status": 403}) from exc
+            raw = resp.text
+            root = parse_xml(raw, "System/time")
+            mode = _text(root, "timeMode")
+            if mode and mode.lower() != "manual":
+                ntp = await self._ntp_server(http) if mode.lower() == "ntp" else ""
+                raise DeviceClockManaged(self.http.label, mode, ntp)
+            current = parse_naive_or_aware(_text(root, "localTime"))
+            if current is None:
+                raise DeviceProtocolError(f"{self.http.label} no devolvió su hora")
+            zone_text = _text(root, "timeZone")
+            zone = posix_zone(zone_text)
+            now = datetime.now(timezone.utc)
+            offset = zone.offset_at_utc(now) if zone is not None else None
+            if offset is None:
+                offset = current.utcoffset()   # zona sin entender: el desfase que trae su propia hora
+            if offset is None:
+                raise DeviceProtocolError(f"{self.http.label}: su zona horaria ({zone_text[:40] or 'vacía'}) no se "
+                                          "entiende y no se escribe una hora que podría quedar desplazada")
+            # al segundo más cercano (ISAPI no admite fracciones): el error queda por debajo de medio segundo
+            local = (now + timedelta(milliseconds=500)).replace(microsecond=0).astimezone(timezone(offset))
+            value = local.isoformat(timespec="seconds") if current.tzinfo is not None else \
+                local.replace(tzinfo=None).isoformat(timespec="seconds")
+            new_xml, n = re.subn(r"(<localTime>)[^<]*(</localTime>)", rf"\g<1>{value}\g<2>", raw, count=1)
+            if not n:
+                raise DeviceProtocolError(f"{self.http.label} no informa de su hora (localTime)")
+            authed = http.credentialed_requests > 0     # el GET de la hora acaba de valer CON estas credenciales
+            try:
+                await self._put_checked("/ISAPI/System/time", new_xml, http=http)
+            except DevicePermissionDenied as exc:       # 403 `lowPrivilege`: usuario de solo lectura
+                raise DeviceWriteDenied(self.http.label, details={"status": 403}) from exc
+            except DeviceAuthFailed as exc:
+                if isinstance(exc, (DeviceLocked, BasicNotAllowed)):
+                    raise
+                if exc.details.get("status") == 403:    # un 403 sin más: falta de permisos
+                    http.keep_credentials()
+                    raise DeviceWriteDenied(self.http.label, details={"status": 403}) from exc
+                if authed:
+                    # un 401 de un firmware que contesta así a la escritura de un usuario sin permiso: la misma
+                    # contraseña acaba de valer para leer, no es mala (ni se funde). Pero es la respuesta de una
+                    # contraseña mala y el equipo puede contarla como intento fallido: quien llama no insiste
+                    http.keep_credentials()
+                    raise DeviceWriteDenied(self.http.label, details={
+                        "status": 401, "auth_rejection": True,
+                        "remaining_attempts": exc.details.get("remaining_attempts")}) from exc
+                raise
+            log.info("Hora de %s puesta con la de este PC (zona del equipo %s sin cambios)", self.http.label,
+                     zone_text[:40] or "-")
+            try:
+                return await self._read_time(http)
+            except DeviceError as exc:      # escrita: lo que falla es solo la comprobación
+                raise DeviceTimeUnverified(self.http.label, exc) from exc
+        finally:
+            if temp is not None:
+                await temp.aclose()
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:
