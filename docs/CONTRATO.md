@@ -133,6 +133,13 @@ Una cadena vacía en un ajuste de dirección (p. ej. `mtx_webrtc_ice_tcp=""`) si
 Ojo: en el `.env` una variable vacía significa «valor por defecto» (`env_ignore_empty`); para desactivar
 ICE por UDP o por TCP desde el `.env` se escribe `off` (`VMS_MTX_WEBRTC_ICE_TCP=off`). Ver §12.
 
+Solo pruebas y desarrollo: con `VMS_ENV_FILE_ONLY=1` (`1`, `true`, `yes` u `on`) en el entorno del
+proceso, `vms.core.settings.env_files()` no busca `<instalación>/.env` ni `<datos>/.env` (ni comprueba
+si existen) y solo lee `VMS_ENV_FILE`. Lo fijan `tests/conftest.py` y `tools/dev_run.py` (y este pasa
+también `VMS_DATA_DIR` a sus procesos) para no leer nunca el `.env` del producto instalado. Afecta igual a
+los ajustes de la analítica y del panel central, que usan `env_files()`. Una instalación no la usa, y sin
+ella el orden es el de siempre.
+
 ### 3.2 Carpeta de datos (`vms.core.paths.AppPaths`)
 
 | SO | Ruta por defecto |
@@ -683,8 +690,27 @@ Lo que la analítica necesita del backend y aún no existe en `vms/` (lo conecta
 | `asgi_client(app, auth=...)` | cliente httpx sin red contra un mock |
 | `mock_server(app)` | sirve un mock en puerto real (`.base_url`, `.port`) |
 
-Además el `conftest` borra las variables `VMS_*` del entorno, usa keyring en memoria y manda
-los temporales a `.tmp/pytest`. Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`).
+Además el `conftest` borra las variables `VMS_*` del entorno (salvo `VMS_TEST_*` y `VMS_MEDIAMTX_BIN*`),
+fija `VMS_ENV_FILE_ONLY=1` (§3.1), usa keyring en memoria y manda los temporales a `.tmp/pytest`.
+Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`). También:
+
+- **Instalación real intocable**: un gancho de auditoría (`RealInstallGuard`) hace fallar la prueba que
+  abra, liste, cree o borre algo en `%ProgramData%\VMSMultimarca`, `%ProgramFiles%\VMSMultimarca` o las
+  carpetas `InstallDir` y `DataDir` de `HKLM\SOFTWARE\VMSMultimarca` (las rutas reales, tomadas al cargar el
+  `conftest`), o que lance un programa (`subprocess`, `os.system`, `os.startfile`, `os.spawn*`, `os.exec*`)
+  cuya línea de órdenes, carpeta de trabajo incluida, nombre una de ellas. Vigila el proceso de pytest: no ve
+  lo que haga por dentro un proceso hijo, ni el registro ni `ctypes` (para eso, nunca como administrador). Solo
+  se salta en el e2e del instalador, los mismos archivos que `tests/windows/conftest.is_e2e_file`
+  (`tests/windows/e2e/` y `tests/windows/test_update_*.py`). `TEST_ONLY_ENV` (`VMS_ENV_FILE`,
+  `VMS_ENV_FILE_ONLY`, `PYTHON_KEYRING_BACKEND`) nunca se pasa al instalador real ni a los programas
+  instalados (`tests/windows/harness.product_environ()`).
+- **PostgreSQL en Windows**: `pg_server_dsn` usa una copia de `pginstall` con las zonas horarias de `tzdata`
+  en `.tmp/pginstall-<pgserver>-tz<IANA>` (`tools/pgserver_tz.py`; la rueda de Windows de pgserver no las
+  trae). El servidor embebido corre en UTC siempre que tenga zonas horarias; en Windows sin `tzdata` se queda
+  en GMT (el mismo desfase) y avisa.
+- **Bucle de eventos en Windows** (gancho `pytest_asyncio_loop_factories`, pytest-asyncio ≥ 1.4): las pruebas
+  asíncronas de `tests/central`, `tests/analytics`, `tests/db` y las que usan `central_app` van con
+  `SelectorEventLoop`, como esos procesos; el resto con `ProactorEventLoop`, como el backend.
 
 ### 9.2 Simulador de cámaras (`tools/camsim`)
 
@@ -828,6 +854,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-04 | corrector final | §6.12 (encontrado por la prueba de sistema): los formularios de login y primer administrador (VMS y panel central) llegan con el botón desactivado y `method="post"`; el script lo activa al enganchar el envío. Antes, un clic antes de cargar el script enviaba el formulario por GET con la contraseña en la URL. |
 | 2026-10-05 | arquitecto | **Versión 2.0 (fase 0 de la v2).** Nuevas §13-§18. Cambios en lo existente, todos compatibles: `CONFIG_VERSION` 2 con migración automática (§13.8); modelos persistentes con `extra="allow"` y cuerpos de petición filtrados con `known_fields_only`; `Vendor` pasa de lista cerrada a identificador validado contra el registro (`DeviceCreate` sigue respondiendo 422 con una marca desconocida); `DeviceKind` admite `dvr` y `xvr`; `DeviceInfo.firmware_date`; extra `[vms]` con `numpy` y `opencv-python-headless` (B6); extra `[test]` y `requirements-test.txt`; `FakeEngine(clock=…)`; rutas de cámaras, vivo y grabaciones llaman a `vms/api/permissions.py` (sin efecto hasta B6); routers vacíos registrados; `devices.js` separado de `panel.js`; contenedores y módulos vacíos en las páginas (§18.9); punto de extensión del panel central (`central/extensions.py`). |
 | 2026-10-05 | arquitecto | **Revisión de la fase 0** (antes de lanzar los bloques). Compatibles: §7.3 bis (proveedores del latido por bloque, `vms/core/heartbeat_extras.py`, ya llamado por backend y agente); `VmsSettings.engine_mode` (`VMS_ENGINE_MODE`, `child`) y `update_source` (`VMS_UPDATE_SOURCE`, `https://`, `http://` o `file:///`); §17.3 `events.py` del arquitecto hasta que B2 arranque y eventos v2 congelados; §18.8 ganchos de ámbito también en muros, analítica y `/api/status` (**cambio de comportamiento solo cuando B6 active el ámbito**: un operador con ámbito recibe 422 al añadir una cámara ajena a un muro); §18.12 y §13.1 una sola regla para la tabla de avisos (`data\advisories.json` de la versión desaparece: va dentro de `app\vms\ops\security\`); §13.10 `recordSegmentDuration` medido. Pruebas de concepto: S4 con los nombres de §13.4 (`trial_since_unix`, `updated_unix`), campos desconocidos conservados y espera creciente; S3 con rollback de `snapshot` y clave sustituida rechazada. |
+| 2026-10-08 | pruebas-windows | §3.1 nueva variable `VMS_ENV_FILE_ONLY` (solo pruebas y desarrollo; sin ella nada cambia): `env_files()` deja de buscar `<instalación>/.env` y `<datos>/.env`. En un PC con el producto instalado, las pruebas leían `C:\ProgramData\VMSMultimarca\.env` («Permission denied»; como administrador, la configuración real) y los procesos de `tools.dev_run` también; `dev_run` pasa además `VMS_DATA_DIR` (interpretada como en el `.env`) y se niega a arrancar con un `--env-file` sin ella. §9.1: vigilante de la instalación real (archivos y programas lanzados, también las carpetas anotadas en el registro), pgserver con zonas horarias en Windows (`tools/pgserver_tz.py`, servidor en UTC) y bucle selector para central/analytics/db en Windows. `vmsctl` (interno, sin cambio de órdenes): el grupo «VMS Operadores» y la clave `HKLM\SOFTWARE\VMSMultimarca` pasan por `sys::Runner`, así que `cargo test` ya no toca el equipo. |
 
 ---
 

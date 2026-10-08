@@ -76,7 +76,7 @@ updater = [
 # Apache-2.0. Nada de esto se distribuye en el instalador. Lo usa CI con los locks de sede.
 test = [
     "pytest>=8",
-    "pytest-asyncio>=0.24",
+    "pytest-asyncio>=1.4",   # gancho pytest_asyncio_loop_factories (tests/conftest.py, bucle en Windows)
     "pytest-timeout>=2.3",
     "pytest-cov>=7",
     "pytest-randomly>=5",

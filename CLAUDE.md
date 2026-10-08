@@ -81,20 +81,43 @@ cd native; cargo test --workspace --locked; cargo clippy --workspace --all-targe
 .venv\Scripts\python -m tools.build all --version 2.0.0-dev --out dist    # instalador local (docs\EMPAQUETADO.md)
 ```
 
+En Windows, y sobre todo en un PC con el producto instalado (como este):
+- **Nunca ejecutes `cargo test` ni `pytest` desde una consola de administrador.** Abre PowerShell normal. Las
+  pruebas están aisladas, pero si un día falla el aislamiento, sin administrador Windows responde «Acceso
+  denegado» y la prueba falla; como administrador, cambiaría la instalación real (grupo «VMS Operadores», clave
+  `HKLM\SOFTWARE\VMSMultimarca`, `C:\ProgramData\VMSMultimarca`).
+- Qué aísla cada cosa:
+  - `pytest` solo lee su propio `.env`: `tests/conftest.py` fija `VMS_ENV_FILE_ONLY=1` (CONTRATO §3.1), así que
+    no lee ni el `.env` del repositorio ni `C:\ProgramData\VMSMultimarca\.env`.
+  - Un vigilante del `conftest` hace fallar la prueba que abra, liste, cree o borre algo en
+    `C:\ProgramData\VMSMultimarca`, `C:\Program Files\VMSMultimarca` o las carpetas que anota el registro
+    (`HKLM\SOFTWARE\VMSMultimarca`), o que lance un programa cuya línea de órdenes las nombre. Vigila solo el
+    proceso de pytest: lo que hagan por dentro los programas que lanza, el registro y `ctypes` no los ve. Solo se
+    salta en el e2e del instalador.
+  - `cargo test` de `vmsctl` crea el grupo y escribe el registro a través de un doble en memoria (`sys::Runner`).
+  - `tools.dev_run` también fija `VMS_ENV_FILE_ONLY=1` en sus procesos y no arranca si `--env-file` no tiene
+    `VMS_DATA_DIR`.
+- El PostgreSQL de pruebas (`pgserver`) se prepara solo con zonas horarias en `.tmp\pginstall-*`
+  (`tools/pgserver_tz.py`) y corre en UTC. Las pruebas asíncronas de `central/`, `analytics/` y `db/` usan
+  `SelectorEventLoop`, como esos procesos; las del backend, Proactor, como el backend.
+
 Hay dos pruebas que pueden fallar en máquinas lentas o en contenedores; en GitHub pasan:
 - `tests/ops/test_health_imaging.py::test_under_20_ms_per_check_at_640_px`, que mide velocidad;
 - en Linux, `run::tests::stubborn_child…` de `vmsctl`.
 
-En este PC con Windows (8/10/2026) la batería completa tarda unos 18 minutos: 1818 pasan y unas 60 fallan por
-cosas de Windows. La CI no pasa pytest en Windows, así que la referencia es GitHub (verde). Las causas:
-- PostgreSQL de pruebas: el `pgserver` de Windows no trae `share/postgresql/timezone`, así que falla todo lo de
-  `central/`, `analytics/` y `db/` que usa zona horaria;
-- no hay `bash` (pruebas de `install.sh`);
-- permisos POSIX;
-- pruebas que miden tiempo o CPU.
+En este PC con Windows (8/10/2026), sin e2e ni slow, pasan unas 1850 pruebas y fallan unas 13. Antes fallaban
+unas 60: la mayoría eran de PostgreSQL (zonas horarias y bucle Proactor), ya arregladas. La CI no pasa pytest en
+Windows, así que la referencia es GitHub (verde). Las que siguen fallando aquí fallan igual sin tus cambios:
+- no hay `bash`: 3 de `tests/central/test_deploy.py`;
+- cosas de Windows: DPAPI en `test_review_credentials.py`, la tubería con nombre del actualizador y
+  `test_release_tools.py::test_keyring_rules`;
+- tiempo, red o navegador: `test_health_imaging`, `test_rtsp_chaos`, `test_hikvision_dahua`, `test_ui_b6`,
+  `test_evidence` y `test_wall_sessions`;
+- `test_store_counts_csv_needs_pg_and_uses_site_timezone`, que es un fallo real del backend (ver «Otras mejoras
+  pendientes»).
 
-Para trabajar en `vms/`, pasa las pruebas de esa parte (por ejemplo `tests\ops tests\api tests\vendors`). En esas
-carpetas, las que usan PostgreSQL fallan aquí por lo mismo: no son un problema de tu cambio.
+Para trabajar en `vms/`, pasa las pruebas de esa parte (por ejemplo `tests\ops tests\api tests\vendors`). Si
+dudas de si un fallo es tuyo, pasa esa misma prueba en `v2` sin tu cambio.
 
 ## Ramas, CI y cómo publicar una versión
 
@@ -212,12 +235,11 @@ Publícalos en la próxima beta junto con el arreglo del motor.
 - La búsqueda en red (beta.3) no se ha probado con una cámara real. Si la red de Windows es «Pública»
   (red no identificada, típico con un switch sin router), el firewall no deja pasar las respuestas SADP.
   Valora avisarlo en la propia pantalla de búsqueda.
-- Aislamiento de las pruebas en Windows: `tests/analytics/test_reports.py::test_cli_writes_markdown_and_html`
-  llama a `load_settings` (`vms/core/settings.py`). Esa función lee también `C:\ProgramData\VMSMultimarca\.env`,
-  que es el del producto instalado.
-  - Sin administrador, falla con «Permission denied».
-  - Con administrador, leería la configuración real.
-  - Hay que hacer que las pruebas no lean nunca esa ruta.
+- En Windows, el backend usa psycopg **asíncrono** en `vms/api/routes/counts.py` (CSV de conteos) y en
+  `vms/ops/service.py` (`_analytics_alerts`, avisos de la analítica en la línea de tiempo). El backend corre
+  con Proactor, así que con `VMS_PG_DSN` el CSV responde 503 y la línea de tiempo pierde esos avisos. Lo
+  reproduce `tests/ops/test_central_and_counts.py::test_store_counts_csv_needs_pg_and_uses_site_timezone`.
+  Arreglo: psycopg síncrono en `asyncio.to_thread`, como el latido.
 - El instalador no está firmado: Windows avisa con «Windows protegió tu PC». Firmarlo cuesta dinero; es decisión
   del usuario.
 - Pedirle al usuario que ponga `v2` como rama por defecto del repositorio en GitHub (Settings → Branches), para

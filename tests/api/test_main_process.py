@@ -22,7 +22,8 @@ pytestmark = [pytest.mark.e2e, pytest.mark.slow, pytest.mark.needs_mediamtx]
 def _env(data: Path, mediamtx_bin: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("VMS_")}
     env.update({
-        "VMS_ENV_FILE": str(data / "no-existe.env"), "VMS_DATA_DIR": str(data), "VMS_MEDIAMTX_BIN": mediamtx_bin,
+        "VMS_ENV_FILE": str(data / "no-existe.env"), "VMS_ENV_FILE_ONLY": "1",  # sin el .env del sistema
+        "VMS_DATA_DIR": str(data), "VMS_MEDIAMTX_BIN": mediamtx_bin,
         "VMS_HTTP_HOST": "127.0.0.1", "VMS_HTTP_PORT": str(get_free_port()),
         "VMS_ADMIN_INITIAL_PASSWORD": "Admin#12345", "VMS_CREDENTIAL_BACKEND": "file",
         "VMS_MTX_RTSP_ADDRESS": f"127.0.0.1:{get_free_port()}", "VMS_MTX_WEBRTC_ADDRESS": f"127.0.0.1:{get_free_port()}",

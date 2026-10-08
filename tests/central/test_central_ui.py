@@ -30,6 +30,7 @@ def live_central(central_settings, seeded_dsn) -> Iterator[str]:  # type: ignore
     import uvicorn
 
     from central.app import create_app
+    from vms.core import aio
 
     from pydantic import SecretStr
 
@@ -38,7 +39,9 @@ def live_central(central_settings, seeded_dsn) -> Iterator[str]:  # type: ignore
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    # Como `python -m central`: en Windows, bucle selector (psycopg asíncrono no acepta Proactor)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                          loop=aio.uvicorn_loop()))
     th = threading.Thread(target=server.run, daemon=True)
     th.start()
     deadline = time.monotonic() + 20

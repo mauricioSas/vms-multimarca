@@ -150,7 +150,7 @@ def test_step3_system(e2e: E2E, step: h.Step) -> None:
 @pytest.mark.paso("4", "Arranque: vmsctl health wait (en la instalación y a mano)")
 def test_step4_start(e2e: E2E, step: h.Step) -> None:
     proc = subprocess.run([str(installed_vmsctl(e2e)), "health", "wait", "--timeout", "120", "--deep", "--json"],
-                          capture_output=True, text=True, timeout=180, check=False)
+                          capture_output=True, text=True, timeout=180, env=h.product_environ(), check=False)
     step.details["health"] = proc.stdout.strip()
     assert proc.returncode == 0, proc.stdout + proc.stderr
     if e2e.doubles:
@@ -211,7 +211,7 @@ def test_step5_viewer(e2e: E2E, step: h.Step) -> None:
         # Visor real (VMS.exe de B2, sin CDP): el acceso directo lo abre. Su contenido lo prueba el humo por CDP de B2.
         h.powershell("Get-Process VMS -ErrorAction SilentlyContinue | Stop-Process -Force; exit 0")
         proc = subprocess.run([target, args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-                              check=False)
+                              env=h.product_environ(), check=False)
         assert proc.returncode == 0, f"vmshost viewer terminó con {proc.returncode}"
         prog = str(h.program_dir()).replace("'", "''")
 
@@ -228,7 +228,7 @@ def test_step5_viewer(e2e: E2E, step: h.Step) -> None:
         h.close_window(hwnd)
     # Sin capturar la salida: el visor que lanza vmshost heredaría las tuberías y run() esperaría a que se cierre.
     proc = subprocess.run([target, args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-                          check=False)
+                          env=h.product_environ(), check=False)
     assert proc.returncode == 0, f"vmshost viewer terminó con {proc.returncode}"
     assert h.wait_until(lambda: bool(h.find_windows(h.VIEWER_DOUBLE_CLASS)), 30), "no se abrió el visor"
     hwnds = h.find_windows(h.VIEWER_DOUBLE_CLASS)

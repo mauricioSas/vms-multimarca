@@ -63,13 +63,18 @@ async def test_heartbeat_written_to_postgres(settings: VmsSettings, credential_s
                                              pg_dsn: str) -> None:
     s = settings.model_copy(update={"pg_dsn": SecretStr(pg_dsn), "heartbeat_seconds": 10})
     app = create_app(s, engine=FakeEngine(), credential_store=credential_store, apply_delay=0.01)
+
+    def read_heartbeat() -> Any:
+        # psycopg síncrono en un hilo, como el propio latido: el backend corre en Proactor en Windows y
+        # psycopg asíncrono no lo acepta
+        with psycopg.connect(pg_dsn) as conn:
+            return conn.execute("SELECT site_id, status, payload FROM site_heartbeats").fetchone()
+
     row: Any = None
     async with app.router.lifespan_context(app):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            async with await psycopg.AsyncConnection.connect(pg_dsn) as conn:
-                cur = await conn.execute("SELECT site_id, status, payload FROM site_heartbeats")
-                row = await cur.fetchone()
+            row = await asyncio.to_thread(read_heartbeat)
             if row:
                 break
             await asyncio.sleep(0.3)

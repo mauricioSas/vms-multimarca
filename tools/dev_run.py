@@ -179,9 +179,19 @@ def python_cmd(*args: str) -> list[str]:
 
 
 def base_env(env_file: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Entorno de los servicios: el del usuario sin VMS_* (manda el .env de desarrollo)."""
+    """Entorno de los servicios: el del usuario sin VMS_* (manda el .env de desarrollo).
+
+    Solo se lee ese .env (VMS_ENV_FILE_ONLY=1): ni el del repositorio ni el del producto instalado
+    (C:\\ProgramData\\VMSMultimarca\\.env, que sin ser administrador daba «Permission denied» al arrancar y,
+    como administrador, mezclaba la configuración real). VMS_DATA_DIR va también como variable para lo que
+    resuelve la carpeta de datos sin pasar por los ajustes.
+    """
     env = {k: v for k, v in os.environ.items() if not k.startswith("VMS_")}
     env["VMS_ENV_FILE"] = str(env_file)
+    env["VMS_ENV_FILE_ONLY"] = "1"
+    data_dir = env_file_value(env_file, "VMS_DATA_DIR")
+    if data_dir:
+        env["VMS_DATA_DIR"] = data_dir
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("PYTHONIOENCODING", "utf-8")
     if extra:
@@ -210,6 +220,18 @@ def read_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def env_file_value(path: Path, key: str) -> str | None:
+    """Un valor del .env tal y como lo leen los ajustes (python-dotenv: sin comillas ni comentario al final).
+
+    `read_env_file` deja el texto tal cual, para reescribir el .env de desarrollo sin cambiarlo. Lo que se pasa
+    como variable de entorno a los procesos tiene que ser el valor ya interpretado: la variable gana al .env y un
+    `VMS_DATA_DIR="C:\\ruta con espacios"` llegaría con las comillas.
+    """
+    from dotenv import dotenv_values
+
+    return dotenv_values(path, encoding="utf-8").get(key) if path.is_file() else None
+
+
 # =========================================================================== PostgreSQL embebido
 class EmbeddedPostgres:
     """pgserver (PostgreSQL embebido en el venv) para desarrollo y pruebas. Producción: PostgreSQL real."""
@@ -227,11 +249,20 @@ class EmbeddedPostgres:
         import psycopg
         from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
+        from tools import pgserver_tz
         from vms.db.migrate import apply_migrations
 
+        try:
+            # Windows: la rueda de pgserver no trae las zonas horarias y el panel central no abriría
+            with_tz = pgserver_tz.use_timezones()
+        except pgserver_tz.TimezoneDataMissing as exc:
+            log.warning(pgserver_tz.NO_TZ_MESSAGE.format(why=exc))
+            with_tz = False
         self.pgdata.mkdir(parents=True, exist_ok=True)
         self._srv = pgserver.get_server(self.pgdata, cleanup_mode="stop")
         admin = self._srv.get_uri()
+        if with_tz:
+            pgserver_tz.force_utc(admin)  # UTC en cualquier PC (initdb toma la zona del equipo)
         with psycopg.connect(admin, autocommit=True) as conn:
             exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,)).fetchone()
             if not exists:
@@ -426,6 +457,10 @@ class DevStack:
             values["VMS_CENTRAL_HTTP_PORT"] = str(self.o.central_port)
             values.setdefault("VMS_CENTRAL_ADMIN_INITIAL_PASSWORD", "dev-" + secrets.token_urlsafe(9))
             write_env_file(self.env_file, values)
+        elif not values.get("VMS_DATA_DIR"):
+            # Sin ella, el backend usaría la carpeta del sistema: en Windows, la del producto instalado.
+            raise RuntimeError(f"El archivo indicado con --env-file ({self.env_file}) no define VMS_DATA_DIR. "
+                               "Qué hacer: añade VMS_DATA_DIR=<carpeta> a ese archivo o quita --env-file.")
         return values
 
     def write_state(self, extra: dict[str, Any] | None = None) -> None:
@@ -651,7 +686,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
             print(f"{name} parado")
     if pid_alive(sup):
         terminate_pid(sup, 10, "supervisor")
-    data_dir = Path(read_env_file(Path(st.get("env_file", ""))).get("VMS_DATA_DIR", args.workdir / "data"))
+    data_dir = Path(env_file_value(Path(st.get("env_file", "")), "VMS_DATA_DIR") or args.workdir / "data")
     check_orphan_mediamtx(data_dir)
     (args.workdir / "run.json").unlink(missing_ok=True)
     (args.workdir / "stop.request").unlink(missing_ok=True)

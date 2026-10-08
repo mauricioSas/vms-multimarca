@@ -23,6 +23,8 @@ from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tests.windows.harness import product_environ
+
 WIZARD_CLASS = "TWizardForm"
 #: Botón que avanza, sin «&» ni «>» (el estilo moderno de Inno 7 muestra «Siguiente» sin la flecha).
 NEXT_CAPTIONS = ("siguiente", "instalar", "finalizar", "next", "install", "finish")
@@ -184,7 +186,9 @@ def run(installer: Path, out: Path, args: list[str], *, timeout: float = 900, en
     state_file.unlink(missing_ok=True)
     w32 = _Win32()
     result = CaptureResult()
-    proc = subprocess.Popen([str(installer), f"/CAPTURESTATE={state_file}", *args], env=env)
+    # Nunca con las variables de aislamiento de pytest (TEST_ONLY_ENV): el instalador es el real
+    proc = subprocess.Popen([str(installer), f"/CAPTURESTATE={state_file}", *args],
+                            env=env if env is not None else product_environ())
     deadline = time.monotonic() + timeout
     last = ""
     index = 0

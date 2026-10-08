@@ -184,7 +184,7 @@ pub fn install(ctx: &Ctx, p: Platform<'_>, opts: &InstallOpts) -> Result<Outcome
     // (icacls responde 1332 «No mapping between account names and security IDs» si aún no está).
     let mut acl_steps = 0;
     if opts.acl {
-        acl::ensure_operators_group()?;
+        p.runner.ensure_operators_group()?;
         acl::precreate_logs(data, &services).map_err(|e| CtlError::io(&e, &data.logs_dir().display().to_string()))?;
         let inv = acl::Inventory::scan(data);
         let steps = acl::plan(data, Some(install), &services, opts.extra_recordings.as_deref(), &inv);
@@ -205,18 +205,13 @@ pub fn install(ctx: &Ctx, p: Platform<'_>, opts: &InstallOpts) -> Result<Outcome
             }
         }
     }
-    #[cfg(windows)]
-    {
-        use crate::winreg::{set_string, PRODUCT_KEY};
-        for (k, v) in [
-            ("InstallDir", install.root.to_string_lossy().into_owned()),
-            ("DataDir", data.root.to_string_lossy().into_owned()),
-            ("Role", opts.role.as_str().to_string()),
-            ("InstalledVersion", version.to_string()),
-        ] {
-            set_string(PRODUCT_KEY, k, &v).map_err(|e| CtlError::io(&e, "registro HKLM\\SOFTWARE\\VMSMultimarca"))?;
-        }
-    }
+    let product = [
+        ("InstallDir", install.root.to_string_lossy().into_owned()),
+        ("DataDir", data.root.to_string_lossy().into_owned()),
+        ("Role", opts.role.as_str().to_string()),
+        ("InstalledVersion", version.to_string()),
+    ];
+    p.runner.set_product_values(&product).map_err(|e| CtlError::io(&e, "registro HKLM\\SOFTWARE\\VMSMultimarca"))?;
     let data_json = json!({
         "role": opts.role.as_str(), "version": version, "pointer": pointer,
         "data_dir": data.root, "install_dir": install.root, "services": out, "removed": removed,
@@ -293,14 +288,7 @@ pub fn purge_guard(root: &Path, registered: Option<&Path>) -> Result<(), CtlErro
 /// Quita los servicios (y las reglas del firewall). Con `purge`, borra también la carpeta de datos.
 pub fn uninstall(ctx: &Ctx, p: Platform<'_>, purge: bool) -> Result<Outcome, CtlError> {
     // La DataDir anotada se lee antes de borrar la clave del registro.
-    #[cfg(windows)]
-    let registered: Option<PathBuf> = crate::winreg::get_string(crate::winreg::PRODUCT_KEY, "DataDir")
-        .ok()
-        .flatten()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
-    #[cfg(not(windows))]
-    let registered: Option<PathBuf> = None;
+    let registered: Option<PathBuf> = p.runner.product_value("DataDir").filter(|s| !s.is_empty()).map(PathBuf::from);
     if purge && ctx.data.root.exists() {
         purge_guard(&ctx.data.root, registered.as_deref())?; // antes de tocar nada
     }
@@ -313,9 +301,7 @@ pub fn uninstall(ctx: &Ctx, p: Platform<'_>, purge: bool) -> Result<Outcome, Ctl
         removed.push(def.name);
     }
     let rules = crate::firewall::remove(p.runner, &[], &ctx.data.state_dir().join("firewall.json"))?;
-    #[cfg(windows)]
-    crate::winreg::delete_tree(crate::winreg::PRODUCT_KEY)
-        .map_err(|e| CtlError::io(&e, "registro HKLM\\SOFTWARE\\VMSMultimarca"))?;
+    p.runner.delete_product_key().map_err(|e| CtlError::io(&e, "registro HKLM\\SOFTWARE\\VMSMultimarca"))?;
     let mut purged = false;
     if purge {
         let root = &ctx.data.root;
@@ -348,7 +334,7 @@ pub fn summary(scm: &dyn Scm) -> Result<Value, CtlError> {
 mod tests {
     use super::*;
     use crate::scm::fake::FakeScm;
-    use crate::sys::fake::FakeRunner;
+    use crate::sys::fake::{FakeRunner, GROUP_CALL};
     use vms_common::layout::Component;
 
     pub struct Fixture {
@@ -388,9 +374,12 @@ mod tests {
         assert_eq!(spec.env[0].0, "VMS_DATA_DIR");
         assert_eq!(scm.services["VMSUpdater"].0.account, "LocalSystem");
         assert!(!scm.services["VMSEngine"].0.delayed);
-        // Orden: engine-config → servicios → ACL (el SID de un servicio solo existe cuando existe el servicio)
+        // Orden: engine-config → servicios → grupo → ACL (el SID de un servicio solo existe cuando existe el
+        // servicio) → registro
         assert!(runner.calls[0].contains("-m vms engine-config"), "{:?}", runner.calls);
-        assert!(runner.calls[1].starts_with("icacls.exe"));
+        assert_eq!(runner.calls[1], GROUP_CALL);
+        assert!(runner.calls[2].starts_with("icacls.exe"));
+        assert!(runner.calls.last().unwrap().starts_with("reg set"), "{:?}", runner.calls);
         // Puntero y diario con la versión instalada
         let st = f.ctx.data.state();
         let p = st.read_pointer().unwrap();
@@ -402,6 +391,32 @@ mod tests {
         // Idempotente: reinstalar no crea de nuevo
         let out = install(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, &opts(Role::Store)).unwrap();
         assert!(out.data["services"].as_array().unwrap().iter().all(|s| s["created"] == false));
+    }
+
+    #[test]
+    fn group_and_registry_go_through_the_runner_never_the_real_machine() {
+        // Regresión: install y uninstall llamaban directamente a NetLocalGroupAdd y a la clave
+        // HKLM\SOFTWARE\VMSMultimarca. Sin administrador, las pruebas fallaban («código 5»); como administrador,
+        // en un PC con el producto instalado, creaban el grupo y reescribían y borraban la clave real.
+        let f = fixture("2.0.0");
+        let mut scm = FakeScm::default();
+        let mut runner = FakeRunner { codes: vec![("show rule".into(), 1)], ..Default::default() };
+        install(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, &opts(Role::Control)).unwrap();
+        assert!(runner.group, "el grupo «VMS Operadores» se crea por el doble");
+        let reg = |k: &str| runner.registry.get(k).cloned().unwrap_or_default();
+        assert_eq!(reg("InstallDir"), f.install.root.to_string_lossy());
+        assert_eq!(reg("DataDir"), f.ctx.data.root.to_string_lossy());
+        assert_eq!((reg("Role").as_str(), reg("InstalledVersion").as_str()), ("control", "2.0.0"));
+        // Sin --acl no se crea el grupo; el registro se escribe igual
+        let mut quiet = FakeRunner::default();
+        let no_acl = InstallOpts { acl: false, ..opts(Role::Control) };
+        install(&f.ctx, Platform { scm: &mut scm, runner: &mut quiet }, &no_acl).unwrap();
+        assert!(!quiet.calls.iter().any(|c| c == GROUP_CALL) && quiet.registry.len() == 4, "{:?}", quiet.calls);
+        // uninstall lee la DataDir anotada y borra la clave, también por el doble
+        runner.calls.clear();
+        uninstall(&f.ctx, Platform { scm: &mut scm, runner: &mut runner }, true).unwrap();
+        assert!(runner.registry.is_empty() && runner.calls.last().unwrap().starts_with("reg delete"));
+        assert!(!f.ctx.data.root.exists());
     }
 
     #[test]

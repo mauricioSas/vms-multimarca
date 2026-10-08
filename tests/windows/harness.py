@@ -141,6 +141,20 @@ class RunResult:
         return read_text_any(self.log) if self.log.is_file() else ""
 
 
+# Variables que tests/conftest.py fija para aislar las pruebas (TEST_ONLY_ENV). El instalador real, vmsctl y el
+# `python -m vms engine-config` que lanza no deben heredarlas: con VMS_ENV_FILE_ONLY=1 no leerían el .env de
+# ProgramData (VMS_CREDENTIAL_BACKEND=file) y con el keyring en memoria perderían las contraseñas al actualizar.
+TEST_ONLY_ENV = ("VMS_ENV_FILE", "VMS_ENV_FILE_ONLY", "PYTHON_KEYRING_BACKEND")
+
+
+def product_environ(base: dict[str, str] | None = None) -> dict[str, str]:
+    """El entorno de pytest sin las variables que solo valen dentro de las pruebas."""
+    env = dict(os.environ if base is None else base)
+    for key in [k for k in env if k.upper() in TEST_ONLY_ENV]:
+        del env[key]
+    return env
+
+
 class Env:
     """Entorno común de las ejecuciones del e2e (variables de los dobles y carpeta de trabajo)."""
 
@@ -152,7 +166,7 @@ class Env:
         self._counter = 0
 
     def environ(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        env = dict(os.environ)
+        env = product_environ()
         env["VMS_FAKE_VMSCTL_LOG"] = str(self.calls_log)
         env.update(extra or {})
         return env
@@ -196,8 +210,9 @@ def run_uninstall(env: Env, args: Sequence[str], name: str, *, timeout: float = 
 
 def windows_powershell_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Entorno para ``powershell.exe`` (5.1) lanzado desde un proceso de PowerShell 7 (el runner de CI): sin el
-    ``PSModulePath`` de pwsh, que le hace cargar módulos de la 7 y falla (Get-Acl, Get-LocalGroup…)."""
-    env = dict(os.environ if base is None else base)
+    ``PSModulePath`` de pwsh, que le hace cargar módulos de la 7 y falla (Get-Acl, Get-LocalGroup…). Tampoco
+    lleva las variables que solo valen dentro de las pruebas (``TEST_ONLY_ENV``)."""
+    env = product_environ(base)
     for key in [k for k in env if k.upper() == "PSMODULEPATH"]:
         del env[key]
     return env

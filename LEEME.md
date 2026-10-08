@@ -112,8 +112,10 @@ Dahua con su API HTTP simulada, más una cámara de puerta con el vídeo de pers
 (`python -m vms`, que arranca y vigila MediaMTX), la analítica (`python -m analytics`, si hay un
 modelo en `models/`) y el panel central (`--central`). Con `--seed` da de alta los equipos por la
 API y reparte las cámaras en los 4 muros. Todo queda en `.tmp/dev/` (datos, registros y un `.env`
-de desarrollo con contraseñas aleatorias que se muestran al arrancar). `stop` para los procesos en
-orden inverso y comprueba que no queda ningún MediaMTX huérfano.
+de desarrollo con contraseñas aleatorias que se muestran al arrancar). Los procesos solo leen ese `.env`
+(o el de `--env-file`, que tiene que definir `VMS_DATA_DIR`): ni el de la raíz del repositorio ni el de un
+producto instalado en el mismo PC. `stop` para los procesos en orden inverso y comprueba que no queda
+ningún MediaMTX huérfano.
 
 Para usar solo el simulador, sin el resto: `python -m tools.camsim --hikvision hik1:4 --dahua dah1:4
 --video 1=tests/assets/people-walking-h264.mp4`.

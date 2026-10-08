@@ -110,6 +110,7 @@ def test_versions_page_in_browser(central_settings: Any, seeded_dsn: str) -> Non
     from pydantic import SecretStr
 
     from central.app import create_app
+    from vms.core import aio
 
     from .conftest import ADMIN_PW
 
@@ -118,7 +119,9 @@ def test_versions_page_in_browser(central_settings: Any, seeded_dsn: str) -> Non
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    # Como `python -m central`: en Windows, bucle selector (psycopg asíncrono no acepta Proactor)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                          loop=aio.uvicorn_loop()))
     th = threading.Thread(target=server.run, daemon=True)
     th.start()
     deadline = time.monotonic() + 20

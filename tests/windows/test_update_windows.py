@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from tests.windows.harness import product_environ
+
 pytestmark = [pytest.mark.e2e,
               pytest.mark.skipif(os.environ.get("VMS_WINDOWS_E2E") != "1",
                                  reason="solo en el e2e de Windows (VMS_WINDOWS_E2E=1, arnés de B3)")]
@@ -33,8 +35,9 @@ BACKEND = "http://127.0.0.1:8600"
 
 
 def pipe(req: dict[str, Any], timeout: float = 900) -> dict[str, Any]:
+    # Sin las variables de aislamiento de pytest (TEST_ONLY_ENV): es el Python del producto instalado
     p = subprocess.run([os.environ["VMS_E2E_PYTHON"], "-m", "vms_updater", "pipe", json.dumps(req)],
-                       capture_output=True, text=True, timeout=timeout, check=False)
+                       capture_output=True, text=True, timeout=timeout, env=product_environ(), check=False)
     return json.loads(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else {"ok": False, "stderr": p.stderr}
 
 

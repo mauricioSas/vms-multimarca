@@ -78,7 +78,7 @@ pub fn kiosk_rotate(ctx: &Ctx, runner: &mut dyn Runner) -> Result<Outcome, CtlEr
     let path = ctx.data.secrets_dir().join("kiosk.token");
     vms_common::secret::write_secret(&path, token.as_bytes())
         .map_err(|e| CtlError::io(&e, &path.display().to_string()))?;
-    let group = acl::ensure_operators_group()?;
+    let group = runner.ensure_operators_group()?;
     let steps = acl::secret_file_steps(&ctx.data, "kiosk.token", acl::kiosk_token_readers());
     if cfg!(windows) {
         acl::apply(runner, &steps)?;
@@ -113,12 +113,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(d.path(), None, None);
         let mut r = FakeRunner::default();
-        kiosk_rotate(&ctx, &mut r).unwrap();
+        let first = kiosk_rotate(&ctx, &mut r).unwrap();
         let a = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
-        kiosk_rotate(&ctx, &mut r).unwrap();
+        let second = kiosk_rotate(&ctx, &mut r).unwrap();
         let b = vms_common::secret::read_secret(&ctx.data.secrets_dir().join("kiosk.token")).unwrap();
         assert_eq!(a.len(), 43);
         assert_ne!(a, b);
+        // El grupo «VMS Operadores» se pide por el doble (nunca el NetLocalGroupAdd real en las pruebas)
+        assert_eq!(first.data["group_created"], true);
+        assert_eq!(second.data["group_created"], false);
+        assert_eq!(r.calls[0], crate::sys::fake::GROUP_CALL);
     }
 
     #[test]

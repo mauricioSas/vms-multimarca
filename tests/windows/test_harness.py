@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -19,6 +20,35 @@ def test_command_of_and_flags() -> None:
     assert h.command_of(["migrate-from-v1", "--json"]) == "migrate-from-v1"
     assert h.command_of(["version", "switch", "2.0.0", "--json"]) == "version switch"
     assert h.command_of(["--json"]) == ""
+
+
+def test_installer_never_inherits_the_test_isolation(tmp_path: Path) -> None:
+    """El e2e lanza el instalador real (y este, vmsctl y `python -m vms engine-config`) con el entorno de pytest.
+    Con VMS_ENV_FILE_ONLY=1 no leerían el .env de ProgramData y con el keyring en memoria perderían contraseñas."""
+    from tests.conftest import TEST_ONLY_ENV
+
+    assert set(TEST_ONLY_ENV) == set(h.TEST_ONLY_ENV)
+    assert all(os.environ.get(k) for k in TEST_ONLY_ENV), "tests/conftest.py fija todas"
+    env = h.Env(tmp_path, tmp_path / "calls.jsonl").environ({"VMS_FAKE_VMSCTL_FAIL": "x"})
+    assert not set(TEST_ONLY_ENV) & set(env)
+    assert env["VMS_FAKE_VMSCTL_LOG"] == str(tmp_path / "calls.jsonl") and env["VMS_FAKE_VMSCTL_FAIL"] == "x"
+    assert env.get("PATH") or env.get("Path"), "el resto del entorno se conserva"
+    ps = h.windows_powershell_env({"VMS_ENV_FILE_ONLY": "1", "PSModulePath": "x", "Path": "y"})
+    assert ps == {"Path": "y"}
+
+
+def test_real_install_guard_skips_exactly_the_installer_e2e() -> None:
+    """El vigilante de la instalación real (tests/conftest.py) se salta en los mismos archivos que run_e2e y este
+    conftest tratan como e2e: también en un ``test_update_*.py`` nuevo de B4, no solo en test_update_windows.py."""
+    from tests.conftest import real_install_allowed
+    from tests.windows.conftest import is_e2e_file
+
+    here = Path(__file__).resolve().parent
+    future = [here / "test_update_rollback.py", here / "e2e" / "test_99_nuevo.py"]
+    for f in [*sorted(here.rglob("*.py")), *future]:
+        assert real_install_allowed(f) == is_e2e_file(f), f
+    assert all(real_install_allowed(f) for f in future)
+    assert not real_install_allowed(here / "test_harness.py")
 
 
 def test_is_subsequence() -> None:

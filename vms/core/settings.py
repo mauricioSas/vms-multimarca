@@ -7,6 +7,11 @@ Orden de carga (lo posterior gana):
   4. el archivo indicado en VMS_ENV_FILE
   5. variables de entorno reales del proceso
 
+Con VMS_ENV_FILE_ONLY=1 en el entorno del proceso se saltan los pasos 2 y 3: solo se lee VMS_ENV_FILE.
+Es solo para pruebas y desarrollo (lo fijan tests/conftest.py y tools/dev_run.py), para no leer nunca el
+.env del producto instalado (C:\\ProgramData\\VMSMultimarca\\.env) ni el del repositorio. En una
+instalación no se usa: sin la variable, el orden es el de siempre.
+
 Los secretos (contraseñas, tokens, DSN) usan SecretStr: nunca salen en repr() ni en registros.
 Los ajustes que el usuario cambia desde la interfaz (retención, sede, alertas...) NO van
 aquí sino en config.json (vms.core.models.SystemSettings).
@@ -27,6 +32,8 @@ from .paths import AppPaths, default_data_dir, install_dir, restrict_permissions
 
 
 DISABLED_VALUES = frozenset({"off", "none", "disabled", "-"})
+TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+ENV_FILE_ONLY_VAR = "VMS_ENV_FILE_ONLY"
 
 
 UPDATE_SOURCE_SCHEMES = ("https://", "http://", "file:///")
@@ -166,8 +173,18 @@ def _split_address(address: str) -> tuple[str, int]:
     return host.strip("[]"), int(port)
 
 
+def env_files_only() -> bool:
+    """¿Solo VMS_ENV_FILE? (VMS_ENV_FILE_ONLY=1: pruebas y desarrollo, ver el docstring del módulo)."""
+    return os.environ.get(ENV_FILE_ONLY_VAR, "").strip().lower() in TRUE_VALUES
+
+
 def env_files(data_dir: Path | None = None) -> list[Path]:
-    candidates = [install_dir() / ".env", (data_dir or default_data_dir()) / ".env"]
+    """.env que se leen, en orden (lo posterior gana)."""
+    candidates: list[Path] = []
+    # Con VMS_ENV_FILE_ONLY ni siquiera se mira si existen: en Windows, sin ser administrador, el de ProgramData
+    # da «Permission denied» al abrirlo (y con algunas ACL ya al consultarlo).
+    if not env_files_only():
+        candidates += [install_dir() / ".env", (data_dir or default_data_dir()) / ".env"]
     explicit = os.environ.get("VMS_ENV_FILE")
     if explicit:
         candidates.append(Path(explicit))
