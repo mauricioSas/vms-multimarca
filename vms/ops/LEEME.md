@@ -21,6 +21,7 @@ Operación, IA de verificación y onboarding dentro del backend. Lo arranca el `
 | `csvsafe.py` | Celdas de texto de los CSV sin inyección de fórmulas |
 | `notify.py` | Correo (smtplib) y webhook (httpx, `X-VMS-Signature` HMAC-SHA256) con reglas y agrupación |
 | `diagnose.py` | «¿Por qué no conecta?» por reglas, un solo intento con credenciales; LLM opcional solo para redactar |
+| `netroute.py` | Paso `route` del diagnóstico: por qué tarjeta de red sale este PC hacia el equipo (cable desconectado, otra red, dos tarjetas en la misma red), sin mandar tráfico nuevo |
 | `security/` | Auditoría de equipos sin atacar; tabla de avisos propia (`advisories.json`, versión vs. actualización TUF) |
 | `counts.py` | CSV de conteos para Excel (tienda y central) |
 | `onboarding.py` | Progreso del asistente y de los recorridos por usuario |

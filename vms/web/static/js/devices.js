@@ -477,8 +477,13 @@ deviceForm.addEventListener("submit", async (ev) => {
       if (dev) {
         const upd = { ...body };
         if (!upd.password) upd.password = $("#dev-clear-pw").checked ? "" : null;
-        await patch(`/api/devices/${enc(dev.id)}`, upd);
+        const updated = await patch(`/api/devices/${enc(dev.id)}`, upd);
         toast(`Equipo «${body.name}» actualizado`, "ok");
+        // corregir la contraseña no importa los canales; no se piden aquí (sería otro intento con credenciales)
+        if (upd.password && updated && !(updated.cameras || []).length && hasApi(updated.vendor)) {
+          toast("Este equipo aún no tiene cámaras: el VMS no ve ni graba nada de él. "
+            + "Qué hacer: pulsa «Canales» en su fila y marca las que quieras dar de alta.", "info", 12000);
+        }
       } else {
         const v = selectedVendor();
         const manual = v ? v.manual_path : body.vendor === "generic";
@@ -505,10 +510,15 @@ deviceForm.addEventListener("submit", async (ev) => {
         }
         const nCams = created && created.cameras ? created.cameras.length : 0;
         toast(`Equipo «${body.name}» añadido${nCams ? ` con ${nCams} ${nCams === 1 ? "cámara" : "cámaras"}` : ""}`, "ok");
-        if (importError) toast(`No se pudieron importar los canales: ${importError}`, "bad", 9000);
+        if (importError) {
+          const end = /[.!?]$/.test(String(importError).trim()) ? " " : ". ";
+          toast(`El equipo se ha guardado sin cámaras porque no se han podido importar: ${importError}${end}`
+            + "Qué hacer: corrige en «Editar» el dato que falla (normalmente la contraseña) y después pulsa "
+            + "«Canales» en la fila del equipo.", "bad", 15000);
+        }
         if (refused) {
           toast("Equipo guardado sin cámaras: la prueba rechazó la contraseña (o el usuario está bloqueado). "
-            + "Corrígela en «Editar» y después importa los canales.", "bad", 12000);
+            + "Qué hacer: corrígela en «Editar» y después pulsa «Canales» en la fila del equipo.", "bad", 12000);
         }
       }
       deviceDialog.close();

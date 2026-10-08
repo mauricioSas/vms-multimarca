@@ -330,3 +330,55 @@ async def test_follow_ip_never_automatic_with_basic_allowed(b5: B5Harness) -> No
     assert props[0]["applied"] is False and props[0]["needs_password"] is True and "Basic" in props[0]["message_es"]
     assert b5.mock.auth.credentialed == before                    # nada sale hacia la IP nueva
     assert b5.state.config().device(dev_id).host == "10.0.0.95"
+
+
+def _diagnosis_without_network(h: B5Harness) -> None:
+    """El diagnóstico real del servicio, con las pruebas de puertos, web y RTSP dobladas: el equipo de la prueba es
+    127.0.0.1:80 y en un PC con iVMS-4200 ese puerto es su nginx."""
+    ops = h.app.state.ops
+    real = ops.diagnoser
+
+    async def tcp(host: str, port: int, timeout: float) -> bool:
+        return True
+
+    async def http(host: str, port: int, https: bool, timeout: float) -> int | None:
+        return 401
+
+    class Video:
+        status, reachable, error, video_codec = 200, True, "", "H.264"
+
+    async def rtsp(*a: Any, **k: Any) -> Any:
+        return Video()
+
+    def patched() -> Any:
+        d = real()
+        d.tcp_check, d.http_probe, d.rtsp_probe = tcp, http, rtsp
+        return d
+    ops.diagnoser = patched
+
+
+async def test_camera_saved_with_wrong_password_then_fixed_diagnosis_says_import_it(b5: B5Harness) -> None:
+    """La secuencia real del 6/10 (vms.log): alta con la contraseña mala («creado sin importar canales… con 0
+    cámaras»), «Editar» con la buena (no importa nada) y «¿Por qué no conecta?» desde la lista (`{"device_id"}`).
+    Decía «Todo correcto… el vídeo llega al VMS» con el equipo sin ninguna cámara."""
+    b5.mock = HikvisionMock(password=TEST_PASSWORD, kind="camera")
+    _diagnosis_without_network(b5)
+    admin = await b5.login()
+    body = {"name": "Cámara caja", "vendor": "hikvision", "kind": "camera", "host": "127.0.0.1",
+            "http_port": 80, "rtsp_port": 554, "username": "admin"}
+    r = await admin.post("/api/devices", json={**body, "password": "Mala#000", "import_channels": [1]})
+    dev = r.json()
+    assert r.status_code == 201 and dev["cameras"] == [] and dev["details"]["import_error"]
+    assert (await admin.patch(f"/api/devices/{dev['id']}", json={**body, "password": TEST_PASSWORD})).status_code == 200
+    r = await admin.post("/api/diagnostics/device", json={"device_id": dev["id"]})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    pr = next(s for s in res["steps"] if s["code"] == "path_ready")
+    assert pr["ok"] is False and "«Canales»" in pr["action_es"], pr
+    assert "Todo correcto" not in res["summary_es"] and "llega al VMS" not in res["summary_es"]
+    # tras «Canales», el diagnóstico ya ve la cámara
+    r = await admin.post(f"/api/devices/{dev['id']}/channels/import", json={"channels": [1]})
+    assert r.status_code == 201, r.text
+    res = (await admin.post("/api/diagnostics/device", json={"device_id": dev["id"]})).json()
+    pr = next(s for s in res["steps"] if s["code"] == "path_ready")
+    assert "«Canales»" not in pr["action_es"] and "no se ve ni se graba" not in pr["detail_es"]

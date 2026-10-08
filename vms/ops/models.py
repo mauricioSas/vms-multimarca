@@ -283,12 +283,13 @@ class NotificationRecord(_Ops):
 
 # =========================================================================== §18.11 ¿por qué no conecta?
 class DiagnosisStep(BaseModel):
-    code: Literal["ping", "tcp_http", "tcp_rtsp", "http_response", "auth", "lockout", "rtsp_describe", "codec",
-                  "clock", "engine", "path_ready"]
+    code: Literal["route", "ping", "tcp_http", "tcp_rtsp", "http_response", "auth", "lockout", "rtsp_describe",
+                  "codec", "clock", "engine", "path_ready"]
     ok: bool | None                           # None = no se pudo comprobar (paso anterior falló)
     detail_es: str
     action_es: str = ""                       # qué hacer, en lenguaje de tienda
     elapsed_ms: float = 0.0
+    warning: bool = False                     # aviso: no es la causa, pero conviene revisarlo («Aviso» en la web)
 
 
 class DiagnosisResult(BaseModel):

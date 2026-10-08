@@ -1,7 +1,9 @@
 """«¿Por qué no conecta?»: reglas deterministas encadenadas (CONTRATO §18.11).
 
-Orden: `ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` → `codec` →
-`clock` → `engine` → `path_ready`. Cada paso trae la causa probable y qué hacer, en lenguaje de tienda.
+Orden: `route` → `ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` →
+`codec` → `clock` → `engine` → `path_ready`. Cada paso trae la causa probable y qué hacer, en lenguaje de tienda.
+`route` (solo con una IP de la red local) dice por qué tarjeta de red sale este PC hacia el equipo, sin mandar
+tráfico nuevo (`netroute.py`): va delante para que un cable desconectado en el PC sea la causa probable.
 
 **Un solo intento con credenciales** si la contraseña puede ser mala: el paso `auth` hace UNA petición
 autenticada a la API; si falla, no se vuelve a probar la contraseña por ninguna vía (ni por RTSP), porque
@@ -32,7 +34,7 @@ from vms.core.models import Camera, Device, DeviceBase
 from vms.core.rtsp import preset_paths, redact
 from vms.core.sources import camera_paths
 
-from . import drivers
+from . import drivers, netroute
 from .health.clock import device_check
 from .host import dynamic
 from .models import DiagnosisResult, DiagnosisStep
@@ -47,6 +49,7 @@ TcpCheck = Callable[[str, int, float], Awaitable[bool]]
 RtspProbe = Callable[..., Awaitable[Any]]
 HttpProbe = Callable[[str, int, bool, float], Awaitable[int | None]]
 Rewriter = Callable[[str, list[DiagnosisStep]], Awaitable[str]]
+NetProbe = Callable[[str], Awaitable[netroute.NetView | None]]
 
 
 def lockout_policy(vendor: str) -> tuple[int, int] | None:
@@ -99,7 +102,7 @@ class Diagnoser:
                  paths_status: Callable[[], Awaitable[dict[str, PathStatus] | None]] | None = None,
                  tcp_check: TcpCheck = _tcp, http_probe: HttpProbe = _http_status, rtsp_probe: RtspProbe = _rtsp,
                  clock_thresholds: tuple[float, float] = (2.0, 30.0), rewriter: Rewriter | None = None,
-                 timeout: float = 3.0) -> None:
+                 timeout: float = 3.0, net_probe: NetProbe | None = None) -> None:
         self.client_factory = client_factory
         self.engine_running = engine_running
         self.paths_status = paths_status
@@ -109,14 +112,16 @@ class Diagnoser:
         self.clock_thresholds = clock_thresholds
         self.rewriter = rewriter
         self.timeout = timeout
+        self.net_probe = net_probe          # red de este PC (paso `route`); sin él no se hace ese paso
 
     async def run(self, inp: DiagnoseInput) -> DiagnosisResult:
         d = inp.device
         vendor_name = VENDOR_NAMES.get(d.vendor, "El equipo")
         steps: list[DiagnosisStep] = []
 
-        def add(code: str, ok: bool | None, detail: str, action: str = "", t0: float | None = None) -> DiagnosisStep:
-            s = DiagnosisStep(code=code, ok=ok, detail_es=detail, action_es=action,
+        def add(code: str, ok: bool | None, detail: str, action: str = "", t0: float | None = None, *,
+                warning: bool = False) -> DiagnosisStep:
+            s = DiagnosisStep(code=code, ok=ok, detail_es=detail, action_es=action, warning=warning,
                               elapsed_ms=round((time.perf_counter() - t0) * 1000, 1) if t0 else 0.0)
             steps.append(s)
             return s
@@ -132,14 +137,16 @@ class Diagnoser:
         rtsp_ok = await self.tcp_check(d.host, d.rtsp_port, self.timeout)
         onvif_ok = http_ok if onvif_port == d.http_port else await self.tcp_check(d.host, onvif_port, self.timeout)
         alive = http_ok or rtsp_ok or onvif_ok
+        ping_s = time.perf_counter() - t0
+        nics = await self._route(d.host, alive, add)
         add("ping", alive, "El equipo responde en la red." if alive else "El equipo no responde en la red.",
             "" if alive else "Comprueba que está encendido, el cable de red (o el puerto PoE del grabador) y que la "
                              "IP escrita es la del equipo. Si cambió de IP, búscalo de nuevo con «Buscar en la red».",
-            t0)
+            time.perf_counter() - ping_s)   # el tiempo de `ping` sin lo que tarda `route`
         if not alive:
             skip("tcp_http", "tcp_rtsp", "http_response", "auth", "lockout", "rtsp_describe", "codec", "clock")
             await self._engine_steps(inp, add)
-            return await self._finish(inp, steps)
+            return await self._finish(inp, steps, nics)
         add("tcp_http", http_ok, f"La web del equipo (puerto {d.http_port}) acepta conexiones." if http_ok else
             f"El puerto web {d.http_port} no responde.",
             "" if http_ok else "Revisa el puerto HTTP en el alta del equipo (normalmente 80) o si la web está "
@@ -271,7 +278,26 @@ class Diagnoser:
             except Exception:  # noqa: BLE001
                 log.debug("Error cerrando el cliente", exc_info=True)
         await self._engine_steps(inp, add)
-        return await self._finish(inp, steps)
+        return await self._finish(inp, steps, nics)
+
+    async def _route(self, host: str, answered: bool, add: Callable[..., DiagnosisStep]) -> tuple[str, ...]:
+        """Paso `route`: por qué tarjeta de red sale este PC hacia el equipo. `answered`: si contestó a las pruebas
+        TCP de antes, que salen por esa tarjeta. Devuelve los nombres de las tarjetas (para no mandarlos al LLM)."""
+        if self.net_probe is None or netroute.lan_ipv4(host) is None:
+            return ()
+        t0 = time.perf_counter()
+        try:
+            view = await self.net_probe(host)
+        except Exception:  # noqa: BLE001 - la red del PC es una pista más: no tumba el diagnóstico
+            log.debug("No se pudo leer la red de este PC", exc_info=True)
+            view = None
+        if view is None:
+            add("route", None, "No se pudo saber por qué tarjeta de red sale este PC hacia el equipo.", "", t0)
+            return ()
+        chk = netroute.assess(host, view, answered=answered)
+        if chk is not None:
+            add("route", chk.ok, chk.detail_es, chk.action_es, t0, warning=chk.warning)
+        return tuple(a.name for a in view.adapters)
 
     def _paths(self, inp: DiagnoseInput) -> tuple[str | None, str | None]:
         d = inp.device
@@ -296,14 +322,24 @@ class Diagnoser:
             add("engine", False, "El motor de vídeo del VMS no está en marcha.",
                 "Reinicia el servicio del VMS desde «Estado del sistema» o reinicia el PC.")
         if not inp.cameras:
-            add("path_ready", None, "Este equipo aún no tiene cámaras dadas de alta en el VMS.")
+            self._no_cameras(inp, add)
+            return
+        # una cámara desactivada no tiene ruta en el motor (vms/core/sources.py): no hay nada que esperar
+        active = [c for c in inp.cameras if c.enabled]
+        if not active:
+            if inp.camera_id is not None:
+                add("path_ready", False, "Esta cámara está desactivada: el VMS no la ve ni la graba.",
+                    "En «Cámaras», pulsa «Editar» en su fila y marca «Activada».")
+            else:
+                add("path_ready", False, "Las cámaras de este equipo están desactivadas: el VMS no las ve ni las "
+                                         "graba.", "En «Cámaras», pulsa «Editar» en cada una y marca «Activada».")
             return
         paths = await self.paths_status() if self.paths_status else None
         if paths is None or not running:
             add("path_ready", None, "No se pudo saber si llega el vídeo al VMS.")
             return
         bad = []
-        for cam in inp.cameras:
+        for cam in active:
             st = paths.get(f"{cam.id}/main")
             if not (st and st.ready):
                 err = f" ({redact(st.last_error)})" if st and st.last_error else ""
@@ -315,50 +351,98 @@ class Diagnoser:
         else:
             add("path_ready", True, "El vídeo de todas sus cámaras llega al VMS.")
 
-    async def _finish(self, inp: DiagnoseInput, steps: list[DiagnosisStep]) -> DiagnosisResult:
+    @staticmethod
+    def _no_cameras(inp: DiagnoseInput, add: Callable[..., DiagnosisStep]) -> None:
+        """Equipo sin cámaras dadas de alta. Guardado así es un fallo: el VMS no ve ni graba nada de él. Pasa cuando
+        se guarda con la contraseña mala (no se importan los canales) y «Editar» con la buena no los importa."""
+        if inp.device_id is None:   # formulario de alta: el equipo aún no está guardado
+            add("path_ready", None, "El equipo aún no está guardado: al guardarlo con sus cámaras se podrá comprobar "
+                                    "si llega su vídeo al VMS.")
+            return
+        single = inp.device.kind == "camera"
+        if single:
+            detail = ("La cámara está guardada en «Equipos», pero su vídeo aún no está dado de alta en el VMS: no se "
+                      "ve ni se graba.")
+        else:
+            detail = ("El grabador está guardado en «Equipos», pero ninguno de sus canales está dado de alta en el "
+                      "VMS: no se ve ni se graba nada.")
+        if drivers.has_api(inp.device.vendor):
+            action = ("Pulsa «Canales» en la fila del equipo y marca "
+                      + ("la cámara" if single else "los canales que quieras ver y grabar")
+                      + ". Si «Usuario y contraseña» falla, corrige antes la contraseña en «Editar»: cada intento "
+                        "fallido cuenta para el bloqueo del usuario.")
+        else:
+            action = "Pulsa «Añadir cámara manual», elige este equipo y escribe la ruta RTSP que indica el fabricante."
+        add("path_ready", False, detail, action)
+
+    async def _finish(self, inp: DiagnoseInput, steps: list[DiagnosisStep],
+                      nics: tuple[str, ...] = ()) -> DiagnosisResult:
         failed = [s for s in steps if s.ok is False]
+        warned = sum(1 for s in steps if s.warning and s.ok is not False)
         if not failed:
             cause = "No se ha encontrado ningún problema."
-            summary = "Todo correcto: el equipo responde, la contraseña es válida y el vídeo llega al VMS."
+            path = next((s for s in steps if s.code == "path_ready"), None)
+            if path is not None and path.ok:
+                summary = "Todo correcto: el equipo responde, la contraseña es válida y el vídeo llega al VMS."
+            elif inp.device_id is None:
+                summary = ("No se ha encontrado ningún fallo. Al guardar el equipo con sus cámaras se podrá comprobar "
+                           "también si llega su vídeo al VMS.")
+            else:   # solo se dice que el vídeo llega si se ha comprobado
+                summary = ("No se ha encontrado ningún fallo, pero no se ha podido comprobar si llega el vídeo al VMS. "
+                           "Qué hacer: espera un minuto y vuelve a pulsar «¿Por qué no conecta?»; si sigue igual, "
+                           "revisa «Motor de vídeo» en «Estado del sistema».")
+            if warned:
+                summary += f" Hay {warned} {'aviso' if warned == 1 else 'avisos'} abajo."
         else:
             first = failed[0]
             cause = first.detail_es
             summary = f"{first.detail_es} {first.action_es}".strip()
-            if len(failed) > 1:
-                summary += f" (Hay {len(failed) - 1} {'aviso más' if len(failed) == 2 else 'avisos más'} abajo.)"
+            more = len(failed) - 1 + warned
+            if more:
+                summary += f" (Hay {more} {'aviso más' if more == 1 else 'avisos más'} abajo.)"
         result = DiagnosisResult(device_id=inp.device_id, camera_id=inp.camera_id, steps=steps,
                                  probable_cause_es=cause, summary_es=summary)
         if self.rewriter is not None and failed:
             # al LLM solo va texto saneado: sin IP, credenciales, ni la dirección o el nombre del equipo (un host
-            # DNS o un nombre como «Caja Gran Vía 32» no los tapa la expresión de IP)
+            # DNS o un nombre como «Caja Gran Vía 32» no los tapa la expresión de IP); de las tarjetas de red, solo
+            # los nombres que pone Windows («Ethernet», «Wi-Fi»), no uno puesto a mano
             private = (inp.device.host, inp.device.name)
+            own = tuple(n for n in nics if not _WINDOWS_NIC.fullmatch(n.strip()))
             try:
-                text = await self.rewriter(sanitize_text(summary, private),
-                                           [sanitize_step(s, private) for s in steps])
+                text = await self.rewriter(sanitize_text(summary, private, own),
+                                           [sanitize_step(s, private, own) for s in steps])
                 if text and len(text) < 1500:
-                    result.summary_es = sanitize_text(text, private)
+                    result.summary_es = sanitize_text(text, private, own)
                     result.llm_used = True
             except Exception as exc:  # noqa: BLE001 - el LLM es opcional
                 log.info("El LLM no pudo redactar el diagnóstico: %s", type(exc).__name__)
         return result
 
 
-_IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\[[0-9a-fA-F:]+\]")
+# IPv4, redes escritas como «192.168.1.x» (paso `route`) e IPv6 entre corchetes
+_IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\b\d{1,3}(?:\.\d{1,3}){2}\.x\b|\[[0-9a-fA-F:]+\]")
+# nombres de tarjeta que pone Windows (no dicen nada de la tienda)
+_WINDOWS_NIC = re.compile(r"(?:ethernet|wi-?fi|wlan|conexión de área local|conexión de red(?: inalámbrica| bluetooth)?"
+                          r"|local area connection|wireless network connection|bluetooth network connection)"
+                          r"(?: ?\*? ?\d+)?", re.IGNORECASE)
 
 
-def sanitize_text(text: str, private: tuple[str, ...] = ()) -> str:
+def sanitize_text(text: str, private: tuple[str, ...] = (), nics: tuple[str, ...] = ()) -> str:
     """Sin IP ni credenciales (lo que viaja al LLM y lo que vuelve). `private`: textos literales que tampoco
-    salen (dirección y nombre del equipo): la dirección pasa a «<IP>» y el resto a «el equipo»."""
+    salen (dirección y nombre del equipo): la dirección pasa a «<IP>» y el resto a «el equipo». `nics`: nombres de
+    tarjeta de red puestos a mano, que pasan a «tarjeta de red»."""
     out = redact(text)
     host = private[0].strip() if private else ""
     for literal in sorted({p.strip() for p in private if p and p.strip()}, key=len, reverse=True):
         out = re.sub(re.escape(literal), "<IP>" if literal == host else "el equipo", out, flags=re.IGNORECASE)
+    for nic in sorted({n.strip() for n in nics if n and n.strip()}, key=len, reverse=True):
+        out = re.sub(re.escape(nic), "tarjeta de red", out, flags=re.IGNORECASE)
     return _IP_RE.sub("<IP>", out)
 
 
-def sanitize_step(s: DiagnosisStep, private: tuple[str, ...] = ()) -> DiagnosisStep:
-    return s.model_copy(update={"detail_es": sanitize_text(s.detail_es, private),
-                                "action_es": sanitize_text(s.action_es, private)})
+def sanitize_step(s: DiagnosisStep, private: tuple[str, ...] = (), nics: tuple[str, ...] = ()) -> DiagnosisStep:
+    return s.model_copy(update={"detail_es": sanitize_text(s.detail_es, private, nics),
+                                "action_es": sanitize_text(s.action_es, private, nics)})
 
 
 def llm_rewriter_from_settings(settings: Any) -> Rewriter | None:

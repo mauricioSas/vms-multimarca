@@ -945,6 +945,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | paradas | §14.1: en Windows la única orden de parada de `vmsctl run` es cerrar la entrada estándar, y ahora la vigilan también el actualizador (`vms_updater/_stdin_stop.py`), la analítica, el latido y el panel central (`vms/core/stdin_stop.py`); antes `vmsctl` los mataba a los 10 s en cada parada. `grace_s` de VMSBackend pasa de 10 a 12 s (uvicorn espera 3 s, no 10, y la aplicación pendiente al motor 3 s); `vmshost` sigue esperando 15 s. §6.11 (sin cambio de forma): al empezar la parada del backend los flujos `/api/events` terminan y el navegador vuelve a conectar solo. §13.5: el temporal de `atomic_write` en Python es propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) y `public-status.json` y `updater.json` se reescriben bajo un cerrojo por archivo. |
 | 2026-10-08 | reproducción | Reproducción y «Grabando» sin mentir (todo aditivo salvo lo marcado): `EngineError` (502 `engine_error`) en `vms.core.errors`; §5.2 `list_recordings` mira la carpeta antes de preguntar a MediaMTX y solo «carpeta inexistente»/404 son «sin grabaciones» (antes, cualquier 400, que escondía p. ej. una carpeta sin permiso); §5.2/§6.8 `recording` exige segmentos recientes y `PathStatus`/`/api/status` llevan `recording_error` y `last_recorded_at`; §6.7 `notice` en la línea de tiempo y **`/video` de una cámara que nunca grabó responde 404 (antes 400 `playback_rejected`)**, también el de una cámara desactivada sin ruta en el motor (antes 502); §5.2 un día sin segmentos no se pregunta tal cual a MediaMTX (404 + ERR en su registro); §4.3 rutas inertes de retención para cámaras borradas, desactivadas o en pausa. |
 | 2026-10-08 | energía | §6.8 (aditivo): `GET /api/status` trae `power` en Windows (batería, suspensión con corriente y con batería, acción de la tapa y avisos con «Qué hacer:»), solo lectura y sin tocar `status`/`problems`. §18.9: `#power-alerts` y `#power-root` con `power.js` en `status.html`; `status.js` lanza el evento `vms:status` tras cada lectura. Motivo: un portátil de tienda dejó de grabar a batería (suspensión a los 3 min) y con la tapa cerrada sin que nada lo avisara. |
+| 2026-10-08 | diagnóstico | §18.11 (aditivo): paso nuevo `route` al principio (`vms/ops/netroute.py`, solo con una IPv4 de red local y sin tráfico nuevo: por qué tarjeta de red sale este PC hacia el equipo) y campo `DiagnosisStep.warning` (`false` por defecto; la web lo marca «Aviso» y el resumen cuenta los avisos). **Cambio de comportamiento:** un equipo guardado sin cámaras da `path_ready` en fallo (antes `ok: null`) con la acción de darlas de alta; con todas sus cámaras desactivadas, la acción es activarlas (antes «espera un minuto»), y el resumen solo dice que el vídeo llega si `path_ready` está bien. Motivo: en el PC del usuario, una cámara guardada con la contraseña mala quedó sin su vídeo y el diagnóstico decía que no tenía cámaras o incluso «Todo correcto»; y con el cable del PC desconectado el tráfico salía por el WiFi de la misma red sin que nada lo dijera. |
 
 ---
 
@@ -1561,11 +1562,22 @@ puertos); el detalle solo va al registro de depuración.
 
 `POST /api/diagnostics/device` (A) `{"device_id"}` o un `DeviceTestRequest` → `DiagnosisResult`;
 `POST /api/diagnostics/camera/{camera_id}` (A). Reglas deterministas en orden (`DiagnosisStep.code`):
-`ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` → `codec` →
-`clock` → `engine` → `path_ready`. **Un solo intento con credenciales** (respeta `LockoutPolicy`). Cada paso
-trae la causa probable y la acción en lenguaje claro. El LLM es opcional (`VMS_LLM_*`) y solo reescribe
-`summary_es` a partir de los pasos, **sin IP, usuarios ni contraseñas** (`llm_used`), ni la dirección
-(aunque sea un nombre DNS) ni el nombre del equipo: se sanea lo que va (resumen y pasos) y lo que vuelve.
+`route` → `ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` →
+`codec` → `clock` → `engine` → `path_ready`. **Un solo intento con credenciales** (respeta `LockoutPolicy`).
+Cada paso trae la causa probable y la acción en lenguaje claro.
+`route` (`vms/ops/netroute.py`) solo aparece con una IPv4 de red local (privada o 169.254): dice por qué
+tarjeta de red sale este PC hacia el equipo, **sin tráfico nuevo** (IP de origen con `connect()` UDP, que no
+envía nada; tarjetas y enlace con psutil; si contesta, por las pruebas TCP de `ping`). Falla (y es la causa
+probable) si la tarjeta de la red del equipo está desconectada o si el equipo está en otra red y no contesta.
+Con dos o más tarjetas con enlace en la red del equipo es un aviso, nunca la causa. `DiagnosisStep.warning`
+(`false` por defecto): aviso que conviene revisar aunque no sea la causa; la web lo marca «Aviso» y el resumen
+cuenta los avisos. Un equipo **guardado sin cámaras** da `path_ready` en
+fallo con la acción de darlas de alta («Canales», o «Añadir cámara manual» en marcas sin API); con todas sus
+cámaras desactivadas, en fallo con la acción de activarlas (sin ruta en el motor, no hay nada que esperar). El
+resumen solo dice que el vídeo llega al VMS si `path_ready` está bien. El LLM es opcional (`VMS_LLM_*`) y
+solo reescribe `summary_es` a partir de los pasos, **sin IP, usuarios ni contraseñas** (`llm_used`), ni la
+dirección (aunque sea un nombre DNS) ni el nombre del equipo: se sanea lo que va (resumen y pasos) y lo que
+vuelve.
 
 ### 18.12 Auditoría de seguridad de equipos (prioridad 11)
 

@@ -2,17 +2,20 @@
 con credenciales cuando la contraseña es mala (contador del mock de Hikvision y del doble RTSP)."""
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
 import pytest
 
 from tests.ops.doubles import ClockDevice, DiagBehavior, DiagClient, IsapiClock, RtspDouble, isapi_app
+from tests.ops.test_netroute import WIFI, cable_in, cable_out
 from tools.mocks.hikvision import HikvisionMock
 from tools.mocks.server import MockHttpServer
 from vms.core.interfaces import PathStatus
 from vms.core.models import Camera, Device
 from vms.ops.diagnose import DiagnoseInput, Diagnoser, sanitize_text
+from vms.ops.netroute import Adapter, Addr, NetView
 from vms.vendors import client_for
 
 PW = "Buena#1234"
@@ -235,3 +238,172 @@ async def test_device_without_time_1970_does_not_break_the_diagnosis(monkeypatch
 
     res = await _diag(b, client=Broken(b, PW)).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
     assert _steps(res)["clock"] is None and _steps(res)["auth"] is True
+
+
+# --------------------------------------------------------------------------- equipo guardado sin cámaras
+def _step(res: Any, code: str) -> Any:
+    return next(s for s in res.steps if s.code == code)
+
+
+async def test_saved_device_without_cameras_fails_with_what_to_do() -> None:
+    """Lo que pasó el 6/10 (vms.log): la cámara se guardó con la contraseña mala, así que no se importó su canal, y
+    corregirla en «Editar» no lo importa. Con el equipo sin cámaras, «¿Por qué no conecta?» decía «Este equipo aún
+    no tiene cámaras…» sin comprobar y sin «Qué hacer» y, con el resto bien, «Todo correcto… el vídeo llega al VMS»."""
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", []))
+    pr = _step(res, "path_ready")
+    assert pr.ok is False and "no se ve ni se graba" in pr.detail_es
+    assert "«Canales»" in pr.action_es and "«Editar»" in pr.action_es
+    assert "Todo correcto" not in res.summary_es and "llega al VMS" not in res.summary_es
+    assert "«Canales»" in res.summary_es and res.probable_cause_es == pr.detail_es
+    # grabador: habla de sus canales
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(kind="nvr"), PW, "dev-00000001", []))
+    pr = _step(res, "path_ready")
+    assert pr.ok is False and "ninguno de sus canales" in pr.detail_es and "los canales que quieras" in pr.action_es
+    # marca sin API: no hay «Canales», se da de alta a mano
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(kind="camera", vendor="generic"), PW, "dev-00000001",
+                                                        []))
+    pr = _step(res, "path_ready")
+    assert pr.ok is False and pr.action_es.startswith("Pulsa «Añadir cámara manual»")
+
+
+async def test_wrong_password_and_no_cameras_blames_the_password_first() -> None:
+    """El caso real de las 20:26 del 6/10: contraseña mala y sin cámaras. La causa es la contraseña; la falta de
+    cámaras se cuenta como otro aviso."""
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(kind="camera"), "Mala#000", "dev-00000001", []))
+    st = _steps(res)
+    assert st["auth"] is False and st["path_ready"] is False
+    assert "contraseña" in res.probable_cause_es and "avisos más abajo" in res.summary_es
+
+
+async def test_unsaved_form_without_cameras_is_not_a_failure() -> None:
+    """Desde el formulario de alta el equipo aún no está guardado: no es un fallo, pero tampoco se puede decir que
+    el vídeo llegue al VMS."""
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(kind="camera"), PW))
+    pr = _step(res, "path_ready")
+    assert pr.ok is None and "aún no está guardado" in pr.detail_es
+    assert res.probable_cause_es == "No se ha encontrado ningún problema."
+    assert "llega al VMS" not in res.summary_es
+
+
+async def test_summary_only_says_the_video_arrives_when_it_was_checked() -> None:
+    """Sin estado de las rutas del motor (`paths_status` None) el resumen decía igual «Todo correcto… el vídeo llega
+    al VMS»."""
+    d = _diag(DiagBehavior())
+    d.paths_status = None
+    res = await d.run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
+    assert _step(res, "path_ready").ok is None
+    assert "Todo correcto" not in res.summary_es and "no se ha podido comprobar si llega el vídeo" in res.summary_es
+    assert "Qué hacer:" in res.summary_es
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
+    assert res.summary_es.startswith("Todo correcto") and "llega al VMS" in res.summary_es
+
+
+async def test_disabled_cameras_are_not_told_to_wait() -> None:
+    """Una cámara desactivada no tiene ruta en el motor (`vms/core/sources.py`): «espera un minuto, el VMS reintenta
+    solo» no era verdad."""
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam(enabled=False)]))
+    pr = _step(res, "path_ready")
+    assert pr.ok is False and "desactivada" in pr.detail_es and "«Activada»" in pr.action_es
+    assert "espera un minuto" not in pr.action_es
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam(enabled=False)],
+                                                        camera_id="cam-00000001"))
+    assert _step(res, "path_ready").detail_es.startswith("Esta cámara está desactivada")
+    # con una activa y otra desactivada, solo cuenta la activa
+    cams = [_cam(), _cam(id="cam-00000002", name="Almacén", channel=2, enabled=False)]
+    res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(), PW, "dev-00000001", cams))
+    assert _step(res, "path_ready").ok is True
+
+
+# --------------------------------------------------------------------------- red de este PC (paso `route`)
+CAM_DEV = {"host": "192.168.1.64", "kind": "camera"}
+
+
+def _net(view: Any) -> Any:
+    async def probe(host: str) -> Any:
+        return view
+    return probe
+
+
+async def test_unplugged_pc_cable_is_the_probable_cause() -> None:
+    """PC de la tienda, 8/10: con el cable de «Ethernet» desconectado Windows buscaba la cámara por «Wi-Fi» (las
+    dos en 192.168.1.0/24). El diagnóstico decía «El equipo no responde en la red» y mandaba revisar el cable de la
+    cámara."""
+    d = _diag(DiagBehavior(), ports={})
+    d.net_probe = _net(cable_out())
+    res = await d.run(DiagnoseInput(_dev(**CAM_DEV), PW, "dev-00000001", [_cam()]))
+    assert [s.code for s in res.steps][:2] == ["route", "ping"] and res.steps[0].ok is False
+    assert "«Ethernet»" in res.probable_cause_es and "desconectada" in res.probable_cause_es
+    assert "Conecta el cable de red de «Ethernet»" in res.summary_es and _steps(res)["ping"] is False
+
+
+async def test_both_cards_up_and_camera_answers_is_only_a_warning() -> None:
+    """El mismo PC con el cable puesto: funciona, pero «Wi-Fi» también está en la red de la cámara."""
+    d = _diag(DiagBehavior())
+    d.net_probe = _net(cable_in())
+    res = await d.run(DiagnoseInput(_dev(**CAM_DEV), PW, "dev-00000001", [_cam()]))
+    route = _step(res, "route")
+    assert route.ok is True and route.warning and "«Wi-Fi»" in route.detail_es and route.action_es
+    assert res.probable_cause_es == "No se ha encontrado ningún problema."
+    assert res.summary_es.startswith("Todo correcto") and res.summary_es.endswith(" Hay 1 aviso abajo.")
+
+
+async def test_wifi_route_is_a_warning_and_the_camera_check_stays_the_cause() -> None:
+    """Las dos con enlace pero Windows sale por «Wi-Fi» y la cámara no contesta: puede ser la ruta o que esté
+    apagada; la causa probable sigue siendo la de siempre y la ruta va como aviso."""
+    d = _diag(DiagBehavior(), ports={})
+    d.net_probe = _net(cable_in("192.168.1.141"))
+    res = await d.run(DiagnoseInput(_dev(**CAM_DEV), PW, "dev-00000001", [_cam()]))
+    route = _step(res, "route")
+    assert route.ok is None and route.warning and "desactiva un momento «Wi-Fi»" in route.action_es
+    assert "no responde en la red" in res.probable_cause_es and "(Hay 1 aviso más abajo.)" in res.summary_es
+
+
+async def test_pc_network_probe_failure_is_not_fatal() -> None:
+    async def broken(host: str) -> Any:
+        raise OSError("psutil roto")
+
+    d = _diag(DiagBehavior())
+    d.net_probe = broken
+    res = await d.run(DiagnoseInput(_dev(**CAM_DEV), PW, "dev-00000001", [_cam()]))
+    assert _step(res, "route").ok is None and _steps(res)["auth"] is True
+    assert res.probable_cause_es == "No se ha encontrado ningún problema."
+
+
+async def test_route_step_only_with_a_lan_ip() -> None:
+    """Con un nombre DNS o 127.0.0.1 no se mira la red del PC (ni se resuelve el nombre)."""
+    calls: list[str] = []
+
+    async def probe(host: str) -> Any:
+        calls.append(host)
+        return cable_out()
+
+    for host in ("127.0.0.1", "cam-caja.tienda.local"):
+        d = _diag(DiagBehavior())
+        d.net_probe = probe
+        res = await d.run(DiagnoseInput(_dev(host=host), PW, "dev-00000001", [_cam()]))
+        assert "route" not in _steps(res)
+    assert calls == []
+
+
+async def test_llm_never_sees_card_names_or_networks() -> None:
+    """Al LLM no van las IP del PC, la red escrita como «192.168.1.x» ni un nombre de tarjeta puesto a mano."""
+    seen: list[str] = []
+
+    async def rewriter(summary: str, steps: list[Any]) -> str:
+        seen.append(summary + " " + " ".join(s.detail_es + " " + s.action_es for s in steps))
+        return "Revisa el cable."
+
+    custom = Adapter("Red Caja Gran Vía", False, (Addr("192.168.1.80", 24),))
+    for view in (NetView((custom, WIFI), "192.168.1.141"), cable_in("192.168.1.141")):
+        d = _diag(DiagBehavior(), ports={})
+        d.net_probe, d.rewriter = _net(view), rewriter
+        res = await d.run(DiagnoseInput(_dev(**CAM_DEV), PW, "dev-00000001", [_cam()]))
+        assert res.llm_used and _step(res, "route").detail_es
+    sent = " ".join(seen)
+    assert "Gran Vía" not in sent and not re.search(r"\d+\.\d+\.\d+\.", sent), sent
+    assert "«Wi-Fi»" in sent           # los nombres de siempre de Windows sí: dicen qué cable revisar
+
+
+async def test_service_diagnoser_reads_this_pc_network(api: Any) -> None:
+    from vms.ops import netroute
+    assert api.app.state.ops.diagnoser().net_probe is netroute.probe

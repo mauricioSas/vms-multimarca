@@ -102,6 +102,35 @@ def test_save_imports_when_the_password_was_corrected_after_the_test(ui: tuple[R
     assert cams == 2
 
 
+def test_save_with_failed_import_says_what_to_do_next(ui: tuple[RealBackend, ServerThread],
+                                                      make_context: Any) -> None:  # noqa: F811
+    """Lo que pasó el 6/10: guardar sin «Probar» con la contraseña mala deja el equipo sin cámaras. El aviso solo
+    decía «No se pudieron importar los canales: …», y corregir la contraseña en «Editar» no las importa ni lo
+    dice: el equipo seguía sin cámaras y «¿Por qué no conecta?» parecía equivocarse."""
+    backend, server = ui
+    page = make_context(server.base_url).new_page()
+    login(page, ADMIN)
+    _fill_new_device(page, "Mala#Pass:9@/x")
+    page.click("#btn-device-save")
+    page.wait_for_selector("#device-dialog", state="hidden")
+    dev, cams = _saved(backend)
+    assert cams == 0
+    failed = page.locator(".toast.bad", has_text="importar")
+    failed.first.wait_for()
+    text = failed.first.inner_text()
+    assert "Qué hacer:" in text and "«Editar»" in text and "«Canales»" in text and "Mala#Pass" not in text
+    # «Editar» con la contraseña buena: no se importa nada a escondidas, pero se dice qué falta
+    before = MOCKS["default"].auth.credentialed
+    page.click(f"tr[data-device='{dev.id}'] button[data-act='edit']")
+    page.fill("#dev-password", TEST_PASSWORD)
+    page.click("#btn-device-save")
+    page.wait_for_selector("#device-dialog", state="hidden")
+    hint = page.locator(".toast.info", has_text="aún no tiene cámaras")
+    hint.first.wait_for()
+    assert "Qué hacer:" in hint.first.inner_text() and "«Canales»" in hint.first.inner_text()
+    assert MOCKS["default"].auth.credentialed == before and _saved(backend)[1] == 0
+
+
 def test_unverified_ip_move_asks_for_the_password_in_the_row(ui: tuple[RealBackend, ServerThread],
                                                             make_context: Any) -> None:  # noqa: F811
     backend, server = ui

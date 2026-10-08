@@ -119,6 +119,7 @@ export function onOpsEvent(name, fn) {
 
 // ------------------------------------------------------------------ «¿Por qué no conecta?»
 const STEP_NAMES = {
+  route: "Tarjeta de red de este PC",
   ping: "El equipo responde en la red", tcp_http: "Puerto web", tcp_rtsp: "Puerto de vídeo (RTSP)",
   http_response: "La web contesta", auth: "Usuario y contraseña", lockout: "Bloqueo del usuario",
   rtsp_describe: "El vídeo responde", codec: "Formato del vídeo (códec)", clock: "Hora del equipo",
@@ -128,9 +129,11 @@ const STEP_NAMES = {
 export function renderDiagnosis(result) {
   const list = h("ol", { class: "ops-diag" });
   for (const s of result.steps) {
-    const status = s.ok === true ? "ok" : s.ok === false ? "critical" : "unknown";
+    // `warning`: no es la causa, pero conviene revisarlo (p. ej. dos tarjetas de red en la red del equipo)
+    const status = s.ok === false ? "critical" : s.warning ? "warning" : s.ok === true ? "ok" : "unknown";
+    const label = { ok: "Bien", critical: "Falla", warning: "Aviso", unknown: "Sin comprobar" }[status];
     list.append(h("li", { class: `ops-diag-step ${status}` },
-      statusPill(status, s.ok === true ? "Bien" : s.ok === false ? "Falla" : "Sin comprobar"),
+      statusPill(status, label),
       h("div", {}, h("strong", {}, STEP_NAMES[s.code] || s.code), h("div", {}, s.detail_es),
         s.action_es ? h("div", { class: "ops-diag-action" }, "Qué hacer: ", s.action_es) : null)));
   }

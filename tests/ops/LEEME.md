@@ -11,6 +11,7 @@
 | `test_evidence.py`, `test_evidence_viewer.py` | Paquete que `verify` acepta y que falla con un byte cambiado (también en `visor.html` sin red en Chromium); tramo protegido que sobrevive a la retención y caduca |
 | `test_notify.py` | Correo con SMTP simulado, webhook con HMAC comprobado por el receptor, agrupación, horas de silencio |
 | `test_diagnose.py` | Cada regla del diagnóstico y exactamente 1 petición con credenciales (cliente ISAPI real contra el mock) |
+| `test_netroute.py` | Paso `route` con las fotos de red del PC de la tienda (cable desconectado; «Ethernet» y «Wi-Fi» en 192.168.1.0/24), 169.254 de tarjetas virtuales, otra red; lectura de psutil doblada |
 | `test_security_audit.py` | Esquema de la tabla, Hikvision por fecha de build, Dahua por versión, RTSP anónimo, sin salir a Internet |
 | `test_camera_scope.py` | Permisos por cámara en vivo, grabación, descarga, analítica, estado y muros; el kiosco igual que antes |
 | `test_health_api.py` | Salud por la API, informe, latido y RGPD de la carpeta `ops/` |

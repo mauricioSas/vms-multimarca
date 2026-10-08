@@ -32,7 +32,7 @@ from vms.core.errors import DeviceAuthFailed, EngineUnavailable, NotFoundError, 
 from vms.core.interfaces import DeviceClockClient
 from vms.core.models import Camera, Device
 
-from . import drivers
+from . import drivers, netroute
 from .diagnose import DiagnoseInput, Diagnoser, llm_rewriter_from_settings
 from .evidence.bookmarks import BookmarkManager
 from .evidence.export import CameraInfo, EvidenceBuilder, ExportContext, new_export_id
@@ -808,7 +808,7 @@ class OpsService:
         return Diagnoser(self.state.client_factory, engine_running=engine_running,
                          paths_status=self.state.paths_status_safe,
                          clock_thresholds=(hs.clock_warn_s, hs.clock_critical_s),
-                         rewriter=llm_rewriter_from_settings(self.state.settings))
+                         rewriter=llm_rewriter_from_settings(self.state.settings), net_probe=netroute.probe)
 
     async def diagnose(self, inp: DiagnoseInput) -> DiagnosisResult:
         return await self.diagnoser().run(inp)
