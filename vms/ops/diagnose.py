@@ -35,7 +35,7 @@ from vms.core.rtsp import preset_paths, redact
 from vms.core.sources import camera_paths
 
 from . import drivers, netroute
-from .health.clock import assess_device
+from .health.clock import assess_device, de_noun
 from .host import dynamic
 from .models import DiagnosisResult, DiagnosisStep
 
@@ -259,13 +259,13 @@ class Diagnoser:
         if auth_ok and client is not None and drivers.TIME_READ in drivers.capabilities(d.vendor) \
                 and isinstance(client, DeviceClockClient):
             t0 = time.perf_counter()
+            noun = "la cámara" if d.kind == "camera" else "el grabador" if d.kind in ("nvr", "dvr", "xvr") \
+                else "el equipo"
             try:
                 dt = await client.device_time()
                 # causa y acción por separado: la interfaz ya pone «Qué hacer:» delante de la acción
                 verdict = assess_device(dt, *self.clock_thresholds,
-                                        can_set=drivers.TIME_WRITE in drivers.capabilities(d.vendor),
-                                        noun="la cámara" if d.kind == "camera" else "el grabador"
-                                        if d.kind in ("nvr", "dvr", "xvr") else "el equipo")
+                                        can_set=drivers.TIME_WRITE in drivers.capabilities(d.vendor), noun=noun)
                 # solo un reloj sin poner o muy desajustado (`critical`) es un fallo; la hora puesta a mano (lo que
                 # deja «Poner en hora con este PC»), un desfase pequeño o la zona distinta son un aviso, no la causa
                 if verdict.status == "critical":
@@ -275,7 +275,17 @@ class Diagnoser:
                 else:
                     add("clock", True if verdict.status == "ok" else None, verdict.cause, verdict.action, t0)
             except DeviceError as exc:
-                add("clock", None, f"No se pudo leer la hora: {redact(exc.message)}", "", t0)
+                if exc.details.get("low_privilege"):
+                    # ISAPI `lowPrivilege`: la contraseña vale, pero ese usuario no puede ver la hora. Antes salía la
+                    # ruta técnica (/ISAPI/System/time) sin qué hacer; mismo consejo que «Hora de los equipos»
+                    de = de_noun(noun)
+                    add("clock", None, f"No se pudo leer la hora: el usuario guardado {de} no tiene permiso para "
+                                       "verla.",
+                        f"En la web {de} (apartado de usuarios), dale permiso para ver la configuración, o en «Equipos "
+                        "y monitores», pulsa «Editar» en la fila del equipo y pon otro usuario de solo lectura que sí "
+                        "pueda verla.", t0)
+                else:
+                    add("clock", None, f"No se pudo leer la hora: {redact(exc.message)}", "", t0)
             except Exception:  # noqa: BLE001 - un fallo leyendo la hora no tumba el diagnóstico entero
                 log.exception("Fallo inesperado leyendo la hora del equipo")
                 add("clock", None, "No se pudo leer la hora del equipo.", "", t0)
@@ -329,8 +339,10 @@ class Diagnoser:
         elif running:
             add("engine", True, "El motor de vídeo del VMS está en marcha.")
         else:
+            # «Estado del sistema» no tiene botón para reiniciar servicios: allí sale el motivo con su «Qué hacer:»
             add("engine", False, "El motor de vídeo del VMS no está en marcha.",
-                "Reinicia el servicio del VMS desde «Estado del sistema» o reinicia el PC.")
+                "Mira en «Estado del sistema» el aviso del motor de vídeo, que dice por qué no arranca, y sigue su "
+                "«Qué hacer:»; si no sale ningún aviso, reinicia el PC.")
         if not inp.cameras:
             self._no_cameras(inp, add)
             return
@@ -339,10 +351,11 @@ class Diagnoser:
         if not active:
             if inp.camera_id is not None:
                 add("path_ready", False, "Esta cámara está desactivada: el VMS no la ve ni la graba.",
-                    "En «Cámaras», pulsa «Editar» en su fila y marca «Activada».")
+                    "En «Equipos y monitores», en la lista «Cámaras», pulsa «Editar» en su fila y marca «Activada».")
             else:
                 add("path_ready", False, "Las cámaras de este equipo están desactivadas: el VMS no las ve ni las "
-                                         "graba.", "En «Cámaras», pulsa «Editar» en cada una y marca «Activada».")
+                                         "graba.", "En «Equipos y monitores», en la lista «Cámaras», pulsa «Editar» en "
+                                                   "cada una y marca «Activada».")
             return
         paths = await self.paths_status() if self.paths_status else None
         if paths is None or not running:

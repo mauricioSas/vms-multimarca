@@ -145,6 +145,9 @@ async def test_clock_engine_and_path_rules() -> None:
     st = _steps(res)
     assert st["clock"] is False and "adelantada" in next(s.detail_es for s in res.steps if s.code == "clock")
     assert st["engine"] is False and st["path_ready"] is None
+    # revisión final: mandaba a «reiniciar el servicio desde Estado del sistema», donde no hay ningún botón para eso
+    engine = next(s for s in res.steps if s.code == "engine")
+    assert "«Estado del sistema»" in engine.action_es and "servicio" not in engine.action_es
     res = await _diag(DiagBehavior(), ready=False).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
     pr = next(s for s in res.steps if s.code == "path_ready")
     assert pr.ok is False and "Cajas" in pr.detail_es and "connection refused" in pr.detail_es
@@ -204,6 +207,23 @@ async def test_manual_clock_in_time_is_a_warning_not_the_cause() -> None:
     clock = _step(res, "clock")
     assert clock.ok is False and not clock.warning and "no tiene la hora puesta" in clock.detail_es
     assert res.probable_cause_es == clock.detail_es and "Todo correcto" not in res.summary_es
+
+
+async def test_restricted_user_clock_read_says_what_to_do() -> None:
+    """Revisión final: un usuario sin permiso para ver la hora (ISAPI 403 `lowPrivilege`) daba «No se pudo leer la
+    hora: El usuario de … no tiene permiso para /ISAPI/System/time», con la ruta técnica y sin qué hacer, mientras
+    «Hora de los equipos» sí lo explicaba."""
+    from vms.vendors.errors import DevicePermissionDenied
+
+    def denied() -> Any:
+        raise DevicePermissionDenied("10.0.0.5", "/ISAPI/System/time")
+    b = DiagBehavior()
+    res = await _diag(b, client=_with_reading(b, denied)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    clock = _step(res, "clock")
+    assert clock.ok is None and "/ISAPI" not in clock.detail_es and "no tiene permiso" in clock.detail_es
+    assert "apartado de usuarios" in clock.action_es and "«Editar»" in clock.action_es
+    assert res.probable_cause_es == "No se ha encontrado ningún problema.", "no es la causa"
 
 
 async def test_generic_rtsp_device_tries_credentials_once_via_rtsp() -> None:
@@ -362,6 +382,8 @@ async def test_disabled_cameras_are_not_told_to_wait() -> None:
     pr = _step(res, "path_ready")
     assert pr.ok is False and "desactivada" in pr.detail_es and "«Activada»" in pr.action_es
     assert "espera un minuto" not in pr.action_es
+    # revisión final: la misma pantalla que nombra Reproducción para lo mismo («Equipos y monitores»)
+    assert pr.action_es.startswith("En «Equipos y monitores»")
     res = await _diag(DiagBehavior()).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam(enabled=False)],
                                                         camera_id="cam-00000001"))
     assert _step(res, "path_ready").detail_es.startswith("Esta cámara está desactivada")
