@@ -51,6 +51,27 @@ function Ejecutar([string]$exe, [string[]]$argumentos) {
 
 function Tiene([string]$cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+function Invoke-Probe {
+    <# Igual que en deploy/windows/install.ps1: ejecuta un programa externo solo para consultar algo. En Windows
+       PowerShell 5.1, con ErrorActionPreference=Stop, cualquier texto en stderr redirigido se convierte en un error
+       que detiene el script (p. ej. «No suitable Python runtime found» de py.exe cuando solo hay otra versión).
+       Aquí un fallo solo significa «no disponible». #>
+    param([string]$FilePath, [string[]]$Arguments)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $FilePath @Arguments 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return (($out | Select-Object -First 1) -as [string]).Trim() }
+    } catch {
+        Write-Verbose "Consulta fallida: $FilePath $($Arguments -join ' '): $_"
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return $null
+}
+
+function Tiene-Python312 { (Tiene 'py') -and ((Invoke-Probe 'py' @('-3.12', '-c', 'print(1)')) -eq '1') }
+
 # --------------------------------------------------------------------------------------------- 1. herramientas
 if (-not $SinHerramientas) {
     Paso 'Herramientas (winget)'
@@ -59,7 +80,7 @@ if (-not $SinHerramientas) {
     }
     $herramientas = @(
         @{ Id = 'Git.Git';              Prueba = { Tiene 'git' } },
-        @{ Id = 'Python.Python.3.12';   Prueba = { (Tiene 'py') -and ((& py -3.12 -c 'print(1)' 2>$null) -eq '1') } },
+        @{ Id = 'Python.Python.3.12';   Prueba = { Tiene-Python312 } },
         @{ Id = 'Rustlang.Rustup';      Prueba = { Tiene 'rustup' } },
         @{ Id = 'OpenJS.NodeJS.LTS';    Prueba = { Tiene 'node' } },
         @{ Id = 'Gyan.FFmpeg';          Prueba = { Tiene 'ffmpeg' } }
@@ -87,6 +108,9 @@ if (-not $SinHerramientas) {
 foreach ($c in 'git', 'py', 'rustup', 'node') {
     if (-not (Tiene $c)) { throw "Falta «$c». Cierra esta ventana, abre otra nueva (para que Windows lea el PATH) y repite." }
 }
+if (-not (Tiene-Python312)) {
+    throw 'Falta Python 3.12 (hay otra versión). Qué hacer: winget install --id Python.Python.3.12 -e y repite.'
+}
 
 # --------------------------------------------------------------------------------------------- 2. Rust
 Paso 'Rust 1.99.0 (rust-toolchain.toml)'
@@ -109,6 +133,8 @@ Ok (& $py --version)
 # --------------------------------------------------------------------------------------------- 4. MediaMTX y Chromium
 Paso 'MediaMTX (motor de vídeo, verificado con SHA-256) y Chromium para las pruebas de la web'
 Ejecutar $py @('-m', 'tools.fetch_mediamtx')
+# Dentro del venv, que es donde lo buscan las pruebas (tests/conftest.py fija PLAYWRIGHT_BROWSERS_PATH=0).
+$env:PLAYWRIGHT_BROWSERS_PATH = '0'
 Ejecutar $py @('-m', 'playwright', 'install', 'chromium')
 Ok 'listo'
 
