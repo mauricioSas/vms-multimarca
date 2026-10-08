@@ -2,6 +2,7 @@
 con credenciales cuando la contraseña es mala (contador del mock de Hikvision y del doble RTSP)."""
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import timedelta
 from typing import Any
@@ -147,6 +148,62 @@ async def test_clock_engine_and_path_rules() -> None:
     res = await _diag(DiagBehavior(), ready=False).run(DiagnoseInput(_dev(), PW, "dev-00000001", [_cam()]))
     pr = next(s for s in res.steps if s.code == "path_ready")
     assert pr.ok is False and "Cajas" in pr.detail_es and "connection refused" in pr.detail_es
+
+
+def _with_reading(b: DiagBehavior, reading: Any) -> Any:
+    """Cliente de diagnóstico cuya hora es `reading()` (función normal o asíncrona)."""
+    class WithClock(DiagClient):
+        async def device_time(self) -> Any:
+            r = reading()
+            return await r if inspect.isawaitable(r) else r
+    return WithClock(b, PW)
+
+
+async def test_manual_clock_in_time_is_a_warning_not_the_cause() -> None:
+    """Revisión final, cámara del usuario: tras «Poner en hora con este PC» queda en hora puesta a mano (este PC no
+    sirve NTP) y con la zona de fábrica (UTC+8) hasta cambiarla en su web. `assess()` lo da como `warning` y el paso
+    `clock` lo contaba como fallo: «Hora del equipo» salía «Falla», era la causa probable y nunca salía «Todo
+    correcto». Con la hora bien es un aviso; solo un reloj sin poner o muy desajustado es un fallo."""
+    from datetime import datetime, timezone
+
+    from vms.core.interfaces import DeviceTime
+
+    # en hora y a mano (como la deja el botón), con el doble ISAPI
+    clock_client = IsapiClock(isapi_app(ClockDevice(mode="manual")))
+    b = DiagBehavior()
+    res = await _diag(b, client=_with_reading(b, clock_client.device_time)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    clock = _step(res, "clock")
+    assert clock.ok is True and clock.warning and "puesta a mano" in clock.detail_es and clock.action_es
+    assert res.probable_cause_es == "No se ha encontrado ningún problema."
+    assert res.summary_es.startswith("Todo correcto") and res.summary_es.endswith(" Hay 1 aviso abajo.")
+
+    # además con la zona de fábrica distinta de la del PC: sigue siendo un solo aviso
+    pc_off = datetime.now().astimezone().utcoffset() or timedelta(0)
+    zone = timedelta(hours=8) if pc_off != timedelta(hours=8) else timedelta(hours=1)
+
+    def in_zone() -> DeviceTime:
+        now = datetime.now(timezone.utc)
+        return DeviceTime(device_time=now.astimezone(timezone(zone)), measured_at=now, time_mode="manual",
+                          utc_offset_s=int(zone.total_seconds()), source="isapi")
+    b = DiagBehavior()
+    res = await _diag(b, client=_with_reading(b, in_zone)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    clock = _step(res, "clock")
+    assert clock.ok is True and clock.warning and "zona horaria" in clock.detail_es
+    assert res.probable_cause_es == "No se ha encontrado ningún problema."
+    assert res.summary_es.startswith("Todo correcto") and res.summary_es.endswith(" Hay 1 aviso abajo.")
+
+    # un reloj sin poner (01-01-1970) sigue siendo un fallo y la causa probable
+    def never_set() -> DeviceTime:
+        return DeviceTime(device_time=datetime(1970, 1, 1, 0, 7, 9, tzinfo=timezone.utc),
+                          measured_at=datetime.now(timezone.utc), time_mode="manual", source="isapi")
+    b = DiagBehavior()
+    res = await _diag(b, client=_with_reading(b, never_set)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    clock = _step(res, "clock")
+    assert clock.ok is False and not clock.warning and "no tiene la hora puesta" in clock.detail_es
+    assert res.probable_cause_es == clock.detail_es and "Todo correcto" not in res.summary_es
 
 
 async def test_generic_rtsp_device_tries_credentials_once_via_rtsp() -> None:

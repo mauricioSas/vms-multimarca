@@ -266,7 +266,14 @@ class Diagnoser:
                                         can_set=drivers.TIME_WRITE in drivers.capabilities(d.vendor),
                                         noun="la cámara" if d.kind == "camera" else "el grabador"
                                         if d.kind in ("nvr", "dvr", "xvr") else "el equipo")
-                add("clock", verdict.status == "ok", verdict.cause, verdict.action, t0)
+                # solo un reloj sin poner o muy desajustado (`critical`) es un fallo; la hora puesta a mano (lo que
+                # deja «Poner en hora con este PC»), un desfase pequeño o la zona distinta son un aviso, no la causa
+                if verdict.status == "critical":
+                    add("clock", False, verdict.cause, verdict.action, t0)
+                elif verdict.status == "warning":
+                    add("clock", True, verdict.cause, verdict.action, t0, warning=True)
+                else:
+                    add("clock", True if verdict.status == "ok" else None, verdict.cause, verdict.action, t0)
             except DeviceError as exc:
                 add("clock", None, f"No se pudo leer la hora: {redact(exc.message)}", "", t0)
             except Exception:  # noqa: BLE001 - un fallo leyendo la hora no tumba el diagnóstico entero
