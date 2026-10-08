@@ -57,6 +57,8 @@ class AppState:
     kiosk_limiter: LoginLimiter = field(default_factory=lambda: LoginLimiter(10, 300.0))
     ip_limiter: LoginLimiter = field(default_factory=lambda: LoginLimiter(20, 300.0))  # fallos por IP
     bus: EventBus = field(default_factory=EventBus)
+    # Se pone al empezar la parada (`begin_stop`): los flujos SSE terminan en vez de retener a uvicorn.
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)
     started_monotonic: float = field(default_factory=time.monotonic)
     apply_delay: float = 1.0
     snapshot_last: dict[str, float] = field(default_factory=dict)
@@ -67,6 +69,17 @@ class AppState:
     _paths_cache: tuple[float, dict[str, PathStatus]] | None = None
     _engine_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _kiosk_seen: tuple[Any, str] | None = None
+
+    # ------------------------------------------------------------------ parada
+    def begin_stop(self) -> None:
+        """El servidor va a pararse: los flujos `/api/events` terminan ya (el navegador vuelve a conectar solo).
+
+        Si no, uvicorn esperaba su plazo de parada entero por cada panel o muro abierto, y vmsctl mataba el
+        backend a los 10 s sin que llegara a pararse el resto («Deteniendo VMS Multimarca» nunca salía en el
+        registro; actualización de la beta.1 a la beta.2, 06/10)."""
+        if not self.stopping.is_set():
+            self.stopping.set()
+            self.bus.close()
 
     # ------------------------------------------------------------------ token de kiosco
     def kiosk_token(self) -> str:

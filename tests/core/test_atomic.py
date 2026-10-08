@@ -12,13 +12,19 @@ import pytest
 from vms.core import atomic
 
 
+def _temps(d: Path) -> list[str]:
+    return [x.name for x in d.iterdir() if ".tmp-" in x.name]
+
+
 def test_writes_and_replaces_without_leaving_the_temp(tmp_path: Path) -> None:
     p = tmp_path / "state" / "active.json"
     atomic.atomic_write_text(p, '{"active":"1.0.0"}')
     atomic.atomic_write_text(p, '{"active":"2.0.0"}')
     assert p.read_text(encoding="utf-8") == '{"active":"2.0.0"}'
-    assert not atomic.temp_path(p).exists()
-    assert atomic.temp_path(p).name == f"active.json.tmp-{os.getpid()}"  # mismo nombre que en Rust
+    assert _temps(p.parent) == []
+    # `.tmp-<pid>` como en Rust (lo reconocen las limpiezas) y un trozo al azar: cada escritura, el suyo
+    assert atomic.temp_path(p).name.startswith(f"active.json.tmp-{os.getpid()}-")
+    assert atomic.temp_path(p) != atomic.temp_path(p)
 
 
 def test_crash_between_write_and_rename_keeps_the_old_file(tmp_path: Path) -> None:
@@ -28,10 +34,44 @@ def test_crash_between_write_and_rename_keeps_the_old_file(tmp_path: Path) -> No
     tmp = atomic.write_temp(p, b"nuevo-a-medias")
     assert p.read_bytes() == b"viejo"
     assert tmp.exists()
-    # Al «reiniciar», el siguiente escritor pisa el temporal huérfano y termina bien
+    # Al «reiniciar», el siguiente escritor usa su propio temporal y termina bien; el huérfano no estorba
     atomic.atomic_write_bytes(p, b"nuevo")
     assert p.read_bytes() == b"nuevo"
-    assert not tmp.exists()
+    assert _temps(tmp_path) == [tmp.name]
+
+
+def test_two_writers_of_one_file_do_not_share_the_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dos hilos del mismo proceso: A escribe su temporal y, justo antes de renombrarlo, B escribe el mismo
+    archivo de principio a fin. Con el temporal `<nombre>.tmp-<pid>` compartido, B se llevaba el de A y A fallaba
+    con «MoveFileExW … código 2» (el actualizador, con public-status.json, 08/10)."""
+    p = tmp_path / "status.json"
+    real = atomic._replace_once
+    a_ready, b_done = threading.Event(), threading.Event()
+
+    def rename_after_b(tmp: Path, dst: Path) -> None:
+        if threading.current_thread().name == "A" and not b_done.is_set():
+            a_ready.set()
+            b_done.wait(5)
+        real(tmp, dst)
+
+    monkeypatch.setattr(atomic, "_replace_once", rename_after_b)
+    errors: list[OSError] = []
+
+    def writer_a() -> None:
+        try:
+            atomic.atomic_write_text(p, "A")
+        except OSError as exc:
+            errors.append(exc)
+
+    ta = threading.Thread(target=writer_a, name="A")
+    ta.start()
+    assert a_ready.wait(5)
+    atomic.atomic_write_text(p, "B")
+    b_done.set()
+    ta.join(5)
+    assert errors == [], errors
+    assert p.read_text(encoding="utf-8") == "A"      # gana el último en renombrar
+    assert _temps(tmp_path) == []
 
 
 def test_failure_in_the_rename_keeps_the_old_file_and_removes_the_temp(tmp_path: Path,
@@ -46,7 +86,7 @@ def test_failure_in_the_rename_keeps_the_old_file_and_removes_the_temp(tmp_path:
     with pytest.raises(OSError):
         atomic.atomic_write_bytes(p, b"nunca")
     assert p.read_bytes() == b"bueno"
-    assert not atomic.temp_path(p).exists()
+    assert _temps(tmp_path) == []
 
 
 def test_locked_file_is_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,7 +116,7 @@ def test_permanently_locked_file_gives_up_and_cleans(tmp_path: Path, monkeypatch
     p = tmp_path / "x.json"
     with pytest.raises(PermissionError):
         atomic.atomic_write_bytes(p, b"x")
-    assert not atomic.temp_path(p).exists()
+    assert _temps(tmp_path) == []
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="MoveFileExW solo existe en Windows")

@@ -1,9 +1,10 @@
 """Escritura atómica (CONTRATO §13.5) sin depender del paquete `vms`.
 
-Temporal `<nombre>.tmp-<pid>` en la misma carpeta → flush + fsync → sustitución atómica. En Windows se usa
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`, que no devuelve hasta que el cambio de
-nombre está en disco; en POSIX, `os.replace` + fsync de la carpeta. Si un antivirus bloquea el archivo un
-instante, se reintenta. Un corte de luz deja el archivo anterior o el nuevo, nunca uno a medias.
+Temporal propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) en la misma carpeta → flush + fsync →
+sustitución atómica. En Windows se usa `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`, que no
+devuelve hasta que el cambio de nombre está en disco; en POSIX, `os.replace` + fsync de la carpeta. Si un
+antivirus bloquea el archivo un instante, se reintenta. Un corte de luz deja el archivo anterior o el nuevo,
+nunca uno a medias.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 log = logging.getLogger("vms_updater.atomic")
 
@@ -114,29 +115,53 @@ def rename_durable(src: Path, dst: Path, *, retries: int = 20) -> None:
     raise last
 
 
+def temp_path(path: Path) -> Path:
+    """Un temporal NUEVO para escribir `path`: `<nombre>.tmp-<pid>-<azar>`.
+
+    Con solo el pid, dos hilos del actualizador que escribían el mismo archivo (bucle principal y tubería de
+    control con `public-status.json`) compartían el temporal: uno lo vaciaba o lo renombraba mientras el otro
+    iba a renombrarlo, y el segundo fallaba con «MoveFileExW falló con el código 2» (`VMSUpdater.log` del PC de
+    la tienda, 08/10) o publicaba una mezcla de los dos. Sigue llevando `.tmp-` para `cleanup_temporaries`."""
+    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{os.urandom(6).hex()}")
+
+
+def _create_temp(path: Path) -> tuple[Path, BinaryIO]:
+    """Crea el temporal en exclusiva («x»: nunca se escribe dentro del de otro)."""
+    for _ in range(5):
+        tmp = temp_path(path)
+        try:
+            return tmp, open(tmp, "xb")      # noqa: SIM115 - lo cierra quien lo pide
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"No se pudo crear un temporal nuevo para {path}")
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, retries: int = 20) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    last: OSError | None = None
-    for _ in range(retries):
-        try:
-            _replace(tmp, path)
-            _fsync_dir(path.parent)
-            return
-        except PermissionError as exc:
-            last = exc
-            time.sleep(0.1)
+    tmp, f = _create_temp(path)
     try:
-        tmp.unlink()
-    except OSError:
-        pass
-    assert last is not None
-    raise last
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        last: OSError | None = None
+        for _ in range(retries):
+            try:
+                _replace(tmp, path)
+                _fsync_dir(path.parent)
+                return
+            except PermissionError as exc:
+                last = exc
+                time.sleep(0.1)
+        assert last is not None
+        raise last
+    except BaseException:
+        try:                     # el temporal solo es de esta escritura: no se deja nunca atrás
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -164,7 +189,7 @@ def read_json(path: Path) -> Any | None:
 
 
 def cleanup_temporaries(directory: Path) -> int:
-    """Borra temporales `*.tmp-<pid>` que dejó un corte de luz. Devuelve cuántos borró."""
+    """Borra temporales `*.tmp-<pid>-<azar>` que dejó un corte de luz. Devuelve cuántos borró."""
     n = 0
     try:
         entries = list(Path(directory).iterdir())

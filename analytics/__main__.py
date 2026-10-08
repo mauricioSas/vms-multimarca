@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import signal
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 from vms.core import aio
 from vms.core.logging_setup import setup_logging
 from vms.core.settings import load_settings
+from vms.core.stdin_stop import stop_on_stdin_eof, watch_stdin_eof
 
 from .config import load_config_file
 from .settings import load_analytics_settings, resolve_backend_url, resolve_models_dir
@@ -33,7 +35,15 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop: asyncio.Even
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
     if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, handler)  # el servicio de Windows envía Ctrl+Break
+        signal.signal(signal.SIGBREAK, handler)  # Ctrl+Break en una consola
+    if stop_on_stdin_eof():
+        # Como servicio (`vmsctl run`) no llega ninguna señal en Windows: la orden es cerrar la entrada estándar.
+        # Sin esto, vmsctl mataba la analítica a los 10 s, sin parada ordenada.
+        def on_eof() -> None:
+            with contextlib.suppress(RuntimeError):      # el bucle ya terminó
+                loop.call_soon_threadsafe(stop.set)
+
+        watch_stdin_eof(on_eof)
 
 
 async def _run(args: argparse.Namespace) -> int:

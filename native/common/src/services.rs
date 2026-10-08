@@ -25,8 +25,9 @@ pub struct ServiceDef {
     pub kind: Kind,
     pub account: Account,
     pub delayed_start: bool,
-    /// Espera desde «para, por favor» hasta matar el proceso (CONTRATO §14.1: 10 s). MediaMTX no
-    /// necesita parada ordenada: sus segmentos fMP4 se cierran parte a parte (≤ 1 s).
+    /// Espera desde «para, por favor» hasta matar el proceso (CONTRATO §14.1: 10 s; 12 s el backend). MediaMTX
+    /// no necesita parada ordenada: sus segmentos fMP4 se cierran parte a parte (≤ 1 s). Tiene que quedar por
+    /// debajo de la espera de `vmshost` (15 s), que mata a `vmsctl run` con todo lo que lleva dentro.
     pub grace_s: u64,
 }
 
@@ -76,7 +77,10 @@ pub const SERVICES: [ServiceDef; 6] = [
         kind: Kind::Python("vms"),
         account: Account::Virtual,
         delayed_start: true,
-        grace_s: 10,
+        // Espera de uvicorn a las peticiones abiertas (3 s) + aplicación pendiente al motor (3 s) + motor y
+        // proxy (≤ 3 s) + salida del proceso: con 10 s no sobraba nada (vms/api/serve.py; lo comprueba
+        // tests/api/test_shutdown.py).
+        grace_s: 12,
     },
     ServiceDef {
         name: ANALYTICS,

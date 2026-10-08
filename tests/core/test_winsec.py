@@ -172,10 +172,12 @@ def test_power_cut_between_temp_and_rename_keeps_the_v1_key(tmp_path: Path,
         with pytest.raises(PowerCut):
             winsec.migrate_plaintext(secrets / "secret.key")
     assert (secrets / "secret.key").read_bytes() == key
-    # «Reinicio»: el almacén abre, migra (pisando el temporal huérfano) y las contraseñas siguen
+    # «Reinicio»: el almacén abre, migra (con su propio temporal) y las contraseñas siguen
     assert CredentialStore.create("file", secrets).get_device_password("dev-1") == "Cl4ve!"
     assert winsec.is_protected(secrets / "secret.key")
-    assert not atomic.temp_path(secrets / "secret.key").exists()
+    # El temporal huérfano del corte se queda (como tras reiniciar el PC), pero nunca con la clave en claro
+    leftovers = list(secrets.glob("secret.key.tmp-*"))
+    assert len(leftovers) == 1 and winsec.parse(leftovers[0].read_bytes())[0] is True
 
 
 @pytest.mark.usefixtures("fake_dpapi")

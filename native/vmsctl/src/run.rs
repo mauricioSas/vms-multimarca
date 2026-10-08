@@ -6,8 +6,8 @@
 //!   `logs\engine.log`, que el backend sigue con `vms/engine/logtail.py`), con rotación 10 × 10 MB.
 //!   `engine.log` rota copiando y vaciando (nunca se borra ni se recrea: ver `vms_common::logfile`).
 //! - Parada en 3 escalones: cierra la entrada estándar del proceso (el backend la vigila con
-//!   `VMS_STOP_ON_STDIN_EOF=1`; en POSIX además SIGTERM) → espera `grace` (10 s; 0 para MediaMTX, que no
-//!   necesita parada ordenada) → `TerminateJobObject`.
+//!   `VMS_STOP_ON_STDIN_EOF=1`; en POSIX además SIGTERM) → espera `grace` (`grace_s` del catálogo: 10 s, 12 s
+//!   el backend; 0 para MediaMTX, que no necesita parada ordenada) → `TerminateJobObject`.
 //! - Si el proceso cae, lo relanza con espera creciente (1, 2, 5, 10, 30 s). Con `--exit-on-crash`
 //!   (versión a prueba) sale con el código 13 para que `vmshost` cuente la caída.
 //! - Publica su estado real en `logs\status-<Servicio>.json` (`crate::runstatus`): es lo que mira

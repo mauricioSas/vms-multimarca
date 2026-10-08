@@ -74,6 +74,10 @@ class NoticeEvent(TypedDict):
     count: int                                # agrupación: «5 cámaras caídas»
 
 
+# Lo que reciben los suscriptores cuando el bus se cierra (no es un evento: nunca sale al navegador).
+BUS_CLOSED: tuple[str, str] = ("", "")
+
+
 class EventBus:
     def __init__(self, queue_size: int = 100) -> None:
         self._subscribers: set[asyncio.Queue[tuple[str, str]]] = set()
@@ -94,15 +98,25 @@ class EventBus:
     def publish(self, event: str, data: dict[str, Any]) -> None:
         payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         for q in list(self._subscribers):
+            self._put(q, (event, payload))
+
+    def close(self) -> None:
+        """El backend se para: despierta a cada suscriptor con `BUS_CLOSED` para que su flujo SSE termine ya,
+        sin esperar al siguiente evento ni a que el navegador cuelgue."""
+        for q in list(self._subscribers):
+            self._put(q, BUS_CLOSED)
+
+    @staticmethod
+    def _put(q: asyncio.Queue[tuple[str, str]], item: tuple[str, str]) -> None:
+        try:
+            q.put_nowait(item)
+        except asyncio.QueueFull:
+            # Cliente que no lee (pestaña colgada): se descarta lo más viejo para no crecer sin límite
             try:
-                q.put_nowait((event, payload))
-            except asyncio.QueueFull:
-                # Cliente que no lee (pestaña colgada): se descarta lo más viejo para no crecer sin límite
-                try:
-                    q.get_nowait()
-                    q.put_nowait((event, payload))
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    log.debug("Cola SSE saturada; evento descartado")
+                q.get_nowait()
+                q.put_nowait(item)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                log.debug("Cola SSE saturada; evento descartado")
 
 
 def publish_engine(bus: EventBus, ev: EngineEvent) -> None:

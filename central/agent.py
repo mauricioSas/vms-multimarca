@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import shutil
@@ -43,6 +44,7 @@ from vms.core.logging_setup import setup_logging
 from vms.core.models import Site
 from vms.core.paths import AppPaths
 from vms.core.rtsp import redact
+from vms.core.stdin_stop import stop_on_stdin_eof, watch_stdin_eof
 
 from .directive import deliver as deliver_directive
 from .heartbeat import HeartbeatPayload, SiteInfo
@@ -364,8 +366,16 @@ async def _amain(args: argparse.Namespace) -> int:
             except (NotImplementedError, RuntimeError):  # Windows: se para con Ctrl+C (KeyboardInterrupt)
                 pass
         if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
-            # el gestor de servicios puede enviar Ctrl+Break al parar el servicio
+            # Ctrl+Break en una consola
             signal.signal(signal.SIGBREAK, lambda *_: loop.call_soon_threadsafe(agent.stop))
+        if stop_on_stdin_eof():
+            # Como servicio (`vmsctl run`) no llega ninguna señal en Windows: la orden es cerrar la entrada
+            # estándar. Sin esto, vmsctl mataba el agente a los 10 s en cada parada.
+            def on_eof() -> None:
+                with contextlib.suppress(RuntimeError):      # el bucle ya terminó
+                    loop.call_soon_threadsafe(agent.stop)
+
+            watch_stdin_eof(on_eof)
         await agent.run_forever()
         return 0
     finally:

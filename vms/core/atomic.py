@@ -1,6 +1,7 @@
 """Escritura atómica de archivos (CONTRATO §13.5; gemelo de `vms_common::atomic_write` en Rust).
 
-Temporal `<nombre>.tmp-<pid>` en la misma carpeta → flush + fsync → sustitución atómica:
+Temporal propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) en la misma carpeta → flush + fsync → sustitución
+atómica:
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` en Windows (el cambio de nombre llega al
 disco antes de volver) y `os.replace` + fsync de la carpeta en POSIX. Un corte de luz deja el archivo
 anterior o el nuevo, nunca uno a medias. En Windows un antivirus o un lector pueden bloquear el archivo un
@@ -43,19 +44,33 @@ def _fsync_dir(directory: Path) -> None:
 
 
 def temp_path(path: Path) -> Path:
-    """Ruta del temporal que usa `atomic_write_bytes` para `path`."""
-    return path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    """Un temporal NUEVO para escribir `path`: `<nombre>.tmp-<pid>-<azar>`.
+
+    Con solo el pid, dos hilos del mismo proceso que escribían el mismo archivo compartían el temporal: uno lo
+    vaciaba o lo renombraba mientras el otro iba a renombrarlo («MoveFileExW … código 2», o una mezcla de las dos
+    escrituras). Le pasó al actualizador con `public-status.json` (08/10); el backend escribe desde varios hilos."""
+    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{os.urandom(6).hex()}")
 
 
 def write_temp(path: Path, data: bytes) -> Path:
     """Primer paso: escribe y persiste el temporal. Público para poder inyectar un fallo entre los dos pasos."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = temp_path(path)
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    return tmp
+    for _ in range(5):
+        tmp = temp_path(path)
+        try:
+            f = open(tmp, "xb")      # noqa: SIM115 - en exclusiva: nunca se escribe dentro del temporal de otro
+        except FileExistsError:
+            continue
+        try:
+            with f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            _discard(tmp)
+            raise
+        return tmp
+    raise FileExistsError(f"No se pudo crear un temporal nuevo para {path}")
 
 
 def _replace_once(tmp: Path, dst: Path) -> None:

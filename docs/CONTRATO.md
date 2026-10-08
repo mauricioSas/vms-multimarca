@@ -472,6 +472,8 @@ cuenta las caídas que se ven en `engine.log`. La interfaz los pinta siempre com
 - `event: config` · `data: {"revision": 13, "scope": "devices|cameras|walls|settings|analytics|users"}`
 - `event: status` (cada 5 s) · `data: {"cameras": [{"camera_id", "online", "recording"}], "engine": {"running"}}`
 - comentario `: ping` cada 15 s. Los muros recargan su layout al recibir `config` con scope `walls`/`cameras`.
+- Al parar el backend, el flujo termina en cuanto empieza la parada (`AppState.begin_stop`) y el navegador vuelve
+  a conectar solo (`retry: 3000`): un panel abierto ya no retiene la parada (§14.1).
 
 ### 6.12 Páginas web (servidas por el backend)
 
@@ -875,6 +877,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | motor | §4.1/§4.3: **métricas y pprof de MediaMTX apagados siempre**. Desaparecen `VmsSettings.mtx_metrics_address` (`VMS_MTX_METRICS_ADDRESS`), `metricsAddress` del YAML y el permiso `metrics` de `vms-backend`; `vmsctl ports check` ya no comprueba el 9998. Motivo: en el PC del usuario, HikCentral (SYS) usa 127.0.0.1:9998 y el `.env` de la v1 fijaba ahí las métricas; MediaMTX se cerraba al arrancar (1306 caídas seguidas) y el motor aparecía «Detenido». Compatible: un `.env` con la clave antigua carga igual y la clave se ignora (`extra="ignore"`). |
 | 2026-10-08 | motor | §6.8/§13.10 (aditivo): `EngineStatus.problem` `{code, detail_es, action_es}`, `service_state` y `crashes_10min`; nuevo modelo `vms.core.interfaces.EngineProblem`. En modo attach `last_error` pasa a ser el motivo con su «Qué hacer:» (antes, un texto fijo que mandaba a «vmsctl services status» y a `engine.log`). Estado del sistema lo enseña en un aviso propio. `/api/health`, SSE y latido sin cambios. Modo child: el motivo de una caída reconoce también `ERR: …` (antes «sin mensaje de error»). |
 | 2026-10-08 | motor | §6.8/§13.10 (revisión, sin cambios de forma): el primer «bind» de un arranque es la causa aunque lo sigan muchas líneas de cámaras o conexiones (antes, con 4 cámaras o más, un puerto ocupado salía como `crash_loop` «sin ningún mensaje de error»); un «bind» que no es «puerto ocupado» pasa a `crash_loop` citando el error; `starting` si el puerto lo tiene el MediaMTX que `vmsctl` acaba de relanzar; sin `status-VMSEngine.json`, «[vmsctl] parado» da `stopped` y una caída de hace más de 10 min ya no es la causa. Se documenta de dónde sale `crashes_10min` sin ese archivo. |
+| 2026-10-08 | paradas | §14.1: en Windows la única orden de parada de `vmsctl run` es cerrar la entrada estándar, y ahora la vigilan también el actualizador (`vms_updater/_stdin_stop.py`), la analítica, el latido y el panel central (`vms/core/stdin_stop.py`); antes `vmsctl` los mataba a los 10 s en cada parada. `grace_s` de VMSBackend pasa de 10 a 12 s (uvicorn espera 3 s, no 10, y la aplicación pendiente al motor 3 s); `vmshost` sigue esperando 15 s. §6.11 (sin cambio de forma): al empezar la parada del backend los flujos `/api/events` terminan y el navegador vuelve a conectar solo. §13.5: el temporal de `atomic_write` en Python es propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) y `public-status.json` y `updater.json` se reescriben bajo un cerrojo por archivo. |
 
 ---
 
@@ -1000,11 +1003,18 @@ y `→ rolling_back → rolled_back`. Cada paso se anota **antes** y se marca he
 `VMSUpdater` retoma o revierte (pasos idempotentes). `last_good` lo leen el actualizador y `vmshost`.
 
 **`atomic_write`** (Python `vms.core.atomic.atomic_write_bytes/_text`, Rust `vms_common::atomic_write`):
-temporal `<nombre>.tmp-<pid>` en la misma carpeta → flush + `fsync`/`FlushFileBuffers` → sustitución
+temporal en la misma carpeta → flush + `fsync`/`FlushFileBuffers` → sustitución
 atómica (`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` en Windows, `rename` + `fsync`
 de la carpeta en POSIX), con reintentos si un antivirus bloquea el archivo. Python usa hoy `os.replace`
 (sin `WRITE_THROUGH`): **B1 lo cambia** a `MoveFileExW` con `ctypes` en Windows. Se usa para
 `active.json`, `journal.json`, `config.json`, `users.json`, `mediamtx.yml` y `public-status.json`.
+El temporal es propio de cada escritura en Python (`vms.core.atomic` y `vms_updater._atomic`):
+`<nombre>.tmp-<pid>-<azar>`, creado en exclusiva y borrado si la escritura falla. Con solo `<pid>`, dos hilos
+del mismo proceso que escribían el mismo archivo compartían el temporal (el actualizador, 08/10: «MoveFileExW
+falló con el código 2» en `public-status.json`). En Rust sigue siendo `<nombre>.tmp-<pid>`: cada archivo lo
+escribe un solo hilo. Todos llevan `.tmp-`, que es lo que buscan las limpiezas de temporales huérfanos. Lo que
+se lee, cambia y reescribe desde varios hilos (`public-status.json`, `updater.json`) va además bajo un cerrojo
+por archivo (`vms_updater.state_files.file_lock`).
 
 ### 13.6 Ocultación de credenciales
 
@@ -1112,9 +1122,16 @@ switch` (en una instalación nueva no hay puntero previo). `update …` abre la 
 `error.code = "busy"`. A `VMSUpdater`, `run` le pasa las variables `VMS_*` del `.env` (no lo lee él):
 `VMS_UPDATE_SOURCE` y `VMS_HTTP_PORT` (su health check usa ese puerto).
 Todas aceptan `--json`. `run`: lanza `runtime\python.exe -m vms` (o `engine\mediamtx.exe`…), lo mete en
-su Job Object, parada en 3 escalones (`POST /api/internal/shutdown` o `CTRL_BREAK` → 10 s →
-`TerminateJobObject`), reinicio con backoff 1/2/5/10/30 s y `logs\<servicio>.log` redactado con rotación
-10 × 10 MB.
+su Job Object, parada en 3 escalones (cierra la entrada estándar del proceso, que lleva
+`VMS_STOP_ON_STDIN_EOF=1`, y en POSIX además SIGTERM → espera `grace_s` del catálogo
+`native/common/src/services.rs` → `TerminateJobObject`), reinicio con backoff 1/2/5/10/30 s y
+`logs\<servicio>.log` redactado con rotación 10 × 10 MB. En Windows no hay `CTRL_BREAK` ni SIGTERM: **todo
+servicio Python tiene que vigilar su entrada estándar** (backend, analítica, latido y panel central:
+`vms/core/stdin_stop.py`; actualizador, que no lleva el paquete `vms`: `vms_updater/_stdin_stop.py`) o vmsctl
+lo matará al acabar la espera. Esperas: 10 s; 12 s VMSBackend (uvicorn espera 3 s a las peticiones abiertas,
+los flujos SSE terminan al empezar la parada y la aplicación pendiente al motor tiene 3 s; lo comprueba
+`tests/api/test_shutdown.py`); 0 MediaMTX. Todas quedan 3 s o más por debajo de los 15 s que espera `vmshost`
+antes de matar a `vmsctl run` (lo comprueba `host_waits_longer_than_every_run_grace` en `vmshost`).
 
 ### 14.2 Códigos de salida y JSON
 

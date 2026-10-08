@@ -37,7 +37,7 @@ from .models import (FORWARD_STATES, KNOWN_SERVICES, ChannelDoc, Journal, LocalU
 from .pointer import PointerStore, rebuild_pointer
 from .services import ServiceControl, ServiceError
 from .stage import StageError, install_updater_slot, remove_tree, stage_version, verify_staged
-from .state_files import (Blacklist, InstallLock, StatusFile, VersionMarks, in_window, read_directive,
+from .state_files import (Blacklist, InstallLock, StatusFile, VersionMarks, file_lock, in_window, read_directive,
                           read_local_config, write_local_config)
 from .system import SystemInfo
 from .versioning import Version
@@ -324,8 +324,10 @@ class Engine:
             changes["window"] = d.window
         if changes:
             try:
-                cfg = LocalUpdaterConfig.model_validate({**cfg.model_dump(), **changes})
-                write_local_config(self.layout.local_config_file, cfg)
+                with file_lock(self.layout.local_config_file):
+                    # Se relee bajo el cerrojo: un «hold» que llegue a la vez por la tubería no se pierde.
+                    cfg = LocalUpdaterConfig.model_validate({**self.config().model_dump(), **changes})
+                    write_local_config(self.layout.local_config_file, cfg)
                 log.info("Ajustes del panel central aplicados: %s", changes)
             except ValidationError:
                 log.warning("Ajustes del panel central no válidos: %s", changes)

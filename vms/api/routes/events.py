@@ -8,6 +8,8 @@ Cada conexión recibe solo lo que su usuario puede ver (revisión v2, ámbito po
 - los muros en kiosco: ni `notice`, ni `health`, ni `bookmark`, ni `evidence` (§18.9);
 - `config`, `engine` y `update` son de la tienda y van a todos.
 Las claves que empiezan por «_» son para este filtro y no salen al navegador.
+
+Al parar el backend, cada flujo termina enseguida (`AppState.begin_stop`) y el navegador vuelve a conectar solo.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from fastapi import APIRouter, Depends, Request
 from starlette.responses import StreamingResponse
 
 from ..deps import Principal, get_state, require_kiosk
-from ..events import format_sse
+from ..events import BUS_CLOSED, format_sse
 from ..permissions import camera_allowed
 from ..state import AppState
 
@@ -94,11 +96,15 @@ async def events(request: Request, p: Principal = Depends(require_kiosk),
             next_status = time.monotonic() + STATUS_EVERY_S
             next_ping = time.monotonic() + PING_EVERY_S
             while True:
-                if await request.is_disconnected():
+                # El backend se para (`AppState.begin_stop`): se termina ya y EventSource vuelve a conectar solo
+                # (retry de arriba). Si no, uvicorn esperaba por este flujo su plazo de parada entero.
+                if state.stopping.is_set() or await request.is_disconnected():
                     return
                 wait = max(0.05, min(next_status, next_ping) - time.monotonic())
                 try:
                     event, data = await asyncio.wait_for(queue.get(), timeout=min(wait, 1.0))
+                    if (event, data) == BUS_CLOSED:
+                        continue                 # aviso de parada del bus: arriba se ve `stopping` y se termina
                     out = scoped_event(state, p, event, data)
                     if out is not None:
                         yield out

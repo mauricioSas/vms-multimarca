@@ -12,6 +12,7 @@ Variables (las fija el instalador en el entorno del servicio o en `.env`):
 | `VMS_UPDATER_CHECK_HOURS` | 6 | cada cuánto se comprueba (±30 min al azar) |
 | `VMS_UPDATER_VMSCTL` | `<ranura>\\vmsctl.exe` | orden de `vmsctl` (en pruebas, el doble) |
 | `VMS_UPDATER_REQUIRE_AUTHENTICODE` | 1 si el `root` no es de desarrollo | exigir firma Authenticode |
+| `VMS_STOP_ON_STDIN_EOF` | — (lo fija `vmsctl run`) | 1 = cerrar la entrada estándar es la orden de parada |
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
+from ._stdin_stop import STOP_ON_STDIN_EOF, watch_stdin_eof
 from .authenticode import system_verifier
 from .client import TufClient, parse_source
 from .engine import RELOAD_EXIT_CODE, Engine, EngineDeps, Outcome, current_slot
@@ -200,6 +202,8 @@ def run_service(engine: Engine, stop: threading.Event | None = None, *, hours: f
 
 
 def install_signal_handlers(stop: threading.Event) -> None:
+    """Ctrl+C, SIGTERM y Ctrl+Break y, bajo `vmsctl run` (`VMS_STOP_ON_STDIN_EOF=1`), el cierre de la entrada
+    estándar: en Windows es la única orden de parada que llega (vmsctl no manda señales ahí)."""
     def handler(signum: int, _frame: Any) -> None:
         log.info("Señal %s: parando el actualizador", signum)
         stop.set()
@@ -211,6 +215,8 @@ def install_signal_handlers(stop: threading.Event) -> None:
                 signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass
+    if os.environ.get(STOP_ON_STDIN_EOF) == "1":
+        watch_stdin_eof(stop)
 
 
 def setup_logging(layout: Layout, verbose: bool = False) -> None:

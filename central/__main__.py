@@ -18,10 +18,15 @@ import sys
 from vms.core import aio
 from vms.core.logging_setup import setup_logging
 from vms.core.naming import is_valid_id
+from vms.core.stdin_stop import interrupt_main, stop_on_stdin_eof, watch_stdin_eof
 
 from .settings import CentralSettings, load_central_settings
 
 log = logging.getLogger("central")
+
+# Espera a las peticiones abiertas al parar: tiene que caber en los 10 s que da vmsctl a VMSCentral (sin plazo,
+# uvicorn esperaría a que terminara la última).
+STOP_GRACEFUL_S = 5
 
 
 def _serve(settings: CentralSettings) -> int:
@@ -31,9 +36,18 @@ def _serve(settings: CentralSettings) -> int:
 
     setup_logging(settings.logs_dir, settings.log_level, filename="central.log")
     app = create_app(settings)
-    # psycopg asíncrono no funciona con el bucle Proactor que uvicorn elige en Windows
-    uvicorn.run(app, host=settings.http_host, port=settings.http_port, log_config=None,
-                proxy_headers=False, server_header=False, loop=aio.uvicorn_loop())
+    if stop_on_stdin_eof():
+        # Como servicio (`vmsctl run`) no llega ninguna señal en Windows: la orden es cerrar la entrada estándar,
+        # que aquí hace de Ctrl+C. Sin esto, vmsctl mataba el panel a los 10 s en cada parada.
+        watch_stdin_eof(interrupt_main)
+    try:
+        # psycopg asíncrono no funciona con el bucle Proactor que uvicorn elige en Windows
+        uvicorn.run(app, host=settings.http_host, port=settings.http_port, log_config=None,
+                    proxy_headers=False, server_header=False, loop=aio.uvicorn_loop(),
+                    timeout_graceful_shutdown=STOP_GRACEFUL_S)
+    except KeyboardInterrupt:
+        # uvicorn ya paró de forma ordenada y vuelve a lanzar Ctrl+C al terminar: salida limpia, sin traceback
+        log.info("Panel central parado")
     return 0
 
 

@@ -800,6 +800,23 @@ mod tests {
     }
 
     #[test]
+    fn host_waits_longer_than_every_run_grace() {
+        // `vmsctl run` mata a su proceso a los `grace_s` del catálogo. Si el arrancador esperara menos, mataría
+        // antes a `vmsctl` con todo lo que lleva dentro y la parada ordenada del servicio nunca llegaría a verse.
+        let e = env(&[], &[]);
+        let cfg = HostConfig::new("VMSBackend", e.install.clone(), e.data.clone());
+        for def in vms_common::services::SERVICES {
+            assert!(
+                Duration::from_secs(def.grace_s + 3) <= cfg.stop_grace,
+                "{}: {} s de vmsctl + 3 no caben en los {} s de vmshost",
+                def.name,
+                def.grace_s,
+                cfg.stop_grace.as_secs()
+            );
+        }
+    }
+
+    #[test]
     fn shutdown_asks_politely_then_kills_after_the_grace() {
         let e = env(&["2.0.0"], &[]);
         e.data.state().set_last_good("2.0.0").unwrap();

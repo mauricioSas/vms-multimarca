@@ -5,13 +5,15 @@ lectura terminase; al importar numpy/cv2 con el loader lock tomado, el backend s
 """
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 
-from vms.core.stdin_stop import private_stdin
+from vms.core.stdin_stop import private_stdin, stop_on_stdin_eof, watch_stdin_eof
 
 CHILD = textwrap.dedent("""
     import ctypes, sys, threading, time
@@ -48,3 +50,22 @@ def test_pending_stdin_read_does_not_block_std_input_users() -> None:
 def test_without_stdin_there_is_nothing_to_watch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdin", None)
     assert private_stdin() is None
+
+
+def test_closed_stdin_calls_back_once() -> None:
+    calls: list[str] = []
+    done = threading.Event()
+
+    def on_eof() -> None:
+        calls.append("parar")
+        done.set()
+
+    watch_stdin_eof(on_eof, io.BytesIO(b"datos que no importan")).join(5)
+    assert done.is_set() and calls == ["parar"]
+
+
+def test_stop_only_when_launched_by_vmsctl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VMS_STOP_ON_STDIN_EOF", raising=False)
+    assert stop_on_stdin_eof() is False
+    monkeypatch.setenv("VMS_STOP_ON_STDIN_EOF", "1")
+    assert stop_on_stdin_eof() is True

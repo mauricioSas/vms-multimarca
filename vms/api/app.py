@@ -40,6 +40,10 @@ ensure_web_mimetypes()
 log = logging.getLogger("vms.api")
 
 ENGINE_RETRY_S = 30.0
+# Al parar, espera máxima a una aplicación de configuración al motor que esté pendiente. Si no da tiempo no se
+# pierde nada: la configuración ya está guardada y se vuelve a aplicar al arrancar. Cuenta dentro del plazo de
+# parada de vmsctl (ver vms/api/serve.py).
+STOP_FLUSH_APPLY_S = 3.0
 MODIFYING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -224,6 +228,7 @@ def create_app(settings: VmsSettings | None = None, *, engine: Engine | None = N
         try:
             yield
         finally:
+            state.begin_stop()        # ya lo hizo serve.py al empezar la parada; aquí por si no hay servidor (pruebas)
             log.info("Deteniendo %s", APP_NAME)
             if sender is not None:
                 try:
@@ -233,7 +238,7 @@ def create_app(settings: VmsSettings | None = None, *, engine: Engine | None = N
             if keeper is not None:
                 keeper.cancel()
             try:
-                await asyncio.wait_for(state.flush_apply(), 10.0)
+                await asyncio.wait_for(state.flush_apply(), STOP_FLUSH_APPLY_S)
             except (asyncio.TimeoutError, Exception):  # noqa: BLE001
                 log.warning("Se descartó una aplicación de configuración pendiente al parar")
             try:

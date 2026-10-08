@@ -32,7 +32,7 @@ from ._atomic import atomic_write_json
 from .engine import Engine
 from .models import CentralDirective
 from .pipe_client import CLIENT_ACCESS, request as client_request, service_sid
-from .state_files import read_local_config, write_local_config
+from .state_files import update_local_config
 
 log = logging.getLogger("vms_updater.pipe")
 
@@ -102,8 +102,7 @@ def handle_request(engine: Engine, req: Any, caller: Caller = "admin") -> dict[s
             on = req.get("on")
             if not isinstance(on, bool):
                 return {"ok": False, "error": "bad_request", "message_es": "«on» tiene que ser true o false"}
-            cfg = read_local_config(engine.layout.local_config_file)
-            write_local_config(engine.layout.local_config_file, cfg.model_copy(update={"hold": on}))
+            update_local_config(engine.layout.local_config_file, hold=on)
             engine.status.update(hold=on)
             return {"ok": True}
         if cmd == "lock":
@@ -357,7 +356,7 @@ def make_server(engine: Engine) -> UnixControlServer | WindowsPipeServer:
         try:
             engine.status.update(control_error=msg or None)
         except Exception:  # noqa: BLE001 - el estado público no puede tumbar el control
-            log.debug("No se pudo anotar el problema de la tubería", exc_info=True)
+            log.warning("No se pudo anotar el problema de la tubería en public-status.json", exc_info=True)
 
     if sys.platform == "win32":
         return WindowsPipeServer(handler, on_problem=problem)

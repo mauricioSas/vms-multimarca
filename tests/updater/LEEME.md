@@ -13,6 +13,8 @@ con la misma CLI, backend con `/api/internal/health/deep` y reglas de `vmshost` 
 | `test_slots_and_pointer.py` | actualizador A/B (confirma o `vmshost` vuelve a la ranura anterior en < 10 min), `active.json` ausente o corrupto, la vuelta atrás que hace `vmshost` (`host-rollback.json`) |
 | `test_lifecycle.py` | ciclo de vida con `vmshost`: una actualización de `app` no relanza el motor (lista `restart` del puntero, también con el `vmshost` real si está compilado), la retención no borra la carpeta que un servicio ejecuta, la vuelta atrás de `vmshost` llega al diario (restaura config y lista negra) |
 | `test_control_and_status.py` | tubería (`status`, `check`, `rollback`, `hold`, `lock`), socket con permisos 0600, tubería con nombre y su ACL en Windows, latido, sin secretos en `public-status.json` |
+| `test_service_stop.py` | parada ordenada bajo `vmsctl run`: cerrar la entrada estándar para `vms_updater run` (proceso de verdad, sin la tubería real) |
+| `test_atomic_concurrency.py` | dos hilos escribiendo el mismo archivo: temporal propio de cada escritura, sin campos perdidos en `public-status.json` ni en `updater.json` |
 | `test_key_compromise.py` | ensayo «Si roban una llave» |
 | `test_authenticode.py` | certificado renovado y rollback a la firma anterior, rechazos, terceros, WinVerifyTrust real en Windows |
 | `test_release_tools.py` | zips reproducibles, `publish --dry-run` validado por `ngclient` (también con PKCS#11/SoftHSM2), ciclo completo de la CLI, reglas de publicación, migraciones no reversibles, llavero, tokens de sede |

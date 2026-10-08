@@ -9,11 +9,54 @@ proceso pasa a apuntar a NUL: nadie más puede tropezar con la lectura pendiente
 """
 from __future__ import annotations
 
+import logging
 import os
+import signal
 import sys
+import threading
+from collections.abc import Callable
 from typing import BinaryIO
 
+log = logging.getLogger("vms.core.stdin_stop")
+
+# Lo fija `vmsctl run`: cerrar la entrada estándar es la orden de parada. En Windows es la ÚNICA que llega (no
+# hay SIGTERM y un servicio no tiene consola para Ctrl+C/Ctrl+Break): quien no la vigila, muere a la fuerza.
+STOP_ON_STDIN_EOF = "VMS_STOP_ON_STDIN_EOF"
 STD_INPUT_HANDLE = -10
+
+
+def stop_on_stdin_eof() -> bool:
+    """¿Lo ha lanzado `vmsctl run` (`VMS_STOP_ON_STDIN_EOF=1`)?"""
+    return os.environ.get(STOP_ON_STDIN_EOF) == "1"
+
+
+def watch_stdin_eof(on_eof: Callable[[], None], stream: BinaryIO | None = None) -> threading.Thread:
+    """Hilo que llama a `on_eof` cuando se cierra la entrada estándar (`stream` solo en pruebas). `on_eof` corre
+    en ese hilo: para tocar un bucle asyncio, `loop.call_soon_threadsafe`."""
+    src = stream if stream is not None else private_stdin()
+
+    def watch() -> None:
+        try:
+            while src is not None and src.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        log.info("Parada pedida por el servicio (entrada estándar cerrada)")
+        on_eof()
+
+    t = threading.Thread(target=watch, daemon=True, name="stdin-eof-stop")
+    t.start()
+    return t
+
+
+def interrupt_main() -> None:
+    """Simula Ctrl+C en el hilo principal: un servidor uvicorn para de forma ordenada, igual que en una consola."""
+    try:
+        signal.raise_signal(signal.SIGINT)
+    except (OSError, ValueError):
+        import _thread
+
+        _thread.interrupt_main()
 
 
 def private_stdin() -> BinaryIO | None:

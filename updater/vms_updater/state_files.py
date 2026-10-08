@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, time as dtime, timedelta
@@ -23,11 +25,26 @@ from .versioning import Version
 
 log = logging.getLogger("vms_updater.state")
 
+_FILE_LOCKS: dict[str, threading.RLock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def file_lock(path: Path) -> threading.RLock:
+    """Cerrojo de este proceso para leer, cambiar y reescribir un archivo de estado. Es el mismo para todas las
+    instancias que apuntan al mismo archivo (el motor y la tubería crean las suyas)."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(key, threading.RLock())
+
 
 class StatusFile:
+    """`public-status.json`: lo reescriben el bucle principal (`Engine._set_status`) y los hilos de la tubería
+    (`on_problem`, `hold`). Leer y reescribir va bajo `file_lock`: sin él, uno pisaba los campos del otro."""
+
     def __init__(self, path: Path, *, now: Callable[[], datetime] = utcnow) -> None:
         self.path = Path(path)
         self.now = now
+        self._lock = file_lock(self.path)
 
     def read(self) -> PublicStatus:
         raw = read_json(self.path)
@@ -39,10 +56,11 @@ class StatusFile:
         return PublicStatus()
 
     def update(self, **changes: Any) -> PublicStatus:
-        cur = self.read()
-        new = cur.model_copy(update={**changes, "updated": iso(self.now())})
-        atomic_write_json(self.path, new.dump())
-        return new
+        with self._lock:
+            cur = self.read()
+            new = cur.model_copy(update={**changes, "updated": iso(self.now())})
+            atomic_write_json(self.path, new.dump())
+            return new
 
 
 class Blacklist:
@@ -161,6 +179,15 @@ def read_local_config(path: Path) -> LocalUpdaterConfig:
 
 def write_local_config(path: Path, cfg: LocalUpdaterConfig) -> None:
     atomic_write_json(path, cfg.model_dump(mode="json"))
+
+
+def update_local_config(path: Path, **changes: Any) -> LocalUpdaterConfig:
+    """Cambia campos de `updater.json` sin perder lo que escriba a la vez otro hilo (`hold` por la tubería y la
+    directiva del panel en el bucle principal)."""
+    with file_lock(path):
+        cfg = LocalUpdaterConfig.model_validate({**read_local_config(path).model_dump(), **changes})
+        write_local_config(path, cfg)
+        return cfg
 
 
 def read_directive(path: Path) -> CentralDirective | None:
