@@ -29,7 +29,6 @@ def _env(data: Path, mediamtx_bin: str) -> dict[str, str]:
         "VMS_MTX_RTSP_ADDRESS": f"127.0.0.1:{get_free_port()}", "VMS_MTX_WEBRTC_ADDRESS": f"127.0.0.1:{get_free_port()}",
         "VMS_MTX_WEBRTC_ICE_UDP": f":{get_free_port()}", "VMS_MTX_WEBRTC_ICE_TCP": "",
         "VMS_MTX_API_ADDRESS": f"127.0.0.1:{get_free_port()}", "VMS_MTX_PLAYBACK_ADDRESS": f"127.0.0.1:{get_free_port()}",
-        "VMS_MTX_METRICS_ADDRESS": f"127.0.0.1:{get_free_port()}",
     })
     return env
 

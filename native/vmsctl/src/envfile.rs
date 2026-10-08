@@ -131,14 +131,14 @@ impl NetSettings {
         self.address("VMS_MTX_WEBRTC_ICE_TCP", ":8189")
     }
 
-    /// Puertos TCP de MediaMTX que solo escuchan en el equipo (RTSP, WHEP, API, reproducción, métricas).
+    /// Puertos TCP de MediaMTX que solo escuchan en el equipo (RTSP, WHEP, API, reproducción). Sin métricas: están
+    /// siempre apagadas (su 9998 es el de HikCentral) y `VMS_MTX_METRICS_ADDRESS` de un `.env` antiguo se ignora.
     pub fn engine_tcp(&self) -> Vec<(String, u16)> {
         [
             ("VMS_MTX_RTSP_ADDRESS", "127.0.0.1:8554"),
             ("VMS_MTX_WEBRTC_ADDRESS", "127.0.0.1:8889"),
             ("VMS_MTX_API_ADDRESS", "127.0.0.1:9997"),
             ("VMS_MTX_PLAYBACK_ADDRESS", "127.0.0.1:9996"),
-            ("VMS_MTX_METRICS_ADDRESS", "127.0.0.1:9998"),
         ]
         .iter()
         .filter_map(|(k, d)| self.address(k, d))
@@ -179,7 +179,15 @@ mod tests {
         assert_eq!((s.http_port(), s.https_port(), s.central_port()), (8600, 8643, 8700));
         assert_eq!(s.ice_udp(), Some(("0.0.0.0".into(), 8189)));
         assert!(!s.tls_enabled());
-        assert_eq!(s.engine_tcp().len(), 5);
+        assert_eq!(s.engine_tcp().len(), 4);
+        // El .env de la v1 fija las métricas en 9998 (el puerto de HikCentral): ya no se comprueba ni se usa
+        let s = NetSettings::from_map(
+            [("VMS_MTX_METRICS_ADDRESS", "127.0.0.1:9998")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        assert!(s.engine_tcp().iter().all(|(_, p)| *p != 9998), "{:?}", s.engine_tcp());
         let s = NetSettings::from_map(
             [("VMS_MTX_WEBRTC_ICE_TCP", "off"), ("VMS_TLS_CERT_FILE", "a"), ("VMS_TLS_KEY_FILE", "b")]
                 .iter()

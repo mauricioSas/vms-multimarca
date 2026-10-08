@@ -277,7 +277,6 @@ def settings(app_paths: AppPaths) -> VmsSettings:
         mtx_webrtc_ice_tcp="",
         mtx_api_address=f"127.0.0.1:{get_free_port()}",
         mtx_playback_address=f"127.0.0.1:{get_free_port()}",
-        mtx_metrics_address=f"127.0.0.1:{get_free_port()}",
         internal_token="token-interno-de-pruebas",
         kiosk_token="token-kiosco-de-pruebas",
         credential_backend="file",

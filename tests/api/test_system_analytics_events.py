@@ -32,6 +32,27 @@ async def test_health_is_public_and_reflects_engine(api: Harness) -> None:
     assert (await c.get("/api/health")).json()["status"] == "down"
 
 
+async def test_status_explains_why_the_engine_is_down_and_health_stays_minimal(api: Harness) -> None:
+    """CONTRATO §6.8: `/api/status` lleva `engine.problem` (motivo y «Qué hacer:») para Estado del sistema;
+    `/api/health` es pública y sigue sin dar detalles."""
+    from vms.core.interfaces import EngineProblem, EngineStatus
+
+    problem = EngineProblem(code="port_in_use", detail_es="El motor de vídeo no puede arrancar porque el programa "
+                            "«SYS.exe» de este equipo ya usa el puerto 9998.", action_es="reinicia el ordenador.")
+
+    async def down() -> EngineStatus:
+        return EngineStatus(running=False, problem=problem, service_state="backoff", crashes_10min=18,
+                            last_error=f"{problem.detail_es} Qué hacer: {problem.action_es}")
+
+    api.engine.status = down   # type: ignore[method-assign]
+    h = (await api.client().get("/api/health")).json()
+    assert h["engine"] == {"running": False, "api_ok": False} and set(h) == {"status", "version", "uptime_s", "engine"}
+    operator = await api.operator()
+    eng = (await operator.get("/api/status")).json()["engine"]
+    assert eng["problem"] == problem.model_dump() and eng["service_state"] == "backoff" and eng["crashes_10min"] == 18
+    assert "Qué hacer:" in eng["last_error"]
+
+
 async def test_settings_patch_and_retention(api: Harness) -> None:
     admin = await api.login()
     s = (await admin.get("/api/settings")).json()

@@ -30,10 +30,10 @@ def test_global_config_has_no_credentials_and_follows_contract(settings: VmsSett
     assert cfg["apiAddress"] == settings.mtx_api_address and cfg["api"] is True
     assert cfg["rtspAddress"] == settings.mtx_rtsp_address and cfg["rtspTransports"] == ["tcp"]
     assert cfg["webrtcLocalTCPAddress"] == ""  # vacío = desactivado (fixture)
-    for proto in ("rtmp", "hls", "srt", "moq", "pprof"):
+    for proto in ("rtmp", "hls", "srt", "moq", "pprof", "metrics"):
         assert cfg[proto] is False
     perms = {p["action"] for p in cfg["authInternalUsers"][0]["permissions"]}
-    assert perms == {"read", "playback", "api", "metrics"} and "publish" not in perms
+    assert perms == {"read", "playback", "api"} and "publish" not in perms
     assert cfg["authInternalUsers"][0]["ips"] == ["127.0.0.1", "::1"]
     pd = cfg["pathDefaults"]
     assert pd["recordFormat"] == "fmp4" and pd["recordPartDuration"] == "1s"
@@ -46,10 +46,37 @@ def test_global_config_has_no_credentials_and_follows_contract(settings: VmsSett
 
 
 def test_disabled_services_when_address_empty(settings: VmsSettings, tmp_path: Path) -> None:
-    s = settings.model_copy(update={"mtx_webrtc_address": "", "mtx_playback_address": "", "mtx_metrics_address": ""})
+    s = settings.model_copy(update={"mtx_webrtc_address": "", "mtx_playback_address": ""})
     cfg = global_config(s, RecordingSettings(), RetentionSettings(), tmp_path)
     assert cfg["webrtc"] is False and cfg["playback"] is False and cfg["metrics"] is False
     assert "webrtcAddress" not in cfg and "playbackAddress" not in cfg
+
+
+def test_metrics_and_pprof_never_enabled_even_if_env_pins_9998(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                app_paths: AppPaths) -> None:
+    """Fallo real: el .env de la v1 (copiado de .env.example) fija VMS_MTX_METRICS_ADDRESS=127.0.0.1:9998, el
+    puerto del WebSocket de HikCentral (SYS). MediaMTX abre las métricas lo primero y, con el 9998 ocupado, se
+    cerraba al arrancar (1306 caídas seguidas en el PC del usuario). Ese .env tiene que seguir cargando y no
+    volver a encender las métricas."""
+    from vms.core.mtx_auth import MtxCredentials
+    from vms.core.settings import load_settings
+    from vms.engine.mtx_config import attach_config, render_attach
+
+    env = tmp_path / "v1.env"
+    env.write_text(f"VMS_DATA_DIR={app_paths.base}\nVMS_INTERNAL_TOKEN=token-x\n"
+                   "VMS_MTX_API_ADDRESS=127.0.0.1:9997\nVMS_MTX_METRICS_ADDRESS=127.0.0.1:9998\n", encoding="utf-8")
+    monkeypatch.setenv("VMS_MTX_METRICS_ADDRESS", "127.0.0.1:9998")   # también como variable real del proceso
+    s = load_settings(env_file=env)
+    assert not hasattr(s, "mtx_metrics_address")
+    cfg = attach_config(s, RecordingSettings(), RetentionSettings(), tmp_path / "rec", {},
+                        creds=MtxCredentials.from_internal_token("token-x"))
+    assert cfg["metrics"] is False and cfg["pprof"] is False
+    assert "metricsAddress" not in cfg and "pprofAddress" not in cfg
+    perms = {p["action"] for u in cfg["authInternalUsers"] for p in u["permissions"]}
+    assert "metrics" not in perms
+    text = render_attach(cfg)
+    assert "9998" not in text and "metricsAddress" not in text
+    assert yaml.safe_load(text)["metrics"] is False
 
 
 def test_path_configs_main_records_sub_on_demand() -> None:

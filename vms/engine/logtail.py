@@ -46,8 +46,24 @@ class LogTail:
         self._last = b""            # últimos bytes leídos del archivo actual (huella para la copia .1)
         self._started = False
         self._start_at_end = start_at_end
+        self._denied_warned = False
         self.lines_read = 0
         self.rotations = 0
+
+    @property
+    def offset(self) -> int:
+        """Hasta dónde se ha leído el archivo actual (tras la primera vuelta, su tamaño de entonces)."""
+        return self._offset
+
+    def _read_failed(self, what: str, exc: OSError) -> None:
+        """Sin permiso, el backend no ve los 401 ni por qué cae el motor: se avisa una vez (no cada segundo)."""
+        if isinstance(exc, PermissionError) and not self._denied_warned:
+            self._denied_warned = True
+            log.warning("%s %s (permiso denegado): no se verán las contraseñas rechazadas ni por qué cae el motor. "
+                        "Qué hacer: vuelve a ejecutar el instalador para reparar los permisos de la carpeta logs",
+                        what, self.path)
+        else:
+            log.debug("%s %s: %s", what, self.path, exc)
 
     def _emit(self, chunk: bytes, out: list[str]) -> None:
         data = self._pending + chunk
@@ -112,7 +128,7 @@ class LogTail:
             self._started = True
             return out
         except OSError as exc:
-            log.debug("No se puede leer %s: %s", self.path, exc)
+            self._read_failed("No se puede leer", exc)
             return out
         fid = _file_id(st)
         if not self._started:
@@ -140,7 +156,7 @@ class LogTail:
             try:
                 data, self._offset = self._read_from(self.path, self._offset)
             except OSError as exc:
-                log.debug("No se pudo leer %s: %s", self.path, exc)
+                self._read_failed("No se pudo leer", exc)
                 return out
             self._last = (self._last + data)[-FINGERPRINT:]
             self._emit(data, out)

@@ -161,6 +161,38 @@ def test_step4_start(e2e: E2E, step: h.Step) -> None:
 
         assert httpx.get("http://127.0.0.1:8600/api/health", timeout=10).status_code == 200
         _assert_engine_answers(step)
+        _assert_backend_reads_engine_status(step)
+
+
+def _assert_backend_reads_engine_status(step: h.Step) -> None:
+    """Estado del sistema explica por qué no arranca el motor con `logs\\status-VMSEngine.json` (CONTRATO §6.8).
+    NT SERVICE\\VMSBackend tiene que poder leerlo también después de que `vmsctl run` lo reescriba (archivo
+    temporal y renombrado, que hereda la ACL de `logs\\`): se espera a una reescritura (cada 15 s)."""
+    import time
+
+    from vms.core.winsec import service_sid
+
+    f = h.data_dir() / "logs" / "status-VMSEngine.json"
+
+    def updated() -> int | None:
+        try:
+            return int(json.loads(f.read_text(encoding="utf-8"))["updated_unix"])
+        except (OSError, ValueError, KeyError, TypeError):   # justo mientras vmsctl lo sustituye
+            return None
+
+    deadline = time.monotonic() + 45
+    first = updated()
+    while first is None and time.monotonic() < deadline:
+        time.sleep(0.5)
+        first = updated()
+    last = first
+    while last in (None, first) and time.monotonic() < deadline:
+        time.sleep(2)
+        last = updated()
+    sids = h.acl_sids(f)
+    step.details["acl_status_VMSEngine"] = sids
+    assert first is not None and last not in (None, first), f"vmsctl no reescribe {f}"
+    assert service_sid("VMSBackend") in sids, f"VMSBackend no puede leer {f}: {sids}"
 
 
 def _assert_engine_answers(step: h.Step) -> None:

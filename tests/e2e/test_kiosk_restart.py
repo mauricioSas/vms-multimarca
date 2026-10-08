@@ -37,7 +37,6 @@ def stack(tmp_path: Path, mediamtx_bin: str, ffmpeg_bin: str) -> Iterator[dict[s
         "VMS_MTX_RTSP_ADDRESS": f"127.0.0.1:{free_port()}", "VMS_MTX_WEBRTC_ADDRESS": f"127.0.0.1:{free_port()}",
         "VMS_MTX_WEBRTC_ICE_UDP": f":{free_port()}", "VMS_MTX_WEBRTC_ICE_TCP": "off",
         "VMS_MTX_API_ADDRESS": f"127.0.0.1:{free_port()}", "VMS_MTX_PLAYBACK_ADDRESS": f"127.0.0.1:{free_port()}",
-        "VMS_MTX_METRICS_ADDRESS": f"127.0.0.1:{free_port()}",
     }
     env_file = tmp_path / "kiosk.env"
     write_env_file(env_file, values)

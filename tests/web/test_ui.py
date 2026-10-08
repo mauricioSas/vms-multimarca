@@ -425,6 +425,61 @@ def test_status_page(stub: Any, make_context: Any, screenshots_dir: Path) -> Non
     assert errors.unexpected(ALLOWED_CONSOLE) == []
 
 
+def test_status_page_explains_why_the_engine_does_not_start(stub: Any, make_context: Any) -> None:
+    """El caso del PC del usuario: antes solo «Detenido… revisa el registro». Ahora el motivo, el programa que
+    tiene el puerto y «Qué hacer:». El texto viene del servidor y puede citar engine.log: nunca como HTML."""
+    from vms.core.interfaces import EngineProblem, EngineStatus
+
+    backend, server = stub
+    problem = EngineProblem(code="port_in_use",
+                            detail_es="El motor de vídeo no puede arrancar porque el programa «<img src=x "
+                                      "onerror=alert(1)>» de este equipo ya usa el puerto 9998.",
+                            action_es="si usas ese programa, no lo cierres. Reinicia el ordenador.")
+
+    async def down() -> EngineStatus:
+        return EngineStatus(running=False, problem=problem, service_state="backoff", crashes_10min=18,
+                            last_error=f"{problem.detail_es} Qué hacer: {problem.action_es}")
+
+    backend.engine.status = down
+    page = make_context(server.base_url).new_page()
+    errors = PageErrors().attach(page)
+    login(page, next_path="/status")
+    page.wait_for_selector("#st-engine-problem:not([hidden])")
+    assert page.inner_text("#st-engine") == "No arranca"
+    box = page.inner_text("#st-engine-problem")
+    assert "9998" in box and "Qué hacer:" in box and "Reinicia el ordenador" in box and "<img" in box
+    assert page.locator("#st-engine-problem img").count() == 0
+    assert "18 caídas en 10 min" in page.inner_text("#st-engine-hint")
+    assert "9998" not in page.inner_text("#st-engine-hint"), "el motivo no se repite en la tarjeta"
+    assert "Debajo tienes el motivo" in page.inner_text("#st-overall")
+    assert errors.unexpected(ALLOWED_CONSOLE) == []
+
+
+def test_status_page_when_only_the_engine_api_fails(stub: Any, make_context: Any) -> None:
+    """Con la API rechazando la clave interna, MediaMTX sigue en marcha (y en modo attach puede seguir grabando):
+    ni «Detenido» ni «no hay grabación», que no se puede saber."""
+    from vms.core.interfaces import EngineProblem, EngineStatus
+
+    backend, server = stub
+    problem = EngineProblem(code="api_auth", detail_es="El motor de vídeo está en marcha, pero no acepta la clave "
+                            "interna de VMS Multimarca.", action_es="reinicia el ordenador.")
+
+    async def unreachable() -> EngineStatus:
+        return EngineStatus(running=False, problem=problem, service_state="running",
+                            last_error=f"{problem.detail_es} Qué hacer: {problem.action_es}")
+
+    backend.engine.status = unreachable
+    page = make_context(server.base_url).new_page()
+    errors = PageErrors().attach(page)
+    login(page, next_path="/status")
+    page.wait_for_selector("#st-engine-problem:not([hidden])")
+    assert page.inner_text("#st-engine") == "Sin conexión"
+    overall = page.inner_text("#st-overall")
+    assert "no se puede comprobar si graba" in overall and "ni grabación" not in overall
+    assert "Qué hacer:" in page.inner_text("#st-engine-problem")
+    assert errors.unexpected(ALLOWED_CONSOLE) == []
+
+
 # ====================================================================== permisos y diseño
 def test_operator_sees_no_admin_controls(stub: Any, make_context: Any) -> None:
     _, server = stub

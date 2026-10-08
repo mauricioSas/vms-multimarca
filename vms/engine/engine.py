@@ -7,7 +7,9 @@ Dos modos (`VMS_ENGINE_MODE`):
   lo lanza: escribe `mediamtx.yml` completo (rutas incluidas) con `atomic_write` en cada cambio y MediaMTX
   lo recarga solo (solo reinicia las rutas que cambian). Así se graba aunque el backend esté caído o
   reiniciándose. La API se usa solo para leer estado y como proxy WHEP/reproducción; se vigila cada 2 s.
-  Los 401 se detectan siguiendo `logs/engine.log` (ya sin credenciales, `vms.engine.logtail`).
+  Los 401 se detectan siguiendo `logs/engine.log` (ya sin credenciales, `vms.engine.logtail`). Si la API no
+  responde, `status()` dice por qué (puerto ocupado y por qué programa, configuración rechazada, caídas
+  seguidas, servicio parado…) con engine.log y `logs/status-VMSEngine.json` (`vms.engine.problem`).
 
 Responsabilidades comunes:
 - Generar mediamtx.yml (sin credenciales) y supervisar el proceso (vms.engine.process).
@@ -37,7 +39,7 @@ from typing import Any, Literal
 from urllib.parse import unquote, urlencode, urlsplit
 
 from vms.core.errors import EngineUnavailable
-from vms.core.interfaces import CameraSource, DiskUsage, EngineStatus, PathStatus, RecordingSpan
+from vms.core.interfaces import CameraSource, DiskUsage, EngineProblem, EngineStatus, PathStatus, RecordingSpan
 from vms.core.models import RecordingSettings, RetentionSettings
 from vms.core.mtx_auth import MtxCredentials
 from vms.core.naming import mtx_path, parse_mtx_path
@@ -45,6 +47,7 @@ from vms.core.paths import AppPaths, find_mediamtx
 from vms.core.settings import VmsSettings
 
 from . import disk_guard
+from . import problem as eproblem
 from .logtail import LogTail
 from .mtx_api import MediaMtxApi, MtxApiError, format_time, parse_time
 from .mtx_config import (attach_config, conf_hash, global_config, http_base, path_configs, path_defaults,
@@ -60,6 +63,8 @@ _SOURCE_RE = re.compile(r"^\[[^\]]*source\] (.*)$")
 _LEVELS = {"DEB": logging.DEBUG, "INF": logging.INFO, "WAR": logging.WARNING, "ERR": logging.ERROR}
 _QUIET = ("reloading configuration (API request)", "[API] path not found", "[API] path already exists")
 REPEAT_SILENCE_S = 300.0
+DIAG_CACHE_S = 2.0       # status() se pide a menudo (SSE, latido, Estado del sistema cada 5 s)
+HOLDER_CACHE_S = 10.0    # psutil.net_connections recorre todas las conexiones del PC
 AUTH_PAUSED_MSG = ("Contraseña rechazada por el equipo: se pausó la conexión para que no bloquee el usuario. "
                    "Corrige la contraseña del equipo; mientras tanto se reintenta sola de vez en cuando.")
 
@@ -170,9 +175,18 @@ class MediaMtxEngine:
         # Quien quiera el evento SSE `engine` (CONTRATO §17.3) asigna aquí `lambda ev: publish_engine(bus, ev)`.
         self.on_event: EventSink | None = None
         self._api_ok = False
+        self._api_status: int | None = None   # código HTTP con el que falló la API (401: clave interna rechazada)
         self._mtx_started = ""
         self._attach_restarts = 0
-        self._attach_error = ""
+        # Por qué no funciona el motor (modo attach): lo que dice engine.log y status-VMSEngine.json
+        self._cause = eproblem.EngineLogCause()
+        self._port_roles = eproblem.port_roles(settings)
+        self._diag_lock = asyncio.Lock()
+        self._diag: tuple[float, tuple[bool, int | None], eproblem.RunStatus | None, EngineProblem | None] | None = None
+        self._holders: dict[tuple[int, str, str], tuple[float, eproblem.PortHolder | None]] = {}
+        self._problem_logged = ""
+        self._run_status_warned = False
+        self._diag_failed = False
         self.logtail: LogTail | None = None
         self.exe = mediamtx_bin or settings.mediamtx_bin or find_mediamtx()
         api_hp = split_address(settings.mtx_api_address)
@@ -195,7 +209,8 @@ class MediaMtxEngine:
         self._sources: dict[str, CameraSource] = {}
         self._applied: dict[str, str] = {}          # ruta → huella de la conf registrada en MediaMTX
         self._path_errors: dict[str, str] = {}
-        self._log_seen: dict[tuple[str, str], float] = {}
+        self._log_seen: dict[tuple[str, str], float] = {}      # errores de rutas ya registrados
+        self._engine_seen: dict[tuple[str, str], float] = {}   # y del propio MediaMTX (aparte: no vacían los otros)
         self._auth = _AuthGuard(auth_fail_threshold, auth_pause_seconds)
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
@@ -260,6 +275,13 @@ class MediaMtxEngine:
                                auth=self.mtx_credentials.api_auth)
         await self._probe_engine()
         self.logtail = LogTail(self.paths.logs_dir / "engine.log", lambda line: self._on_line(line, relay=False))
+        if not self._api_ok:
+            # LogTail empieza por el final: el motivo de una caída de antes de arrancar el backend (servicio de
+            # inicio retrasado) está en lo último de engine.log
+            try:
+                await asyncio.to_thread(self._scan_engine_log)
+            except Exception:  # noqa: BLE001 - solo sirve para explicar la caída: no puede impedir arrancar
+                log.exception("Error leyendo el final de engine.log")
         self._tasks = [asyncio.create_task(self._disk_guard_loop(), name="engine-disk-guard"),
                        asyncio.create_task(self._attach_watchdog(), name="engine-attach-watchdog"),
                        asyncio.create_task(self.logtail.run(self.logtail_interval), name="engine-logtail")]
@@ -287,14 +309,13 @@ class MediaMtxEngine:
             info = await self.api.info()
         except (EngineUnavailable, MtxApiError) as exc:
             self._api_ok = False
-            self._attach_error = ("El motor de vídeo (servicio VMSEngine) no responde. Las grabaciones siguen si el "
-                                  "servicio está en marcha; revisa «vmsctl services status» y logs/engine.log")
+            self._api_status = exc.status if isinstance(exc, MtxApiError) else None
             if was_ok:
                 log.warning("El motor de vídeo (VMSEngine) dejó de responder: %s", exc)
                 self._emit("down")
             return
         self._api_ok = True
-        self._attach_error = ""
+        self._api_status = None
         self._version = str(info.get("version", "")) or self._version
         started = str(info.get("started", ""))
         if not self._mtx_started:
@@ -490,6 +511,8 @@ class MediaMtxEngine:
     def _on_line(self, line: str, relay: bool = True) -> None:
         """Interpreta una línea de MediaMTX. `relay=False` (modo attach, la línea ya está en engine.log): solo
         se repiten en el registro del backend los avisos y errores, no todo."""
+        if self.mode == "attach":
+            self._cause.feed(line)   # eventos de vmsctl, «ERR: …» y errores generales: por qué no arranca
         m = _LINE_RE.match(line)
         if not m:
             if relay:
@@ -505,14 +528,8 @@ class MediaMtxEngine:
                 self._path_errors[name] = explain_source_error(raw)
                 if is_auth_error(raw) and name in self._applied:
                     self._on_auth_failure(name)
-                key = (name, raw)
-                now = time.monotonic()
-                if now - self._log_seen.get(key, -1e9) < REPEAT_SILENCE_S:
+                if self._repeated((name, raw)):
                     level = logging.DEBUG  # el mismo error cada 5 s no debe inundar el registro
-                else:
-                    self._log_seen[key] = now
-                    if len(self._log_seen) > 2000:
-                        self._log_seen.clear()
             elif "is available and online" in rest or "is ready" in rest:
                 if name in self._path_errors and self._path_errors[name] != AUTH_PAUSED_MSG:
                     self._path_errors.pop(name, None)
@@ -520,10 +537,26 @@ class MediaMtxEngine:
                 src = self._sources.get(parsed[0]) if parsed else None
                 if src is not None:
                     self._auth.success(src.main_url)
+        elif m.group(1) in ("ERR", "WAR") and self._repeated(("", msg)):
+            # Errores del propio MediaMTX: el mismo «listen tcp …: bind» llegaba a vms.log en cada relanzamiento
+            # (cada 30 s; 1568 veces en el PC del usuario). El motivo sigue en Estado del sistema.
+            level = logging.DEBUG
         if any(q in msg for q in _QUIET):
             level = logging.DEBUG
         if relay or level >= logging.WARNING:
             mtx_log.log(level, "%s", msg)
+
+    def _repeated(self, key: tuple[str, str]) -> bool:
+        """¿Ya se registró este mismo error hace menos de REPEAT_SILENCE_S? (entonces va a DEBUG). `key[0]` es la
+        ruta; "" para los del propio MediaMTX, que pueden llevar identificadores de conexión y van aparte."""
+        seen = self._log_seen if key[0] else self._engine_seen
+        now = time.monotonic()
+        if now - seen.get(key, -1e9) < REPEAT_SILENCE_S:
+            return True
+        seen[key] = now
+        if len(seen) > 2000:
+            seen.clear()
+        return False
 
     def _on_auth_failure(self, name: str) -> None:
         parsed = parse_mtx_path(name)
@@ -610,9 +643,13 @@ class MediaMtxEngine:
                 started_at = parse_time(self._mtx_started) if self._api_ok and self._mtx_started != "?" else None
             except ValueError:
                 started_at = None
+            run, prob = await self._diagnose()
+            now = time.time()
             return EngineStatus(running=self._api_ok, pid=None, version=self._version,
                                 restarts=self._attach_restarts, started_at=started_at, api_ok=self._api_ok,
-                                last_error=self._attach_error or self._disk_warning)
+                                last_error=eproblem.as_text(prob) if prob else self._disk_warning, problem=prob,
+                                service_state=run.state if run else "",
+                                crashes_10min=run.crashes(now) if run else self._cause.snapshot().crashes(now))
         proc = self.process
         api_ok = False
         if self.api is not None and self.running:
@@ -630,6 +667,64 @@ class MediaMtxEngine:
                             restarts=proc.restarts if proc else 0,
                             started_at=proc.started_at if proc and self.running else None,
                             api_ok=api_ok, last_error=last_error)
+
+    # ------------------------------------------------------------------ por qué no funciona (modo attach)
+    def _scan_engine_log(self) -> None:
+        """Final de engine.log (64 KB) al arrancar con el motor caído. Solo para explicar la caída: nunca pausa
+        equipos por 401 antiguos. Antes, LogTail apunta dónde empieza a seguir: lo que vmsctl escriba mientras
+        tanto lo lee LogTail, sin perderlo ni repetirlo."""
+        end = None
+        if self.logtail is not None:
+            self.logtail.read_new()   # primera vuelta: solo fija el final de ahora (empieza por el final)
+            end = self.logtail.offset
+        for line in eproblem.read_log_tail(self.paths.logs_dir / "engine.log", end=end):
+            self._cause.feed(line)
+
+    async def _diagnose(self) -> tuple[eproblem.RunStatus | None, EngineProblem | None]:
+        """Estado de `vmsctl run` y, si la API no responde, el problema (caché de DIAG_CACHE_S)."""
+        key = (self._api_ok, self._api_status)
+        async with self._diag_lock:
+            if self._diag is not None and self._diag[1] == key and time.monotonic() - self._diag[0] < DIAG_CACHE_S:
+                return self._diag[2], self._diag[3]
+            cause = self._cause.snapshot()   # foto: el bucle de eventos sigue alimentándolo
+            try:
+                run, prob = await asyncio.to_thread(self._diagnose_sync, key, cause)
+            except Exception:  # noqa: BLE001 - explicar la caída nunca puede tumbar el estado del motor
+                if not self._diag_failed:
+                    log.exception("Error averiguando por qué no responde el motor de vídeo")
+                self._diag_failed = True
+                run, prob = None, None
+            else:
+                self._diag_failed = False
+            self._diag = (time.monotonic(), key, run, prob)
+        self._log_problem(prob)
+        return run, prob
+
+    def _diagnose_sync(self, key: tuple[bool, int | None], cause: eproblem.LogCause
+                       ) -> tuple[eproblem.RunStatus | None, EngineProblem | None]:
+        run, why = eproblem.read_run_status(self.paths.logs_dir / "status-VMSEngine.json")
+        if why == "denied" and not self._run_status_warned:
+            self._run_status_warned = True
+            log.warning("No se puede leer logs/status-VMSEngine.json (permiso denegado): Estado del sistema dirá "
+                        "menos sobre el motor. Qué hacer: vuelve a ejecutar el instalador para reparar los permisos")
+        prob = eproblem.diagnose(api_ok=key[0], api_status=key[1], run=run, cause=cause, now=time.time(),
+                                 roles=self._port_roles, holder=self._port_holder)
+        return run, prob
+
+    def _port_holder(self, port: int, proto: str, host: str) -> eproblem.PortHolder | None:
+        hit = self._holders.get((port, proto, host))
+        if hit is not None and time.monotonic() - hit[0] < HOLDER_CACHE_S:
+            return hit[1]
+        who = eproblem.port_holder(port, proto, host)
+        self._holders[(port, proto, host)] = (time.monotonic(), who)
+        return who
+
+    def _log_problem(self, prob: EngineProblem | None) -> None:
+        """Una línea en vms.log cuando cambia el motivo (está en el paquete de diagnóstico), no en cada consulta."""
+        key = f"{prob.code}|{prob.action_es}" if prob is not None and prob.code != "starting" else ""
+        if key and key != self._problem_logged and prob is not None:
+            log.warning("Motor de vídeo: %s", eproblem.as_text(prob))
+        self._problem_logged = key
 
     async def paths_status(self) -> dict[str, PathStatus]:
         if self.api is None or not self.running:

@@ -333,7 +333,7 @@ pub fn run_vmsctl(args: &[String], env: Env, fx: &mut dyn Effects) -> Outcome {
             Err(e) => return reply(p.json, exit_codes::WINDOWS_ERROR, data, Some(("windows_error", e))),
         },
         "update lock" | "update unlock" => data["owner"] = json!(p.flag("owner")),
-        "ports check" => data["ports"] = json!([8600, 8643, 8554, 8889, 8189, 9996, 9997, 9998]),
+        "ports check" => data["ports"] = json!([8600, 8643, 8554, 8889, 8189, 9996, 9997]),
         _ => {}
     }
     reply(p.json, exit_codes::OK, data, None)

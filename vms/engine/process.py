@@ -23,6 +23,8 @@ from typing import Any, Awaitable, Callable
 
 from vms.core.errors import EngineUnavailable
 
+from .problem import engine_error
+
 log = logging.getLogger("vms.engine.process")
 
 BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
@@ -249,12 +251,12 @@ class MediaMtxProcess:
         raise EngineUnavailable(self.last_error)
 
     def _failure_reason(self) -> str:
-        """Último error del propio MediaMTX (no de una cámara concreta), o «sin mensaje de error»."""
+        """Último error del propio MediaMTX (no de una cámara concreta), o «sin mensaje de error». También
+        «ERR: …» sin fecha, que es como MediaMTX rechaza un mediamtx.yml inválido."""
         for ln in reversed(self.recent_lines):
-            if " ERR " in ln:
-                msg = ln.split(" ERR ", 1)[1]
-                if not msg.startswith("[path "):
-                    return msg[:300]
+            msg = engine_error(ln)
+            if msg:
+                return msg[:300]
         return "sin mensaje de error (cierre inesperado)"
 
     async def _watch(self) -> None:

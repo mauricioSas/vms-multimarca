@@ -76,7 +76,8 @@ class VmsSettings(BaseSettings):
     mtx_webrtc_additional_hosts: list[str] = Field(default_factory=list)
     mtx_api_address: str = "127.0.0.1:9997"
     mtx_playback_address: str = "127.0.0.1:9996"
-    mtx_metrics_address: str = "127.0.0.1:9998"
+    # `VMS_MTX_METRICS_ADDRESS` ya no existe: las métricas de MediaMTX están siempre apagadas (mtx_config).
+    # Los .env de la v1 la fijan a 127.0.0.1:9998 (el puerto de HikCentral); con `extra="ignore"` se ignora.
     # Motor como servicio aparte (CONTRATO §13.10). `child`: el backend lanza MediaMTX (desarrollo y v1);
     # `attach`: lo lanza `vmsctl run --service VMSEngine` y el backend solo escribe el YAML. B1 lo implementa.
     engine_mode: Literal["child", "attach"] = "child"

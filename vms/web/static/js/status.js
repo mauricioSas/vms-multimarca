@@ -9,7 +9,37 @@ let inFlight = false;
 let rateTimer = null;
 let prevBytes = new Map();   // camera_id → [bytes, ms]
 
+// Motivos de EngineStatus.problem (CONTRATO §6.8) que no son una avería: el motor está arrancando.
+const ENGINE_STARTING = new Set(["starting", "waiting_config"]);
+const ENGINE_BROKEN = new Set(["port_in_use", "bad_config", "crash_loop", "missing_program"]);
+// Solo falla la API: MediaMTX puede seguir grabando con mediamtx.yml (modo attach), pero no se puede comprobar.
+const ENGINE_UNREACHABLE = new Map([["api_auth", "Sin conexión"], ["no_api", "No responde"]]);
+
 function setText(id, text) { $(id).textContent = text; }
+
+function engineProblem(eng) {
+  return eng && !eng.running && eng.problem ? eng.problem : null;
+}
+
+function engineLabel(eng) {
+  if (eng.running) return "En marcha";
+  const p = engineProblem(eng);
+  if (p && ENGINE_STARTING.has(p.code)) return "Arrancando";
+  if (p && ENGINE_BROKEN.has(p.code)) return "No arranca";
+  if (p && ENGINE_UNREACHABLE.has(p.code)) return ENGINE_UNREACHABLE.get(p.code);
+  return "Detenido";
+}
+
+// Por qué no funciona el motor, con su «Qué hacer:». Puede citar una línea de engine.log: solo textContent.
+function renderEngineProblem(eng) {
+  const box = $("#st-engine-problem");
+  const p = engineProblem(eng);
+  box.hidden = !p;
+  if (!p) return;
+  box.className = ENGINE_STARTING.has(p.code) ? "banner" : "banner bad";
+  setText("#st-engine-problem-detail", p.detail_es || "");
+  setText("#st-engine-problem-action", p.action_es || "");
+}
 
 function overall(s, health) {
   const box = $("#st-overall");
@@ -20,9 +50,19 @@ function overall(s, health) {
   const analyticsBad = a.running && a.stale;
   let cls = "info";
   let text = "Todo funciona con normalidad.";
-  if (!s.engine || !s.engine.running) {
+  const p = engineProblem(s.engine);
+  if (p && ENGINE_STARTING.has(p.code)) {
+    cls = "";
+    text = "El motor de vídeo está arrancando: en unos segundos vuelven la vista en vivo y la grabación.";
+  } else if (p && ENGINE_UNREACHABLE.has(p.code)) {
     cls = "bad";
-    text = "El motor de vídeo está detenido: no hay vista en vivo ni grabación. Se reinicia solo; si no vuelve, revisa el registro.";
+    text = "VMS Multimarca no puede comunicarse con el motor de vídeo: la vista en vivo no funciona y no se puede " +
+      "comprobar si graba. Debajo tienes el motivo y qué hacer.";
+  } else if (!s.engine || !s.engine.running) {
+    cls = "bad";
+    text = p
+      ? "El motor de vídeo no funciona: no hay vista en vivo ni grabación. Debajo tienes el motivo y qué hacer."
+      : "El motor de vídeo no funciona: no hay vista en vivo ni grabación. Qué hacer: espera un minuto; si no vuelve, reinicia el ordenador.";
   } else if (offline.length || diskBad || analyticsBad) {
     cls = "";
     const parts = [];
@@ -38,14 +78,18 @@ function overall(s, health) {
 function render(s, health) {
   overall(s, health);
   const eng = s.engine || {};
-  setText("#st-engine", eng.running ? "En marcha" : "Detenido");
-  $("#st-engine").style.color = eng.running ? "var(--live)" : "var(--danger)";
+  const label = engineLabel(eng);
+  setText("#st-engine", label);
+  $("#st-engine").style.color = eng.running ? "var(--live)" : label === "Arrancando" ? "var(--warn)" : "var(--danger)";
   const hint = [];
   if (eng.version) hint.push(`MediaMTX ${eng.version}`);
   if (eng.started_at) hint.push(`desde ${fmtDateTime(eng.started_at)}`);
   if (eng.restarts) hint.push(`${eng.restarts} reinicios`);
-  if (eng.last_error) hint.push(`último error: ${eng.last_error}`);
+  if (eng.crashes_10min) hint.push(`${eng.crashes_10min} ${eng.crashes_10min === 1 ? "caída" : "caídas"} en 10 min`);
+  // Con `problem`, el motivo y el «Qué hacer:» van en su aviso: aquí no se repiten
+  if (eng.last_error && !engineProblem(eng)) hint.push(`último error: ${eng.last_error}`);
   setText("#st-engine-hint", hint.join(" · "));
+  renderEngineProblem(eng);
 
   const cams = s.cameras || [];
   const online = cams.filter((c) => c.online).length;

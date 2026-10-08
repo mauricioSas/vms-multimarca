@@ -93,7 +93,10 @@ def global_config(settings: VmsSettings, recording: RecordingSettings, retention
         "api": True,
         "apiAddress": api,
         "apiAllowOrigins": [],
-        "metrics": bool(settings.mtx_metrics_address.strip()),
+        # Métricas y pprof siempre apagados: nadie los lee y sus puertos por defecto (9998 y 9999) son los
+        # de HikCentral (SYS) en el mismo PC. Con el 9998 ocupado, MediaMTX se cerraba al arrancar: es lo
+        # primero que abre. Sin `metricsAddress` ni `pprofAddress`: un .env antiguo no los vuelve a encender.
+        "metrics": False,
         "pprof": False,
         "playback": bool(settings.mtx_playback_address.strip()),
         "playbackAllowOrigins": [],
@@ -113,8 +116,6 @@ def global_config(settings: VmsSettings, recording: RecordingSettings, retention
         "pathDefaults": path_defaults(recording, retention, recordings_dir),
         "paths": {},
     }
-    if cfg["metrics"]:
-        cfg["metricsAddress"] = settings.mtx_metrics_address.strip()
     if cfg["playback"]:
         cfg["playbackAddress"] = settings.mtx_playback_address.strip()
     if cfg["rtsp"]:

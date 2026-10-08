@@ -209,13 +209,16 @@ La API **nunca** devuelve contraseñas: solo `has_password: bool`.
 | MediaMTX WebRTC ICE | **8189/udp** (+ 8189/tcp opcional) | `0.0.0.0` | el vídeo va directo del MediaMTX al navegador; abrir en el firewall de Windows |
 | MediaMTX API de control | **9997/tcp** | `127.0.0.1` | expone las URLs con credenciales: **nunca** fuera de localhost |
 | MediaMTX playback | **9996/tcp** | `127.0.0.1` | `/list` y `/get`; la API lo sirve como proxy |
-| MediaMTX métricas | **9998/tcp** | `127.0.0.1` | Prometheus |
 | Analítica (`python -m analytics`) | — | — | lee RTSP local, escribe PostgreSQL, Telegram |
 | Panel central (`python -m central`) | **8700/tcp** | `0.0.0.0` | servidor central, lee PostgreSQL |
 | PostgreSQL | **5432/tcp** | servidor central | por la VPN |
 
-HLS, RTMP, SRT, MoQ y pprof de MediaMTX: **desactivados**. En pruebas, todos los puertos se
-piden libres (`tests.conftest.get_free_port`, fixture `settings`).
+HLS, RTMP, SRT, MoQ, métricas y pprof de MediaMTX: **desactivados siempre** (el YAML lleva `metrics: false` y
+`pprof: false`, sin `metricsAddress` ni `pprofAddress`). Las métricas (antes 9998/tcp, `VMS_MTX_METRICS_ADDRESS`)
+no las leía nadie y su puerto es el del WebSocket de HikCentral (servicio SYS): con él ocupado, MediaMTX se
+cerraba al arrancar. `VMS_MTX_METRICS_ADDRESS` ya no existe; un `.env` antiguo que la tenga carga igual y se
+ignora (también en `vmsctl ports check`). Ojo en laboratorio: el puerto por defecto de pprof (9999) también es
+de HikCentral. En pruebas, todos los puertos se piden libres (`tests.conftest.get_free_port`, fixture `settings`).
 
 ### 4.2 Rutas de MediaMTX por cámara (`vms.core.naming`)
 
@@ -238,7 +241,7 @@ piden libres (`tests.conftest.get_free_port`, fixture `settings`).
 
 - `<datos>/mediamtx/mediamtx.yml` se genera en cada arranque **sin ninguna credencial**:
   direcciones de §4.1, protocolos desactivados, `authInternalUsers` **sin usuario anónimo**:
-  `vms-backend` (`api`, `playback`, `read`, `metrics`) y `vms-reader` (`read`), ambos solo desde
+  `vms-backend` (`api`, `playback`, `read`) y `vms-reader` (`read`), ambos solo desde
   `127.0.0.1`/`::1`, **sin** `publish`, con usuario y contraseña escritos como hash `sha256:`
   (contraseñas derivadas por HMAC del token interno, `vms.core.mtx_auth`), `pathDefaults` de
   grabación y `paths: {}`. *(Cambiado en la revisión de seguridad; antes era el usuario `any`.)*
@@ -425,6 +428,20 @@ licencia). El vídeo viaja directo al puerto ICE (§4.1).
 
 `status`: `down` si el motor no corre; `degraded` si hay cámaras sin vídeo, disco por encima
 del umbral o analítica activada sin estado reciente; si no, `ok`.
+
+`EngineStatus` = `{running, pid, version, restarts, started_at, api_ok, last_error, problem, service_state,
+crashes_10min}`. En modo `attach` (§13.10), si la API de MediaMTX no responde, `problem` dice por qué:
+`{code, detail_es, action_es}` (`action_es` es lo que va detrás de «Qué hacer:»; `last_error` lleva los dos juntos
+para clientes antiguos). Códigos: `port_in_use` (otro programa tiene un puerto del motor: «bind» con
+`WSAEADDRINUSE` o `WSAEACCES`; se nombra el programa solo si psutil lo sabe con certeza, y si es el MediaMTX que
+`vmsctl` acaba de relanzar es `starting`), `bad_config` (MediaMTX rechaza `mediamtx.yml`, `ERR: …`), `crash_loop`
+(cae por otro error, también un «bind» por otro motivo, como una dirección que ya no es del equipo; se cita, sin
+credenciales y cortado a 300 caracteres), `missing_program`, `waiting_config`, `stopped` (servicio VMSEngine
+parado o su estado sin actualizar > 60 s), `starting` (< 20 s en marcha), `api_auth` (la API rechaza el usuario
+interno) y `no_api`. `problem` es `null` con la API respondiendo y en modo `child`. `service_state` viene de
+`logs\status-VMSEngine.json` (`""` si no existe o no se puede leer); `crashes_10min` también, y sin ese archivo
+cuenta las caídas que se ven en `engine.log`. La interfaz los pinta siempre como texto (pueden citar una línea de
+`engine.log`). `/api/health` no cambia: sin detalles.
 
 ### 6.9 Ajustes
 
@@ -855,6 +872,9 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-05 | arquitecto | **Versión 2.0 (fase 0 de la v2).** Nuevas §13-§18. Cambios en lo existente, todos compatibles: `CONFIG_VERSION` 2 con migración automática (§13.8); modelos persistentes con `extra="allow"` y cuerpos de petición filtrados con `known_fields_only`; `Vendor` pasa de lista cerrada a identificador validado contra el registro (`DeviceCreate` sigue respondiendo 422 con una marca desconocida); `DeviceKind` admite `dvr` y `xvr`; `DeviceInfo.firmware_date`; extra `[vms]` con `numpy` y `opencv-python-headless` (B6); extra `[test]` y `requirements-test.txt`; `FakeEngine(clock=…)`; rutas de cámaras, vivo y grabaciones llaman a `vms/api/permissions.py` (sin efecto hasta B6); routers vacíos registrados; `devices.js` separado de `panel.js`; contenedores y módulos vacíos en las páginas (§18.9); punto de extensión del panel central (`central/extensions.py`). |
 | 2026-10-05 | arquitecto | **Revisión de la fase 0** (antes de lanzar los bloques). Compatibles: §7.3 bis (proveedores del latido por bloque, `vms/core/heartbeat_extras.py`, ya llamado por backend y agente); `VmsSettings.engine_mode` (`VMS_ENGINE_MODE`, `child`) y `update_source` (`VMS_UPDATE_SOURCE`, `https://`, `http://` o `file:///`); §17.3 `events.py` del arquitecto hasta que B2 arranque y eventos v2 congelados; §18.8 ganchos de ámbito también en muros, analítica y `/api/status` (**cambio de comportamiento solo cuando B6 active el ámbito**: un operador con ámbito recibe 422 al añadir una cámara ajena a un muro); §18.12 y §13.1 una sola regla para la tabla de avisos (`data\advisories.json` de la versión desaparece: va dentro de `app\vms\ops\security\`); §13.10 `recordSegmentDuration` medido. Pruebas de concepto: S4 con los nombres de §13.4 (`trial_since_unix`, `updated_unix`), campos desconocidos conservados y espera creciente; S3 con rollback de `snapshot` y clave sustituida rechazada. |
 | 2026-10-08 | pruebas-windows | §3.1 nueva variable `VMS_ENV_FILE_ONLY` (solo pruebas y desarrollo; sin ella nada cambia): `env_files()` deja de buscar `<instalación>/.env` y `<datos>/.env`. En un PC con el producto instalado, las pruebas leían `C:\ProgramData\VMSMultimarca\.env` («Permission denied»; como administrador, la configuración real) y los procesos de `tools.dev_run` también; `dev_run` pasa además `VMS_DATA_DIR` (interpretada como en el `.env`) y se niega a arrancar con un `--env-file` sin ella. §9.1: vigilante de la instalación real (archivos y programas lanzados, también las carpetas anotadas en el registro), pgserver con zonas horarias en Windows (`tools/pgserver_tz.py`, servidor en UTC) y bucle selector para central/analytics/db en Windows. `vmsctl` (interno, sin cambio de órdenes): el grupo «VMS Operadores» y la clave `HKLM\SOFTWARE\VMSMultimarca` pasan por `sys::Runner`, así que `cargo test` ya no toca el equipo. |
+| 2026-10-08 | motor | §4.1/§4.3: **métricas y pprof de MediaMTX apagados siempre**. Desaparecen `VmsSettings.mtx_metrics_address` (`VMS_MTX_METRICS_ADDRESS`), `metricsAddress` del YAML y el permiso `metrics` de `vms-backend`; `vmsctl ports check` ya no comprueba el 9998. Motivo: en el PC del usuario, HikCentral (SYS) usa 127.0.0.1:9998 y el `.env` de la v1 fijaba ahí las métricas; MediaMTX se cerraba al arrancar (1306 caídas seguidas) y el motor aparecía «Detenido». Compatible: un `.env` con la clave antigua carga igual y la clave se ignora (`extra="ignore"`). |
+| 2026-10-08 | motor | §6.8/§13.10 (aditivo): `EngineStatus.problem` `{code, detail_es, action_es}`, `service_state` y `crashes_10min`; nuevo modelo `vms.core.interfaces.EngineProblem`. En modo attach `last_error` pasa a ser el motivo con su «Qué hacer:» (antes, un texto fijo que mandaba a «vmsctl services status» y a `engine.log`). Estado del sistema lo enseña en un aviso propio. `/api/health`, SSE y latido sin cambios. Modo child: el motivo de una caída reconoce también `ERR: …` (antes «sin mensaje de error»). |
+| 2026-10-08 | motor | §6.8/§13.10 (revisión, sin cambios de forma): el primer «bind» de un arranque es la causa aunque lo sigan muchas líneas de cámaras o conexiones (antes, con 4 cámaras o más, un puerto ocupado salía como `crash_loop` «sin ningún mensaje de error»); un «bind» que no es «puerto ocupado» pasa a `crash_loop` citando el error; `starting` si el puerto lo tiene el MediaMTX que `vmsctl` acaba de relanzar; sin `status-VMSEngine.json`, «[vmsctl] parado» da `stopped` y una caída de hace más de 10 min ya no es la causa. Se documenta de dónde sale `crashes_10min` sin ese archivo. |
 
 ---
 
@@ -1046,6 +1066,19 @@ la v1. En SSD el borrado seguro no está garantizado (se documenta).
     sigue solo en 127.0.0.1 con usuarios internos (§4.3).
 - Pausa por 401: se quitan del YAML las rutas del equipo afectado; `vmsctl` escribe `logs\engine.log` ya
   redactado y el backend lo sigue con `vms/engine/logtail.py` (tolera la rotación).
+- Por qué no arranca el motor (`vms/engine/problem.py`, `EngineStatus.problem` de §6.8): el backend interpreta
+  de `engine.log` los eventos `[vmsctl]` («proceso en marcha», «el proceso terminó con código N», «parado», «no
+  existe …»), los `ERR` generales de MediaMTX (no los `[path …]`), los `ERR: …` sin fecha (configuración
+  rechazada) y `panic:`. La causa de una caída es, por orden: el primer «listen …: bind» del arranque (MediaMTX
+  1.21.1 se cierra siempre tras él, al arrancar o al recargar, y antes escribe una o dos líneas por cámara o
+  conexión abierta), el `panic:`, el primer error de un arranque de menos de 20 s o un error de las 8 líneas
+  anteriores a la salida. Un error que llega justo después de «terminó» (vmsctl copia la salida desde otro hilo)
+  cuenta para esa salida. Sin `status-VMSEngine.json`, una salida de hace más de 10 min ya no se toma como causa.
+  Al arrancar con el motor caído lee además los últimos 64 KB de `engine.log` hasta donde empieza a seguirlo
+  LogTail (que empieza por el final) y en cada `status()` lee `logs\status-VMSEngine.json` (64 KB como mucho,
+  caché de 2 s). VMSBackend puede leer los dos (ACE heredada `(OI)(IO)R` de `logs\`). No hace falta un `vmsctl`
+  nuevo: vale tras una actualización solo de la app. El mismo error general de MediaMTX va a `vms.log` una vez
+  cada 5 min, no en cada relanzamiento.
 - Los usuarios internos de MediaMTX no admiten `:`, `/` ni `%` en la contraseña (hallazgo de S2): las de la
   v1 se derivan en hexadecimal, así que no cambia nada.
 

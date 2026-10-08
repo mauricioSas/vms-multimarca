@@ -40,10 +40,13 @@
 | 8600/tcp (web y API, HTTP) | PC VMS, todas las interfaces; **solo 127.0.0.1 si activas HTTPS** | VPN (cifrada); en la LAN, mejor por HTTPS |
 | 8643/tcp (web y API, HTTPS, opcional) | PC VMS, todas las interfaces | LAN de la tienda y VPN |
 | 8189/udp y 8189/tcp (vídeo WebRTC) | PC VMS | LAN de la tienda y VPN |
-| 8554, 8889, 9996, 9997, 9998 (MediaMTX interno) | **solo 127.0.0.1**, y con usuario y contraseña internos | nadie de fuera; dentro del PC solo el backend y la analítica |
+| 8554, 8889, 9996, 9997 (MediaMTX interno) | **solo 127.0.0.1**, y con usuario y contraseña internos | nadie de fuera; dentro del PC solo el backend y la analítica |
 | 554/tcp, 80/tcp (cámaras) | cámaras/NVR | solo el PC VMS |
 | 8700/tcp (panel central) | servidor central | VPN |
 | 5432/tcp (PostgreSQL) | servidor central | VPN (solo IPs de las tiendas) |
+
+Las métricas de MediaMTX (antes 9998/tcp) están siempre apagadas: nadie las usaba y ese puerto es el de
+HikCentral, que muchas tiendas con cámaras Hikvision tienen en el mismo PC.
 
 El instalador de Windows abre 8600 y 8189 **solo en el perfil «Privado»** y solo para los
 programas del VMS. Si Windows marca la red como «Pública», las reglas no aplican: cámbiala con

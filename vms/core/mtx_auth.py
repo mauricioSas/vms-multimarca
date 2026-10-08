@@ -4,8 +4,8 @@ MediaMTX solo escucha en 127.0.0.1, pero eso no basta: cualquier programa o usua
 podría usar su API (que muestra las URL de origen con las contraseñas de los NVR y permite
 ejecutar comandos con `runOnInit`) y ver o descargar el vídeo. Por eso no hay usuario anónimo:
 
-- `vms-backend`: API, reproducción, lectura y métricas. Solo lo usa el backend (proxy WHEP, línea
-  de tiempo y descargas).
+- `vms-backend`: API, reproducción y lectura. Solo lo usa el backend (proxy WHEP, línea de tiempo y
+  descargas). Sin `metrics`: las métricas de MediaMTX están siempre apagadas (`mtx_config`).
 - `vms-reader`: solo lectura RTSP. Lo usa la analítica para leer el subflujo de la cámara.
 
 Las contraseñas se derivan con HMAC-SHA256 del token interno (`VMS_INTERNAL_TOKEN` o
@@ -59,8 +59,7 @@ class MtxCredentials:
         local = ("127.0.0.1", "::1")
         return [
             {"user": mtx_hash(API_USER), "pass": mtx_hash(self.api_password), "ips": list(local),
-             "permissions": [{"action": "api"}, {"action": "playback"}, {"action": "read"},
-                             {"action": "metrics"}]},
+             "permissions": [{"action": "api"}, {"action": "playback"}, {"action": "read"}]},
             {"user": mtx_hash(READER_USER), "pass": mtx_hash(self.reader_password), "ips": list(local),
              "permissions": [{"action": "read"}]},
         ]

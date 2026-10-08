@@ -311,6 +311,15 @@ class CameraSource(BaseModel):
     __str__ = __repr__
 
 
+class EngineProblem(BaseModel):
+    """Por qué no funciona el motor (modo attach, CONTRATO §6.8). Textos para el usuario, ya sin credenciales;
+    `action_es` es lo que va detrás de «Qué hacer:». Códigos: port_in_use, bad_config, crash_loop,
+    missing_program, waiting_config, stopped, starting, api_auth y no_api."""
+    code: str
+    detail_es: str
+    action_es: str
+
+
 class EngineStatus(BaseModel):
     running: bool
     pid: int | None = None
@@ -319,6 +328,9 @@ class EngineStatus(BaseModel):
     started_at: datetime | None = None
     api_ok: bool = False
     last_error: str = ""
+    problem: EngineProblem | None = None
+    service_state: str = ""          # estado de `vmsctl run` (logs/status-VMSEngine.json): running, backoff…
+    crashes_10min: int = 0
 
 
 class PathStatus(BaseModel):

@@ -115,9 +115,11 @@ mod tests {
     fn wanted_ports_by_role() {
         let net = NetSettings::from_map(HashMap::new());
         let ports: Vec<u16> = wanted(Role::Store, &net).iter().map(|w| w.1).collect();
-        for p in [8600, 8643, 8554, 8889, 9997, 9996, 9998, 8189] {
+        for p in [8600, 8643, 8554, 8889, 9997, 9996, 8189] {
             assert!(ports.contains(&p), "falta {p}");
         }
+        // Métricas de MediaMTX siempre apagadas: el 9998 (HikCentral) no es un puerto del puesto
+        assert!(!ports.contains(&9998), "{ports:?}");
         assert_eq!(wanted(Role::Central, &net).iter().map(|w| w.1).collect::<Vec<_>>(), [8700]);
         assert!(wanted(Role::Viewer, &net).is_empty());
     }

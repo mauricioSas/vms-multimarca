@@ -718,8 +718,9 @@ compromiso: active.json apunta a la nueva, «a prueba») → migrated → starte
   - Perfil Privada (y Dominio, opcional). Nunca Pública.
   - Nombre de regla con prefijo `VMSMultimarca-` para borrarlas sin tocar otras.
 - `vmsctl ports check` comprueba antes de instalar y antes de cada arranque:
-  - que 8600, 8643, 8554, 8889, 8189, 9996, 9997 y 9998 estén libres (el actualizador ya no usa
-    TCP: va por tubería, §2.2);
+  - que 8600, 8643, 8554, 8889, 8189, 9996 y 9997 estén libres (el actualizador ya no usa
+    TCP: va por tubería, §2.2). El 9998 ya no: las métricas de MediaMTX están siempre apagadas porque
+    ese puerto es el de HikCentral (CONTRATO §4.1);
   - que **no** caigan en `excludedportrange` (Hyper-V/WSL), leído con la API `GetTcpTable2` /
     `CreatePersistentTcpPortReservation`, sin analizar texto de `netsh`.
   - Si choca, el asistente lo dice claro y ofrece cambiar el puerto, que se guarda en `.env`.
@@ -1308,7 +1309,8 @@ Checklist por sesión de laboratorio:
 - [ ] Cada equipo de la lista de compra (§7.3): fila completa en la matriz y **captura de fixtures**
   con `tools.capture_device`.
 - [ ] 72 h de prueba con 16 cámaras: memoria de MediaMTX y del backend (`pprof` de MediaMTX en
-  127.0.0.1 solo durante la prueba), reconexiones y disco.
+  127.0.0.1 solo durante la prueba y editando el YAML a mano: el producto lo deja siempre apagado; nunca
+  en un PC con HikCentral, que usa el 9999, su puerto por defecto), reconexiones y disco.
 - [ ] Equipos del cliente: probar una actualización de firmware real en una Hik y una Dahua y
   comprobar qué pasa con RTSP/ONVIF después.
 - [ ] Antivirus: Defender con las reglas ASR por defecto + 1 EDR comercial si Covert usa alguno. Sin

@@ -313,7 +313,6 @@ class SystemCheck:
             "VMS_MTX_WEBRTC_ICE_TCP": "off",
             "VMS_MTX_API_ADDRESS": f"127.0.0.1:{self.mtx_api_port}",
             "VMS_MTX_PLAYBACK_ADDRESS": f"127.0.0.1:{free_port()}",
-            "VMS_MTX_METRICS_ADDRESS": f"127.0.0.1:{free_port()}",
             "VMS_PG_DSN": dsn,
             "VMS_HEARTBEAT_SECONDS": "10",
             "VMS_TELEGRAM_BOT_TOKEN": TG_TOKEN,

@@ -198,7 +198,7 @@ def test_mediamtx_config_has_no_anonymous_user(settings: VmsSettings, tmp_path: 
     assert creds.api_password not in text and creds.reader_password not in text   # solo hashes
     api_user = next(u for u in users if u["user"] == mtx_hash(API_USER))
     reader = next(u for u in users if u["user"] == mtx_hash(READER_USER))
-    assert {p["action"] for p in api_user["permissions"]} == {"api", "playback", "read", "metrics"}
+    assert {p["action"] for p in api_user["permissions"]} == {"api", "playback", "read"}
     assert [p["action"] for p in reader["permissions"]] == ["read"]
     assert all("publish" not in str(u["permissions"]) for u in users)
     assert all(u["ips"] == ["127.0.0.1", "::1"] for u in users)
