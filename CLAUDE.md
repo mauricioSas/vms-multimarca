@@ -114,7 +114,8 @@ Windows, así que la referencia es GitHub (verde). Las que siguen fallando aquí
 - tiempo, red o navegador: `test_health_imaging`, `test_rtsp_chaos`, `test_hikvision_dahua`, `test_ui_b6`,
   `test_evidence` y `test_wall_sessions`;
 - 3 de `tests/web/test_ui.py` (`test_add_device_and_assign_to_monitor`, `test_vendor_selector_fills_paths` y
-  `test_pages_fit_phone_width[/]`): «No se pudo leer el registro de marcas» y un 404 en la consola;
+  `test_pages_fit_phone_width[/]`): «No se pudo leer el registro de marcas» y un 404 en la consola. Fallan al
+  pasar ese archivo solo (también en `91b123f`); dentro de la batería completa de `vms/` pasan;
 - `test_store_counts_csv_needs_pg_and_uses_site_timezone`, que es un fallo real del backend (ver «Otras mejoras
   pendientes»).
 
