@@ -91,7 +91,7 @@ class BindError:
               or "permisos de acceso" in low):
             reason = "forbidden"   # 10013: otra cuenta de Windows lo tiene, o un rango reservado (Hyper-V/WSL)
         else:
-            reason = "other"       # p. ej. 10049: la dirección del .env ya no es de este equipo
+            reason = "other"       # p. ej. 10049: la dirección del .env ya no es de este PC
         return cls(m.group(1), m.group(2).strip("[]"), int(m.group(3)), reason)
 
 
@@ -375,27 +375,27 @@ def _port_in_use(bind: BindError, crashes: int, roles: dict[int, str], holder: H
     role = f" ({roles[bind.port]})" if bind.port in roles else ""
     port = f"{bind.port}/UDP" if bind.proto == "udp" else str(bind.port)
     if who is not None:
-        detail = (f"El motor de vídeo no puede arrancar porque el programa «{who.name}» de este equipo ya usa el "
+        detail = (f"El motor de vídeo no puede arrancar porque el programa «{who.name}» de este PC ya usa el "
                   f"puerto {port}{role}.")
-        action = (f"si usas «{who.name}», no lo cierres. Reinicia el ordenador, porque a veces el motor arranca antes y "
-                  f"se queda con el puerto. Si vuelve a pasar, avisa al soporte técnico y dile el programa "
+        action = (f"si usas «{who.name}», no lo cierres. Reinicia el PC, porque a veces el motor arranca antes y "
+                  f"se queda con el puerto. Si vuelve a pasar, avisa a soporte y dile el programa "
                   f"(«{who.name}») y el puerto ({port}).")
     else:
         if bind.reason == "forbidden":
             detail = (f"El motor de vídeo no puede arrancar porque Windows no le deja usar el puerto {port}{role}: "
                       "lo usa otro programa o Windows lo tiene reservado.")
         else:
-            detail = (f"El motor de vídeo no puede arrancar porque otro programa de este equipo ya usa el puerto "
+            detail = (f"El motor de vídeo no puede arrancar porque otro programa de este PC ya usa el puerto "
                       f"{port}{role}.")
-        action = ("reinicia el ordenador, porque a veces el motor arranca antes y se queda con el puerto. Si "
-                  f"vuelve a pasar, avisa al soporte técnico y dile el puerto ({port}).")
+        action = ("reinicia el PC, porque a veces el motor arranca antes y se queda con el puerto. Si "
+                  f"vuelve a pasar, avisa a soporte y dile el puerto ({port}).")
     return _problem("port_in_use", detail + _tries(crashes), action)
 
 
 def _crashed(error: str, exit_detail: str, crashes: int, roles: dict[int, str],
              holder: HolderLookup, own_pid: int | None) -> EngineProblem:
     """`error` = lo que dijo MediaMTX al caer; `exit_detail` = lo que dice vmsctl («terminó con código 1…»).
-    Un «bind» por otro motivo (p. ej. una dirección que ya no es de este equipo) no es «otro programa usa el
+    Un «bind» por otro motivo (p. ej. una dirección que ya no es de este PC) no es «otro programa usa el
     puerto»: se cita tal cual."""
     bind = BindError.parse(error)
     if bind is not None and bind.reason != "other":
@@ -404,14 +404,14 @@ def _crashed(error: str, exit_detail: str, crashes: int, roles: dict[int, str],
         return _problem("bad_config",
                         f"El motor de vídeo no acepta su configuración: «{_clip(error[5:])}».{_tries(crashes)}",
                         "revisa el último equipo o cámara que cambiaste y guárdalo de nuevo. Si sigue igual, "
-                        "reinicia el ordenador y, si tampoco se arregla, avisa al soporte técnico con este mensaje.")
+                        "reinicia el PC y, si tampoco se arregla, avisa a soporte con este mensaje.")
     if error:
         last = f" Último error: «{_clip(error)}»."
     else:
         last = " No ha dejado ningún mensaje de error" + (f" ({_clip(exit_detail)})." if exit_detail else ".")
     return _problem("crash_loop", f"El motor de vídeo se ha cerrado por un error.{_tries(crashes)}{last}",
-                    "espera un minuto mientras se reintenta solo. Si sigue igual, reinicia el ordenador y, si "
-                    "tampoco se arregla, avisa al soporte técnico con este mensaje.")
+                    "espera un minuto mientras se reintenta solo. Si sigue igual, reinicia el PC y, si "
+                    "tampoco se arregla, avisa a soporte con este mensaje.")
 
 
 def diagnose(*, api_ok: bool, api_status: int | None, run: RunStatus | None, cause: LogCause, now: float,
@@ -422,7 +422,7 @@ def diagnose(*, api_ok: bool, api_status: int | None, run: RunStatus | None, cau
         return None
     roles = roles or {}
     stopped = _problem("stopped", "El servicio del motor de vídeo (VMSEngine) está parado: no hay vista en vivo ni "
-                       "grabación.", "reinicia el ordenador. Si al volver sigue parado, avisa al soporte técnico.")
+                       "grabación.", "reinicia el PC. Si al volver sigue parado, avisa a soporte.")
     if run is not None:
         stale = now - run.updated_unix > STALE_AFTER_S
         if run.state == "stopped" or (stale and not cause.crashes(now)):
@@ -445,7 +445,7 @@ def diagnose(*, api_ok: bool, api_status: int | None, run: RunStatus | None, cau
     if state == "waiting":
         return _problem("waiting_config", "El motor de vídeo está esperando su configuración, que escribe VMS "
                         "Multimarca al arrancar.",
-                        "espera un minuto; esta página se actualiza sola. Si sigue igual, reinicia el ordenador.")
+                        "espera un minuto; esta página se actualiza sola. Si sigue igual, reinicia el PC.")
     if missing:
         return _problem("missing_program", "Falta el programa del motor de vídeo: la instalación está incompleta (a "
                         "veces lo borra un antivirus).",
@@ -458,9 +458,9 @@ def diagnose(*, api_ok: bool, api_status: int | None, run: RunStatus | None, cau
         return _starting()
     if api_status in (401, 403):
         return _problem("api_auth", "El motor de vídeo está en marcha, pero no acepta la clave interna de VMS "
-                        "Multimarca.", "reinicia el ordenador. Si sigue igual, avisa al soporte técnico.")
+                        "Multimarca.", "reinicia el PC. Si sigue igual, avisa a soporte.")
     return _problem("no_api", "El motor de vídeo (servicio VMSEngine) no responde.",
-                    "espera un minuto mientras se reintenta solo. Si no vuelve, reinicia el ordenador.")
+                    "espera un minuto mientras se reintenta solo. Si no vuelve, reinicia el PC.")
 
 
 def as_text(p: EngineProblem) -> str:

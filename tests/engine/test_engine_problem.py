@@ -193,6 +193,10 @@ def check_texts(p: EngineProblem) -> None:
     assert p.detail_es and p.action_es
     assert not voseo_in(p.detail_es + " " + p.action_es), p
     assert "Cl4ve" not in p.detail_es + p.action_es
+    # revisión final: en la app «equipo» es una cámara o un grabador, y el resto de textos dicen «reinicia el PC» y
+    # «avisa a soporte»; «el programa X de este equipo» se leía como si el puerto lo tuviera la cámara
+    text = f"{p.detail_es} {p.action_es}"
+    assert "este equipo" not in text and "ordenador" not in text and "soporte técnico" not in text, p
 
 
 # ----------------------------------------------------------------------------------------------- engine.log

@@ -38,7 +38,7 @@ async def test_status_explains_why_the_engine_is_down_and_health_stays_minimal(a
     from vms.core.interfaces import EngineProblem, EngineStatus
 
     problem = EngineProblem(code="port_in_use", detail_es="El motor de vídeo no puede arrancar porque el programa "
-                            "«SYS.exe» de este equipo ya usa el puerto 9998.", action_es="reinicia el ordenador.")
+                            "«SYS.exe» de este PC ya usa el puerto 9998.", action_es="reinicia el PC.")
 
     async def down() -> EngineStatus:
         return EngineStatus(running=False, problem=problem, service_state="backoff", crashes_10min=18,

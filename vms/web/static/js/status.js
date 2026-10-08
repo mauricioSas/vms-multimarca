@@ -54,7 +54,8 @@ function overall(s, health) {
   const p = engineProblem(s.engine);
   if (p && ENGINE_STARTING.has(p.code)) {
     cls = "";
-    text = "El motor de vídeo está arrancando: en unos segundos vuelven la vista en vivo y la grabación.";
+    text = "El motor de vídeo está arrancando: en unos segundos vuelven la vista en vivo y la grabación. Qué hacer: " +
+      "espera; esta página se actualiza sola.";
   } else if (p && ENGINE_UNREACHABLE.has(p.code)) {
     cls = "bad";
     text = "VMS Multimarca no puede comunicarse con el motor de vídeo: la vista en vivo no funciona y no se puede " +
@@ -63,7 +64,7 @@ function overall(s, health) {
     cls = "bad";
     text = p
       ? "El motor de vídeo no funciona: no hay vista en vivo ni grabación. Debajo tienes el motivo y qué hacer."
-      : "El motor de vídeo no funciona: no hay vista en vivo ni grabación. Qué hacer: espera un minuto; si no vuelve, reinicia el ordenador.";
+      : "El motor de vídeo no funciona: no hay vista en vivo ni grabación. Qué hacer: espera un minuto; si no vuelve, reinicia el PC.";
   } else if (offline.length || diskBad || analyticsBad) {
     cls = "";
     const parts = [];

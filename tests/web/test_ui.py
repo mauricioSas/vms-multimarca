@@ -433,8 +433,8 @@ def test_status_page_explains_why_the_engine_does_not_start(stub: Any, make_cont
     backend, server = stub
     problem = EngineProblem(code="port_in_use",
                             detail_es="El motor de vídeo no puede arrancar porque el programa «<img src=x "
-                                      "onerror=alert(1)>» de este equipo ya usa el puerto 9998.",
-                            action_es="si usas ese programa, no lo cierres. Reinicia el ordenador.")
+                                      "onerror=alert(1)>» de este PC ya usa el puerto 9998.",
+                            action_es="si usas ese programa, no lo cierres. Reinicia el PC.")
 
     async def down() -> EngineStatus:
         return EngineStatus(running=False, problem=problem, service_state="backoff", crashes_10min=18,
@@ -447,7 +447,7 @@ def test_status_page_explains_why_the_engine_does_not_start(stub: Any, make_cont
     page.wait_for_selector("#st-engine-problem:not([hidden])")
     assert page.inner_text("#st-engine") == "No arranca"
     box = page.inner_text("#st-engine-problem")
-    assert "9998" in box and "Qué hacer:" in box and "Reinicia el ordenador" in box and "<img" in box
+    assert "9998" in box and "Qué hacer:" in box and "Reinicia el PC" in box and "<img" in box
     assert page.locator("#st-engine-problem img").count() == 0
     assert "18 caídas en 10 min" in page.inner_text("#st-engine-hint")
     assert "9998" not in page.inner_text("#st-engine-hint"), "el motivo no se repite en la tarjeta"
@@ -462,7 +462,7 @@ def test_status_page_when_only_the_engine_api_fails(stub: Any, make_context: Any
 
     backend, server = stub
     problem = EngineProblem(code="api_auth", detail_es="El motor de vídeo está en marcha, pero no acepta la clave "
-                            "interna de VMS Multimarca.", action_es="reinicia el ordenador.")
+                            "interna de VMS Multimarca.", action_es="reinicia el PC.")
 
     async def unreachable() -> EngineStatus:
         return EngineStatus(running=False, problem=problem, service_state="running",
@@ -477,6 +477,28 @@ def test_status_page_when_only_the_engine_api_fails(stub: Any, make_context: Any
     overall = page.inner_text("#st-overall")
     assert "no se puede comprobar si graba" in overall and "ni grabación" not in overall
     assert "Qué hacer:" in page.inner_text("#st-engine-problem")
+    assert errors.unexpected(ALLOWED_CONSOLE) == []
+
+
+def test_status_page_while_the_engine_starts_says_what_to_do(stub: Any, make_context: Any) -> None:
+    """Revisión final: el aviso de arriba «El motor de vídeo está arrancando…» era el único sin «Qué hacer:»."""
+    from vms.core.interfaces import EngineProblem, EngineStatus
+
+    backend, server = stub
+    problem = EngineProblem(code="starting", detail_es="El motor de vídeo está arrancando.",
+                            action_es="espera unos segundos; esta página se actualiza sola.")
+
+    async def starting() -> EngineStatus:
+        return EngineStatus(running=False, problem=problem, service_state="running")
+
+    backend.engine.status = starting
+    page = make_context(server.base_url).new_page()
+    errors = PageErrors().attach(page)
+    login(page, next_path="/status")
+    page.wait_for_selector("#st-engine-problem:not([hidden])")
+    assert page.inner_text("#st-engine") == "Arrancando"
+    overall = page.inner_text("#st-overall")
+    assert overall.startswith("El motor de vídeo está arrancando") and "Qué hacer:" in overall, overall
     assert errors.unexpected(ALLOWED_CONSOLE) == []
 
 
