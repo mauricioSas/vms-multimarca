@@ -452,6 +452,16 @@ def test_status_page_explains_why_the_engine_does_not_start(stub: Any, make_cont
     assert "18 caídas en 10 min" in page.inner_text("#st-engine-hint")
     assert "9998" not in page.inner_text("#st-engine-hint"), "el motivo no se repite en la tarjeta"
     assert "Debajo tienes el motivo" in page.inner_text("#st-overall")
+    # revisión final: el aviso es role="alert" y se reescribía en cada actualización (cada 5 s), así que un lector
+    # de pantalla lo volvía a leer; con el mismo motivo no se toca su texto
+    page.evaluate("""() => { window.__alertWrites = 0;
+      new MutationObserver((m) => { window.__alertWrites += m.length; })
+        .observe(document.querySelector('#st-engine-problem'), {childList: true, characterData: true, subtree: true});
+    }""")
+    with page.expect_response(lambda r: r.url.endswith("/api/status")):
+        page.click("#st-refresh")
+    page.wait_for_timeout(500)
+    assert page.evaluate("window.__alertWrites") == 0
     assert errors.unexpected(ALLOWED_CONSOLE) == []
 
 

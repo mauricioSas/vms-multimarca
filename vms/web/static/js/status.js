@@ -15,7 +15,12 @@ const ENGINE_BROKEN = new Set(["port_in_use", "bad_config", "crash_loop", "missi
 // Solo falla la API: MediaMTX puede seguir grabando con mediamtx.yml (modo attach), pero no se puede comprobar.
 const ENGINE_UNREACHABLE = new Map([["api_auth", "Sin conexión"], ["no_api", "No responde"]]);
 
-function setText(id, text) { $(id).textContent = text; }
+// Solo si cambia: reescribir cada 5 s el aviso del motor (role="alert") hacía que un lector de pantalla lo volviera
+// a leer en cada actualización
+function setText(id, text) {
+  const el = $(id);
+  if (el.textContent !== text) el.textContent = text;
+}
 
 function engineProblem(eng) {
   return eng && !eng.running && eng.problem ? eng.problem : null;
