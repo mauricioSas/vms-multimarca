@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import socket
 import struct
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -99,6 +101,25 @@ def test_pc_clock_without_server_is_unknown_not_invented(monkeypatch: pytest.Mon
 
 
 # --------------------------------------------------------------------------- previsión
+def _sparse(f: BinaryIO, size: int) -> None:
+    """Archivo disperso: ocupa la cifra sin escribir los bytes. En Windows, truncate() escribe los ceros de verdad
+    (aunque el archivo esté marcado como disperso) y esta prueba llenaba el disco (unos 170 GB): allí se marca como
+    disperso (FSCTL_SET_SPARSE) y se escribe solo el último byte."""
+    if sys.platform == "win32":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        returned = wintypes.DWORD()
+        if not ctypes.windll.kernel32.DeviceIoControl(wintypes.HANDLE(msvcrt.get_osfhandle(f.fileno())), 0x900C4,
+                                                      None, 0, None, 0, ctypes.byref(returned), None):
+            raise ctypes.WinError()
+        f.seek(size - 1)
+        f.write(b"\0")
+        return
+    f.truncate(size)
+
+
 def _segments(root: Path, cam: str, start: datetime, hours: float, size: int, every_min: int = 15) -> None:
     folder = root / cam / "main"
     folder.mkdir(parents=True, exist_ok=True)
@@ -106,7 +127,7 @@ def _segments(root: Path, cam: str, start: datetime, hours: float, size: int, ev
     while t < start + timedelta(hours=hours):
         name = t.strftime("%Y-%m-%d_%H-%M-%S") + "-000000+0000.mp4"
         with open(folder / name, "wb") as f:
-            f.truncate(size)   # archivo disperso: ocupa la cifra sin escribir los bytes
+            _sparse(f, size)
         t += timedelta(minutes=every_min)
     (folder / "basura.txt").write_text("no es un segmento")
 

@@ -85,6 +85,17 @@ Hay dos pruebas que pueden fallar en máquinas lentas o en contenedores; en GitH
 - `tests/ops/test_health_imaging.py::test_under_20_ms_per_check_at_640_px`, que mide velocidad;
 - en Linux, `run::tests::stubborn_child…` de `vmsctl`.
 
+En este PC con Windows (8/10/2026) la batería completa tarda unos 18 minutos: 1818 pasan y unas 60 fallan por
+cosas de Windows. La CI no pasa pytest en Windows, así que la referencia es GitHub (verde). Las causas:
+- PostgreSQL de pruebas: el `pgserver` de Windows no trae `share/postgresql/timezone`, así que falla todo lo de
+  `central/`, `analytics/` y `db/` que usa zona horaria;
+- no hay `bash` (pruebas de `install.sh`);
+- permisos POSIX;
+- pruebas que miden tiempo o CPU.
+
+Para trabajar en `vms/`, pasa las pruebas de esa parte (por ejemplo `tests\ops tests\api tests\vendors`). En esas
+carpetas, las que usan PostgreSQL fallan aquí por lo mismo: no son un problema de tu cambio.
+
 ## Ramas, CI y cómo publicar una versión
 
 - Se trabaja en **`v2`**. `integracion` va siempre igual que `v2`: se avanza la una con la otra, sin merges raros.
@@ -174,6 +185,15 @@ Publícalos en la próxima beta junto con el arreglo del motor.
 
    El registro del motor lo escribe `vmsctl run` (`native/vmsctl/src/run.rs`): `Kind::Engine` espera a que exista
    `mediamtx.yml` y lanza `engine\mediamtx.exe`. Arregla la causa, añade la prueba y publica la beta.
+
+   **Dato del 8/10:** con la beta.2, el motor sí estaba en marcha. `mediamtx.exe`, hijo de `vmsctl`, escuchaba en
+   8554, 9997, 8889 y 8189, y `GET http://127.0.0.1:8600/api/health` devolvía
+   `{"status":"degraded","engine":{"running":true,"api_ok":true}}`. Hay que averiguar:
+   - si el fallo es intermitente, por ejemplo al arrancar el PC;
+   - qué marca el estado como «degradado».
+
+   Lo de iVMS-4200 no choca con esos puertos: usa 0.0.0.0:80 (nginx) y 0.0.0.0:554 (stream). Pero su
+   `SADPServer` ocupa **UDP 37020**, el puerto de nuestra búsqueda SADP.
 2. **Mostrar el error del motor en la propia app.** En Estado del sistema, añadir las últimas líneas de
    `engine.log` o el error de MediaMTX, para que el usuario no tenga que abrir PowerShell. El backend corre como
    `NT SERVICE\VMSBackend`, así que revisa las ACL de `logs\`. `vmsctl` puede dejar un resumen legible en
@@ -192,6 +212,12 @@ Publícalos en la próxima beta junto con el arreglo del motor.
 - La búsqueda en red (beta.3) no se ha probado con una cámara real. Si la red de Windows es «Pública»
   (red no identificada, típico con un switch sin router), el firewall no deja pasar las respuestas SADP.
   Valora avisarlo en la propia pantalla de búsqueda.
+- Aislamiento de las pruebas en Windows: `tests/analytics/test_reports.py::test_cli_writes_markdown_and_html`
+  llama a `load_settings` (`vms/core/settings.py`). Esa función lee también `C:\ProgramData\VMSMultimarca\.env`,
+  que es el del producto instalado.
+  - Sin administrador, falla con «Permission denied».
+  - Con administrador, leería la configuración real.
+  - Hay que hacer que las pruebas no lean nunca esa ruta.
 - El instalador no está firmado: Windows avisa con «Windows protegió tu PC». Firmarlo cuesta dinero; es decisión
   del usuario.
 - Pedirle al usuario que ponga `v2` como rama por defecto del repositorio en GitHub (Settings → Branches), para
