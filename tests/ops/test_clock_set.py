@@ -396,6 +396,35 @@ async def test_clock_is_reread_as_soon_as_the_video_comes_back(api: Harness) -> 
     assert not ops._background
 
 
+async def test_no_clock_reread_for_devices_that_cannot_tell_their_time(api: Harness,
+                                                                      caplog: pytest.LogCaptureFixture) -> None:
+    """Revisión final: una cámara RTSP genérica (sin lectura de la hora) también lanzaba la relectura al volver el
+    vídeo, y cada vuelta dejaba en vms.log «Sin lectura de la hora … al volver el vídeo» sin nada que leer."""
+    admin = await api.login()
+    r = await admin.post("/api/devices", json={"name": "Cámara puerta", "vendor": "generic", "kind": "camera",
+                                               "host": "10.0.0.7", "username": "u", "password": "p"})
+    dev = r.json()
+    r = await admin.post("/api/cameras", json={"name": "Puerta", "device_id": dev["id"], "channel": 1,
+                                               "main_path": "/live", "has_sub": False})
+    cam = r.json()["id"]
+    ops = api.app.state.ops
+    ops._clock_first_pending = False
+    online = {"value": False}
+
+    async def overview() -> dict[str, Any]:
+        return {"status": "ok", "cameras": [{"camera_id": cam, "enabled": True, "online": online["value"],
+                                             "last_error": ""}]}
+    api.state.overview = overview   # type: ignore[method-assign]
+    with caplog.at_level(logging.INFO, logger="vms.ops"):
+        await ops._check_down()
+        online["value"] = True
+        await ops._check_down()                   # vuelve el vídeo
+        for task in list(ops._background):
+            await task
+    assert dev["id"] not in ops._clock_rechecked, "no hay hora que releer"
+    assert "Sin lectura de la hora" not in caplog.text
+
+
 async def test_no_extra_clock_read_while_the_first_hourly_check_is_due(api: Harness,
                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
     """Revisión: al arrancar, la vigilancia (primer sondeo a los 30 s) ve la cámara caída mientras el motor la conecta

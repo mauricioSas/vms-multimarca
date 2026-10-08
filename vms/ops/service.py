@@ -420,6 +420,8 @@ class OpsService:
         dev = cfg.device(cam.device_id) if cam is not None else None
         if dev is None or not dev.enabled:
             return
+        if TIME_READ not in drivers.capabilities(dev.vendor) or not drivers.has_api(dev.vendor):
+            return   # sin lectura de la hora (RTSP genérico…): no hay nada que releer
         now = time.monotonic()
         if dev.id in self._clock_rechecking or \
                 now - self._clock_rechecked.get(dev.id, -CLOCK_RECHECK_MIN_S) < CLOCK_RECHECK_MIN_S:
