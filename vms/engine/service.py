@@ -27,7 +27,7 @@ from vms.core.paths import AppPaths
 from vms.core.settings import VmsSettings
 from vms.core.sources import build_camera_sources
 
-from .mtx_config import attach_config, path_configs, render_attach, write_if_changed
+from .mtx_config import attach_config, path_configs, render_attach, retention_paths, write_if_changed
 from .process import BACKOFF, STABLE_AFTER
 
 log = logging.getLogger("vms.engine.service")
@@ -51,6 +51,8 @@ def write_engine_config(settings: VmsSettings, paths: AppPaths) -> tuple[Path, i
         routes.update(path_configs(src))
     recordings_dir = cfg.settings.recording.recordings_dir or str(paths.recordings_dir)
     Path(recordings_dir).mkdir(parents=True, exist_ok=True)
+    # Cámaras borradas o desactivadas con grabaciones: rutas inertes para que caduquen y se puedan reproducir
+    routes = {**retention_paths(recordings_dir, routes), **routes}
     doc = attach_config(settings, cfg.settings.recording, cfg.settings.retention, recordings_dir, routes,
                         creds=MtxCredentials.from_internal_token(settings.ensure_internal_token()))
     file = paths.mediamtx_dir / "mediamtx.yml"

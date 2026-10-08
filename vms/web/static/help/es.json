@@ -165,7 +165,8 @@
       "title": "Reproducción",
       "intro": [
         "Aquí ves lo grabado: eliges cámara y día, y pulsas en la línea de tiempo el momento que quieres ver.",
-        "Los tramos de color de la línea de tiempo son lo grabado; los huecos sin color son momentos sin grabación."
+        "Los tramos de color de la línea de tiempo son lo grabado; los huecos sin color son momentos sin grabación.",
+        "Si no sale ningún tramo, el reproductor dice por qué y qué hacer: la cámara aún no ha grabado, tiene la cámara o la grabación desactivada, o el motor de vídeo no responde."
       ],
       "buttons": [
         {"label": "Cámara y Día", "text": "Qué cámara y qué día quieres ver."},

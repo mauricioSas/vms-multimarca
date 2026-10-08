@@ -264,6 +264,20 @@ de HikCentral. En pruebas, todos los puertos se piden libres (`tests.conftest.ge
   lo registra. Referencia de la lógica: `legacy/app/retention.py`.
 - Verificado con MediaMTX v1.21.1: grabación con nombres `cam-xxx/main`, `/list` (devuelve
   `start` con desfase horario local) y `/get?format=mp4`. La API normaliza fechas a UTC (§6.1).
+- **Rutas inertes de retención** (v2, `mtx_config.retention_paths`): cada carpeta `<recordings_dir>/<id>/main`
+  sin ruta activa (cámara borrada, desactivada, de un equipo desactivado o en pausa por contraseña rechazada)
+  lleva en el YAML (attach) o por la API (child) la ruta `<id>/main: {source: publisher, record: false}`. Nadie
+  tiene permiso `publish`, así que no recibe vídeo; hereda `recordPath` y `recordDeleteAfter` de `pathDefaults`:
+  el limpiador de MediaMTX sigue borrando sus segmentos caducados (RGPD) y `/list`/`/get` los sirven. Sin ella,
+  MediaMTX solo limpia y reproduce rutas configuradas: las grabaciones de una cámara borrada no caducaban nunca.
+  Se usan nombres fijos y **no** una ruta regexp comodín: comprobado con v1.21.1 en Windows, el limpiador no
+  encuentra ningún segmento a través de una ruta regexp (ni `~^.*$`), aunque `/list` sí funcione. Cuando caduca
+  todo, MediaMTX borra la carpeta vacía y la ruta desaparece en la siguiente escritura.
+- Respuestas del servidor de reproducción (v1.21.1 en Windows, `vms/core/recordings.py`): carpeta de la cámara
+  inexistente → 400 «GetFileAttributesEx …: The system cannot find the path specified.» (y MediaMTX lo registra
+  como ERR); carpeta vacía o nada en el rango → 404 «no recording segments found» (también ERR); ruta no
+  configurada → 400 «path '…' is not configured»; carpeta sin permiso de lectura → 400 «open …: Access is
+  denied.»; sin credenciales → 401. Solo las dos primeras son «no hay grabaciones».
 
 ---
 
@@ -306,7 +320,30 @@ Clase prevista `MediaMtxEngine(settings: VmsSettings, paths: AppPaths)` que cump
 `start()`, `stop()`, `apply(sources, recording, retention, recordings_dir)` (idempotente,
 sin reiniciar), `status()`, `paths_status()` (clave = nombre de ruta), `list_recordings(camera_id, start, end)`,
 `playback_get_url(...)`, `whep_url(camera_id, stream)`, `rtsp_read_url(camera_id, stream)`, `disk_usage()`.
-Errores de MediaMTX caído → `EngineUnavailable`.
+Errores de MediaMTX caído → `EngineUnavailable` (503). MediaMTX que contesta con un error (permisos, ruta no
+configurada, 401, 5xx, carpeta de grabaciones general inexistente) → `EngineError` (502 `engine_error`, v2).
+
+v2, `list_recordings(camera_id, start, end)`: antes de preguntar a MediaMTX mira la carpeta
+(`vms.core.recordings.recordings_presence`). Sin la carpeta general → `EngineError` (disco desconectado; nunca
+«nunca ha grabado»). Sin la carpeta de la cámara → `[]` **sin preguntar** (MediaMTX dejaría un ERR en el registro
+en cada consulta) o `EngineUnavailable` si la cámara está en el motor y este no responde. Con carpeta, por los
+nombres de los segmentos (solo los que llevan desfase, los que lista MediaMTX): carpeta sin segmentos o rango que
+acaba antes del primero → `[]` sin preguntar; si ningún segmento empieza dentro del rango, se pregunta solo por el
+último que empieza antes (`/list` de [su inicio − 1 s, `start` + 1 s], que nunca da 404) y, si no llega a `start`,
+`[]`. Así un día sin grabación (cámara apagada todo el día) no deja un 404 y un ERR en cada consulta. Cámara
+desactivada o borrada: `[]` si no tiene grabaciones; si las tiene, las sirve su ruta inerte (§4.3).
+
+v2, «Grabando» de verdad (`PathStatus.recording`): hace falta vídeo, `record` **y** que se estén guardando
+segmentos. Cada `recording_check_interval` (30 s) el motor pide a `/list` el último segmento de cada ruta que debe
+grabar (solo el más reciente por nombre, así nunca recibe 404/400); un tramo que no avanza en 45 s, pasados 90 s
+desde que llegó el vídeo (o desde que se marcó «Grabar 24/7», que no reinicia la ruta), es «no graba» con
+`PathStatus.recording_error` (texto con «Qué hacer:»). Un error de `/list` necesita dos comprobaciones seguidas.
+Las líneas `ERR [path X] [recorder] …` de MediaMTX (sin permiso, disco lleno, carpeta inexistente; v1.21.1 las
+repite cada ~4 s mientras dura el fallo) también lo ponen, hasta que llega un tramo nuevo, dejan de repetirse
+30 s o la cámara se reconecta después del error. Sin servidor de reproducción (desactivado o caído) no se
+comprueba con `/list`. Mientras una ruta no se ha comprobado desde que llegó su vídeo, se da por buena la palabra
+de MediaMTX. Campos aditivos de `PathStatus`: `recording_error: str`, `last_recorded_at: datetime | None`;
+`last_error` de una ruta con vídeo es `recording_error`.
 
 ### 5.3 Conexión motor ↔ API [api-web]
 
@@ -326,7 +363,8 @@ se suscribe a cambios de configuración (aplicación con antirrebote de 1 s) →
 - Errores: `{"error": {"code": "<estable>", "message": "<español>", "details": {...}}}` con el
   estado de `vms.core.errors` (`validation_error` 422 con `details.fields=[{loc, msg}]`,
   `unauthorized` 401, `forbidden` 403, `not_found` 404, `conflict` 409, `rate_limited` 429,
-  `device_*` 502/501, `engine_unavailable`/`not_configured` 503).
+  `device_*` 502/501, `engine_unavailable`/`not_configured` 503, `engine_error` 502 = el motor contesta con un
+  error).
 - Sesión: cookie `vms_session` (aleatoria, `HttpOnly`, `SameSite=Strict`, `Secure` si HTTPS),
   almacenada en memoria del servidor; caduca a las `VMS_SESSION_HOURS` horas. El kiosco va en **otra**
   cookie, `vms_kiosk` (revisión v2): en un mismo navegador o perfil, entrar en los muros no cierra la sesión
@@ -415,9 +453,9 @@ licencia). El vídeo viaja directo al puerto ICE (§4.1).
 
 | Método y ruta | Rol | Petición → Respuesta |
 |---|---|---|
-| `GET /api/recordings/{camera_id}/timeline?start=&end=` | O | → `{camera_id, spans: [{start, end, duration}]}` (UTC, envuelve `/list`) |
-| `GET /api/recordings/{camera_id}/video?start=&duration=&format=fmp4\|mp4&download=0\|1` | O | → `video/mp4` en streaming (proxy de `/get`). `duration` ≤ 3600. `download=1` añade `Content-Disposition` con nombre `<cámara>_<AAAAMMDD-HHMMSS>.mp4`. 404 si no hay grabación. |
-| `GET /api/recordings/summary` | O | → `[{camera_id, first, last, bytes}]` |
+| `GET /api/recordings/{camera_id}/timeline?start=&end=` | O | → `{camera_id, spans: [{start, end, duration}], notice}` (UTC, envuelve `/list`). v2: `notice` es `null` o, solo con `spans` vacío, `{code, message}` con `code` = `camera_disabled` (cámara o equipo desactivado), `recording_off` (sin «Grabar 24/7») o `never_recorded` (no existe su carpeta de grabación); `message` en español con «Qué hacer:». 503 `engine_unavailable` solo si el motor no contesta; 502 `engine_error` si contesta con un error o si falta la carpeta de grabaciones entera (disco desconectado). |
+| `GET /api/recordings/{camera_id}/video?start=&duration=&format=fmp4\|mp4&download=0\|1` | O | → `video/mp4` en streaming (proxy de `/get`). `duration` ≤ 3600. `download=1` añade `Content-Disposition` con nombre `<cámara>_<AAAAMMDD-HHMMSS>.mp4`. 404 si no hay grabación (v2: también si la cámara nunca grabó, antes era 400 `playback_rejected`, y si la cámara o su equipo están desactivados y MediaMTX no tiene su ruta). 400 `playback_rejected` para una petición que MediaMTX rechaza; 502 `engine_error` y 503 `engine_unavailable` como en `timeline`. |
+| `GET /api/recordings/summary` | O | → `[{camera_id, first, last, bytes}]` (una cámara con error sale sin `first`/`last`; no tumba el resumen) |
 
 ### 6.8 Estado y salud
 
@@ -442,6 +480,11 @@ interno) y `no_api`. `problem` es `null` con la API respondiendo y en modo `chil
 `logs\status-VMSEngine.json` (`""` si no existe o no se puede leer); `crashes_10min` también, y sin ese archivo
 cuenta las caídas que se ven en `engine.log`. La interfaz los pinta siempre como texto (pueden citar una línea de
 `engine.log`). `/api/health` no cambia: sin detalles.
+
+v2 (aditivo): cada cámara de `/api/status` lleva además `recording_error` (por qué una cámara con vídeo no graba,
+con «Qué hacer:»; `""` si graba) y `last_recorded_at` (final del último tramo guardado que vio la comprobación de
+§5.2, o `null`). `recording` ya no es «vídeo + `record`»: es que se guardan segmentos. Una cámara con vídeo que no
+graba añade el problema «cámaras con vídeo que no graban» (`degraded`).
 
 ### 6.9 Ajustes
 
@@ -878,6 +921,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | motor | §6.8/§13.10 (aditivo): `EngineStatus.problem` `{code, detail_es, action_es}`, `service_state` y `crashes_10min`; nuevo modelo `vms.core.interfaces.EngineProblem`. En modo attach `last_error` pasa a ser el motivo con su «Qué hacer:» (antes, un texto fijo que mandaba a «vmsctl services status» y a `engine.log`). Estado del sistema lo enseña en un aviso propio. `/api/health`, SSE y latido sin cambios. Modo child: el motivo de una caída reconoce también `ERR: …` (antes «sin mensaje de error»). |
 | 2026-10-08 | motor | §6.8/§13.10 (revisión, sin cambios de forma): el primer «bind» de un arranque es la causa aunque lo sigan muchas líneas de cámaras o conexiones (antes, con 4 cámaras o más, un puerto ocupado salía como `crash_loop` «sin ningún mensaje de error»); un «bind» que no es «puerto ocupado» pasa a `crash_loop` citando el error; `starting` si el puerto lo tiene el MediaMTX que `vmsctl` acaba de relanzar; sin `status-VMSEngine.json`, «[vmsctl] parado» da `stopped` y una caída de hace más de 10 min ya no es la causa. Se documenta de dónde sale `crashes_10min` sin ese archivo. |
 | 2026-10-08 | paradas | §14.1: en Windows la única orden de parada de `vmsctl run` es cerrar la entrada estándar, y ahora la vigilan también el actualizador (`vms_updater/_stdin_stop.py`), la analítica, el latido y el panel central (`vms/core/stdin_stop.py`); antes `vmsctl` los mataba a los 10 s en cada parada. `grace_s` de VMSBackend pasa de 10 a 12 s (uvicorn espera 3 s, no 10, y la aplicación pendiente al motor 3 s); `vmshost` sigue esperando 15 s. §6.11 (sin cambio de forma): al empezar la parada del backend los flujos `/api/events` terminan y el navegador vuelve a conectar solo. §13.5: el temporal de `atomic_write` en Python es propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) y `public-status.json` y `updater.json` se reescriben bajo un cerrojo por archivo. |
+| 2026-10-08 | reproducción | Reproducción y «Grabando» sin mentir (todo aditivo salvo lo marcado): `EngineError` (502 `engine_error`) en `vms.core.errors`; §5.2 `list_recordings` mira la carpeta antes de preguntar a MediaMTX y solo «carpeta inexistente»/404 son «sin grabaciones» (antes, cualquier 400, que escondía p. ej. una carpeta sin permiso); §5.2/§6.8 `recording` exige segmentos recientes y `PathStatus`/`/api/status` llevan `recording_error` y `last_recorded_at`; §6.7 `notice` en la línea de tiempo y **`/video` de una cámara que nunca grabó responde 404 (antes 400 `playback_rejected`)**, también el de una cámara desactivada sin ruta en el motor (antes 502); §5.2 un día sin segmentos no se pregunta tal cual a MediaMTX (404 + ERR en su registro); §4.3 rutas inertes de retención para cámaras borradas, desactivadas o en pausa. |
 
 ---
 

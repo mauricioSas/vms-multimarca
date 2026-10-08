@@ -45,6 +45,8 @@ class FakeEngine:
         self.recordings_dir = ""
         self.apply_calls = 0
         self.offline: set[str] = set()          # camera_id sin vídeo
+        self.not_saving: dict[str, str] = {}    # camera_id con vídeo que NO graba → motivo (recording_error)
+        self.list_errors: dict[str, Exception] = {}   # camera_id → error de list_recordings (motor caído…)
         self.spans: dict[str, list[RecordingSpan]] = {}
         self.on_event: Callable[[dict[str, Any]], None] | None = None   # lo conecta el backend (evento SSE «engine»)
 
@@ -74,14 +76,18 @@ class FakeEngine:
                 if stream == "sub" and not src.sub_url:
                     continue
                 name = mtx_path(cid, stream)  # type: ignore[arg-type]
+                saving_error = self.not_saving.get(cid, "") if stream == "main" and online else ""
                 out[name] = PathStatus(name=name, camera_id=cid, stream=stream, ready=online,  # type: ignore[arg-type]
                                        source_online=online, readers=0, bytes_received=1000 if online else 0,
                                        tracks=["H264"] if online else [],
-                                       recording=src.record and stream == "main" and online)
+                                       recording=src.record and stream == "main" and online and not saving_error,
+                                       recording_error=saving_error, last_error=saving_error)
         return out
 
     async def list_recordings(self, camera_id: str, start: datetime | None,
                               end: datetime | None) -> list[RecordingSpan]:
+        if camera_id in self.list_errors:
+            raise self.list_errors[camera_id]
         spans = self.spans.get(camera_id)
         if spans is None:
             spans = default_spans(self.clock())

@@ -25,6 +25,16 @@ const st = {
   chunkDuration: 0,   // s
   position: null,     // ms absolutos de la posición actual
   loadSeq: 0,
+  spansKey: "",       // cámara|día de los tramos cargados (un fallo al refrescar no borra los buenos)
+  notice: null,       // {code, message}: por qué no hay tramos (cámara desactivada, nunca grabó…)
+  problem: "",        // no se pudo consultar (motor caído, sin permiso…): se muestra fijo, no como «sin grabaciones»
+  toasted: "",        // último problema avisado con un aviso flotante (no se repite en cada refresco de 30 s)
+};
+
+const NOTICE_TITLES = {
+  never_recorded: ["Esta cámara aún no tiene grabaciones", "Ninguna grabación guardada"],   // o ya caducaron
+  recording_off: ["La grabación está desactivada", "Grabación desactivada"],
+  camera_disabled: ["La cámara está desactivada", "Cámara desactivada"],
 };
 
 // ------------------------------------------------------------------ utilidades de tiempo
@@ -93,7 +103,22 @@ function renderTimeline() {
   const total = st.spans.reduce((acc, s) => acc + (s.end - s.start), 0) / 1000;
   $("#timeline-summary").textContent = st.spans.length
     ? `${st.spans.length} ${st.spans.length === 1 ? "tramo" : "tramos"} · ${fmtDuration(total)} grabados`
-    : (st.cameraId ? "Sin grabaciones este día" : "");
+    : !st.cameraId ? ""
+    : st.problem ? "No se pueden consultar las grabaciones"
+    : st.notice ? (NOTICE_TITLES[st.notice.code] || ["", "Sin grabaciones"])[1]
+    : "Sin grabaciones este día";
+}
+
+/** Explica en el reproductor por qué no hay nada que ver (solo si no se está reproduciendo). */
+function renderEmptyReason() {
+  if (video.getAttribute("src")) return;
+  if (st.problem) {
+    showOverlay("No se pueden consultar las grabaciones", st.problem);
+  } else if (!st.spans.length && st.notice) {
+    showOverlay((NOTICE_TITLES[st.notice.code] || ["Sin grabaciones"])[0], st.notice.message);
+  } else {
+    showOverlay("Elige un momento en la línea de tiempo", "Los tramos de color son los periodos grabados.");
+  }
 }
 
 function renderHead() {
@@ -115,6 +140,7 @@ function renderHead() {
 async function loadTimeline() {
   if (!st.cameraId) return;
   const seq = ++st.loadSeq;
+  const key = `${st.cameraId}|${localDateValue(st.day)}`;
   try {
     const q = `start=${enc(isoUtc(st.day))}&end=${enc(isoUtc(st.dayEnd))}`;
     const res = await get(`/api/recordings/${enc(st.cameraId)}/timeline?${q}`);
@@ -122,12 +148,26 @@ async function loadTimeline() {
     st.spans = (res.spans || []).map((s) => ({ start: Date.parse(s.start), end: Date.parse(s.end) }))
       .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
       .sort((a, b) => a.start - b.start);
+    st.spansKey = key;
+    st.notice = res.notice || null;
+    st.problem = "";
+    st.toasted = "";
     renderTimeline();
+    renderEmptyReason();
   } catch (err) {
     if (seq !== st.loadSeq) return;
-    st.spans = [];
+    if (err instanceof ApiError && err.status === 401) return;
+    // Motor caído o que contesta con error: NO es «sin grabaciones». Los tramos ya cargados de esta misma cámara y
+    // día se conservan (un refresco fallido no borra lo que se estaba viendo).
+    if (st.spansKey !== key) st.spans = [];
+    st.notice = null;
+    st.problem = err instanceof ApiError ? err.message : "No hay conexión con el servidor. Qué hacer: comprueba que el programa sigue abierto y pulsa «Actualizar».";
     renderTimeline();
-    if (!(err instanceof ApiError && err.status === 401)) toastError(err, "No se pudo leer la línea de tiempo");
+    renderEmptyReason();
+    if (st.toasted !== st.problem) {
+      st.toasted = st.problem;
+      toastError(err, "No se pudo leer la línea de tiempo");
+    }
   }
 }
 
@@ -214,7 +254,7 @@ video.addEventListener("error", () => {
   const code = video.error ? video.error.code : 0;
   console.warn("Error del vídeo grabado", code, video.error && video.error.message);
   showOverlay("No se pudo reproducir este tramo",
-    "Puede que la grabación se haya borrado por retención o que el servidor no responda. Prueba otro momento.");
+    "Puede que la grabación se haya borrado por retención o que el servidor no responda. Qué hacer: prueba otro momento o pulsa «Actualizar».");
 });
 video.addEventListener("waiting", () => { $("#pb-clock").classList.add("muted"); });
 video.addEventListener("playing", () => { $("#pb-clock").classList.remove("muted"); });
@@ -280,6 +320,8 @@ function resetPlayer() {
   video.load();
   st.chunkStart = null;
   st.position = null;
+  st.notice = null;
+  st.problem = "";
   $("#pb-play").disabled = true;
   $("#pb-clock").textContent = "--:--:--";
   $("#pb-position").textContent = "";
@@ -393,6 +435,8 @@ window.__vmsPlayback = {
   get spans() { return st.spans.map((s) => ({ start: new Date(s.start).toISOString(), end: new Date(s.end).toISOString() })); },
   get position() { return st.position == null ? null : new Date(st.position).toISOString(); },
   get view() { return { from: new Date(st.view.from).toISOString(), to: new Date(st.view.to).toISOString() }; },
+  get notice() { return st.notice; },
+  get problem() { return st.problem; },
   play: (iso) => play(Date.parse(iso)),
 };
 

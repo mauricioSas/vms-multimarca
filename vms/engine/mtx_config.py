@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,7 @@ from vms.core.atomic import atomic_write_text
 from vms.core.interfaces import CameraSource
 from vms.core.models import RecordingSettings, RetentionSettings
 from vms.core.mtx_auth import MtxCredentials
-from vms.core.naming import mtx_path
+from vms.core.naming import is_valid_id, mtx_path
 from vms.core.settings import VmsSettings
 
 SUB_CLOSE_AFTER = "30s"
@@ -187,6 +189,42 @@ def path_configs(src: CameraSource) -> dict[str, dict[str, Any]]:
             "sourceOnDemandCloseAfter": SUB_CLOSE_AFTER,
             "record": False,
         }
+    return out
+
+
+RETENTION_ONLY_CONF: dict[str, Any] = {"source": "publisher", "record": False}
+
+
+def retention_paths(recordings_dir: str | Path, active: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Rutas inertes para las carpetas de grabación de cámaras que no están en `active` (CONTRATO §4.3).
+
+    MediaMTX solo borra por antigüedad (`recordDeleteAfter`) y solo deja reproducir las rutas que tiene
+    configuradas. Una cámara borrada, desactivada o en pausa por contraseña rechazada sale de la configuración y
+    sus grabaciones se quedaban para siempre en disco (RGPD) y fuera de Reproducción. Estas rutas no tienen origen
+    ni graban (`source: publisher` sin ningún usuario con permiso `publish`), pero heredan `recordPath` y
+    `recordDeleteAfter` de `pathDefaults`: el limpiador y /list las cubren. Cuando caduca todo, MediaMTX borra la
+    carpeta vacía y la ruta desaparece en la siguiente escritura.
+
+    Rutas con nombre fijo, no una ruta regexp comodín: comprobado con MediaMTX v1.21.1 en Windows, el limpiador no
+    encuentra ningún segmento a través de una ruta regexp (ni con `~^.*$`), aunque /list sí funcione."""
+    root = Path(recordings_dir).resolve()
+    wanted = set(active)
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        entries = sorted(e.name for e in os.scandir(root) if e.is_dir())
+    except OSError:
+        return out
+    for name in entries:
+        if not is_valid_id(name):
+            continue
+        path = mtx_path(name, "main")
+        if path in wanted:
+            continue
+        try:
+            if (root / name / "main").is_dir():
+                out[path] = dict(RETENTION_ONLY_CONF)
+        except OSError:
+            continue
     return out
 
 

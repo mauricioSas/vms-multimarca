@@ -24,26 +24,37 @@ Responsabilidades comunes:
   `auth_fail_threshold` rechazos se pausan TODAS las rutas de ese equipo (mismo host, puerto y
   usuario) y solo se vuelve a probar con UNA petición RTSP cada `auth_pause_seconds`, o en cuanto
   cambia la contraseña.
+- «Grabando» de verdad: que la ruta tenga vídeo y `record` no basta (el disco puede estar lleno, desconectado
+  o sin permiso de escritura). Cada `recording_check_interval` se pide a MediaMTX el último tramo grabado de
+  cada ruta que debería grabar, y los errores «[recorder]» de MediaMTX llegan a `PathStatus.recording_error`.
+- Retención de cámaras que ya no graban: las carpetas de grabación de cámaras borradas, desactivadas o en
+  pausa llevan una ruta inerte (`mtx_config.retention_paths`) para que MediaMTX las siga borrando por
+  antigüedad y se puedan reproducir.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlencode, urlsplit
 
-from vms.core.errors import EngineUnavailable
+from vms.core.errors import EngineError, EngineUnavailable
 from vms.core.interfaces import CameraSource, DiskUsage, EngineProblem, EngineStatus, PathStatus, RecordingSpan
 from vms.core.models import RecordingSettings, RetentionSettings
 from vms.core.mtx_auth import MtxCredentials
 from vms.core.naming import mtx_path, parse_mtx_path
 from vms.core.paths import AppPaths, find_mediamtx
+from vms.core.recordings import (PLAYBACK_DISABLED, PLAYBACK_ENGINE_DOWN, RECORDINGS_DIR_MISSING, record_dir,
+                                 recordings_presence)
+from vms.core.rtsp import redact
 from vms.core.settings import VmsSettings
 
 from . import disk_guard
@@ -51,7 +62,7 @@ from . import problem as eproblem
 from .logtail import LogTail
 from .mtx_api import MediaMtxApi, MtxApiError, format_time, parse_time
 from .mtx_config import (attach_config, conf_hash, global_config, http_base, path_configs, path_defaults,
-                         render_attach, split_address, write_config, write_if_changed)
+                         render_attach, retention_paths, split_address, write_config, write_if_changed)
 from .process import BACKOFF, MediaMtxProcess
 
 log = logging.getLogger("vms.engine")
@@ -60,13 +71,33 @@ mtx_log = logging.getLogger("vms.engine.mediamtx")
 _LINE_RE = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} (DEB|INF|WAR|ERR) (.*)$")
 _PATH_RE = re.compile(r"^\[path ([^\]]+)\] (.*)$")
 _SOURCE_RE = re.compile(r"^\[[^\]]*source\] (.*)$")
+_RECORDER_RE = re.compile(r"^\[recorder\] (.*)$")
 _LEVELS = {"DEB": logging.DEBUG, "INF": logging.INFO, "WAR": logging.WARNING, "ERR": logging.ERROR}
-_QUIET = ("reloading configuration (API request)", "[API] path not found", "[API] path already exists")
+# «no recording segments found»: MediaMTX lo registra como ERR cada vez que se consulta un día sin grabaciones.
+_QUIET = ("reloading configuration (API request)", "[API] path not found", "[API] path already exists",
+          "[playback] no recording segments found")
 REPEAT_SILENCE_S = 300.0
 DIAG_CACHE_S = 2.0       # status() se pide a menudo (SSE, latido, Estado del sistema cada 5 s)
 HOLDER_CACHE_S = 10.0    # psutil.net_connections recorre todas las conexiones del PC
 AUTH_PAUSED_MSG = ("Contraseña rechazada por el equipo: se pausó la conexión para que no bloquee el usuario. "
                    "Corrige la contraseña del equipo; mientras tanto se reintenta sola de vez en cuando.")
+# «Grabando» de verdad (ver docstring del módulo). MediaMTX escribe una parte cada `part_seconds` (1 s): un tramo
+# que no avanza en 45 s es que no se guarda. Recién llegado el vídeo (o recién activada la grabación), el primer
+# segmento espera al primer fotograma clave: hasta 90 s no se juzga. Un error «[recorder]» se repite cada ~4 s
+# mientras dura (v1.21.1 en Windows: reintenta a los 2 s y falla al escribir): si deja de llegar 30 s, ya pasó.
+RECORDING_CHECK_S = 30.0
+RECORDING_STALE_S = 45.0
+RECORDING_GRACE_S = 90.0
+RECORDER_ERROR_TTL_S = 30.0
+# Nombre del segmento en los errores «[recorder]» (cambia en cada reintento): fuera de la clave de repetición
+_SEGMENT_FILE_RE = re.compile(r"[^\s\\/]+\.(?:mp4|ts)\b", re.IGNORECASE)
+RECORDING_STALE_MSG = ("La cámara envía vídeo, pero no se está guardando la grabación. Qué hacer: en «Estado del "
+                       "sistema», mira que el «Disco de grabación» esté conectado y tenga espacio; si sigue igual, "
+                       "reinicia el PC y, si no se arregla, avisa a soporte.")
+_REC_DENIED_RE = re.compile(r"access is denied|acceso denegado|permission denied", re.IGNORECASE)
+_REC_FULL_RE = re.compile(r"not enough space|no space left|espacio suficiente|disk full|disco lleno", re.IGNORECASE)
+_REC_MISSING_RE = re.compile(r"cannot find the (?:path|file|drive) specified|no such file or directory"
+                             r"|device is not ready|no puede encontrar|dispositivo no está listo", re.IGNORECASE)
 
 
 # Códigos de estado RTSP SOLO cuando el texto los presenta como tales («bad status code: 401
@@ -99,6 +130,68 @@ def explain_source_error(raw: str) -> str:
     else:
         msg = "Error en el flujo de vídeo"
     return f"{msg} ({raw.strip()[:160]})"
+
+
+def explain_recorder_error(raw: str) -> str:
+    """Traduce un error «[recorder]» de MediaMTX (no puede escribir el segmento) a un texto con «Qué hacer:».
+
+    Formato real (MediaMTX v1.21.1, Windows): «ERR [path cam-x/main] [recorder] mkdir <carpeta>: The system
+    cannot find the path specified.». Se repite cada pocos segundos mientras dure el fallo."""
+    if _REC_DENIED_RE.search(raw):
+        msg = ("No se puede guardar la grabación: el motor de vídeo no tiene permiso para escribir en la carpeta de "
+               "grabaciones. Qué hacer: vuelve a ejecutar el instalador del programa, que repara los permisos de las "
+               "carpetas; si sigue igual, avisa a soporte.")
+    elif _REC_FULL_RE.search(raw):
+        # Los días solo se cambian en el asistente (paso «Días de grabación»), que solo ven los administradores
+        msg = ("No se puede guardar la grabación: el disco de grabación está lleno. Qué hacer: libera espacio en ese "
+               "disco o guarda menos días de grabación. Para cambiar los días, un administrador abre «Equipos y "
+               "monitores», pulsa «Ayuda» > «Primeros pasos (asistente)» y pulsa «Siguiente» hasta el paso «Días de "
+               "grabación».")
+    elif _REC_MISSING_RE.search(raw):
+        msg = ("No se puede guardar la grabación: no se encuentra la carpeta de grabaciones. Qué hacer: si guardas las "
+               "grabaciones en un disco externo, conéctalo; si no, mira en «Estado del sistema» qué «Carpeta de "
+               "grabaciones» usa el programa y comprueba que existe. Si sigue igual, avisa a soporte.")
+    else:
+        msg = "No se puede guardar la grabación. Qué hacer: reinicia el PC; si sigue igual, avisa a soporte."
+    return f"{msg} (Detalle: {redact(raw.strip())[:160]})"
+
+
+def segment_starts(folder: Path) -> list[datetime] | None:
+    """Inicios (UTC, ordenados) de los segmentos de una carpeta de grabación, por su NOMBRE (sin abrir archivos).
+    None si no se puede leer la carpeta.
+
+    Solo los nombres con desfase horario: MediaMTX (`%z` en `RECORD_FILE_PATTERN`) no lista los antiguos. No se usa
+    la fecha de modificación: en Windows solo se actualiza al cerrar el archivo."""
+    starts: list[datetime] = []
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                m = disk_guard.SEGMENT_RE.match(entry.name)
+                start = disk_guard.parse_segment_name(entry.name) if m is not None and m.group(3) else None
+                if start is not None:
+                    starts.append(start)
+    except OSError:
+        return None
+    return sorted(starts)
+
+
+def newest_segment_start(folder: Path) -> datetime | None:
+    """Inicio (UTC) del segmento más reciente de una carpeta de grabación, por su nombre."""
+    starts = segment_starts(folder)
+    return starts[-1] if starts else None
+
+
+@dataclass
+class _RecCheck:
+    """Última comprobación de que una ruta graba de verdad."""
+
+    at: datetime                    # cuándo se miró (UTC)
+    ready_time: str                 # `readyTime` de MediaMTX entonces: si cambia, la cámara se reconectó
+    last_end: datetime | None       # final del último tramo grabado (None = nada reciente)
+    error: str = ""                 # MediaMTX contestó con un error al pedir el tramo
+    since: datetime | None = None   # cuándo se vio que tenía que empezar a grabar («Grabar 24/7» recién marcado):
+    #                                 cuenta para el margen como si el vídeo acabara de llegar
+    errors: int = 0                 # comprobaciones seguidas con error: uno suelto no basta para «No graba»
 
 
 def _cred_key(url: str) -> tuple[str, int, str, str]:
@@ -166,7 +259,7 @@ class MediaMtxEngine:
                  auth_fail_threshold: int = 2, auth_pause_seconds: float = 1800.0,
                  backoff: tuple[float, ...] = BACKOFF, api_timeout: float = 5.0,
                  mode: EngineMode | None = None, attach_poll: float = 2.0,
-                 logtail_interval: float = 1.0) -> None:
+                 logtail_interval: float = 1.0, recording_check_interval: float = RECORDING_CHECK_S) -> None:
         self.settings = settings
         self.paths = paths
         self.mode: EngineMode = mode or settings.engine_mode
@@ -200,6 +293,7 @@ class MediaMtxEngine:
         self.mtx_credentials = MtxCredentials.from_internal_token(settings.ensure_internal_token())
         self.disk_guard_interval = disk_guard_interval
         self.watchdog_interval = watchdog_interval
+        self.recording_check_interval = recording_check_interval
         self.backoff = backoff
         self.config_file = paths.mediamtx_dir / "mediamtx.yml"
 
@@ -209,6 +303,9 @@ class MediaMtxEngine:
         self._sources: dict[str, CameraSource] = {}
         self._applied: dict[str, str] = {}          # ruta → huella de la conf registrada en MediaMTX
         self._path_errors: dict[str, str] = {}
+        self._recorder_errors: dict[str, tuple[datetime, str]] = {}   # ruta → (cuándo, texto para el usuario)
+        self._rec_checks: dict[str, _RecCheck] = {}
+        self._rec_wanted: set[str] | None = None    # rutas con `record` en la comprobación anterior (None = aún no hubo)
         self._log_seen: dict[tuple[str, str], float] = {}      # errores de rutas ya registrados
         self._engine_seen: dict[tuple[str, str], float] = {}   # y del propio MediaMTX (aparte: no vacían los otros)
         self._auth = _AuthGuard(auth_fail_threshold, auth_pause_seconds)
@@ -254,7 +351,8 @@ class MediaMtxEngine:
             self._applied.clear()
             await self._sync_locked()
         self._tasks = [asyncio.create_task(self._disk_guard_loop(), name="engine-disk-guard"),
-                       asyncio.create_task(self._watchdog_loop(), name="engine-watchdog")]
+                       asyncio.create_task(self._watchdog_loop(), name="engine-watchdog"),
+                       asyncio.create_task(self._recording_check_loop(), name="engine-recording-check")]
         log.info("Motor de vídeo en marcha (MediaMTX %s)", self._version or "?")
         self._emit("started", self.process.pid)
 
@@ -284,7 +382,8 @@ class MediaMtxEngine:
                 log.exception("Error leyendo el final de engine.log")
         self._tasks = [asyncio.create_task(self._disk_guard_loop(), name="engine-disk-guard"),
                        asyncio.create_task(self._attach_watchdog(), name="engine-attach-watchdog"),
-                       asyncio.create_task(self.logtail.run(self.logtail_interval), name="engine-logtail")]
+                       asyncio.create_task(self.logtail.run(self.logtail_interval), name="engine-logtail"),
+                       asyncio.create_task(self._recording_check_loop(), name="engine-recording-check")]
         if self._api_ok:
             log.info("Motor de vídeo (servicio VMSEngine, MediaMTX %s) conectado en modo attach", self._version or "?")
         else:
@@ -440,7 +539,8 @@ class MediaMtxEngine:
     async def _write_attach_yaml(self) -> bool:
         """Modo attach: escribe mediamtx.yml completo si cambió (requiere self._lock). True si lo escribió.
 
-        Las rutas de un equipo en pausa por contraseña rechazada se quitan del YAML (CONTRATO §13.10)."""
+        Las rutas de un equipo en pausa por contraseña rechazada se quitan del YAML (CONTRATO §13.10); si tienen
+        grabaciones, quedan como ruta inerte (solo retención y reproducción, ver `retention_paths`)."""
         desired = self._desired()
         active: dict[str, dict[str, Any]] = {}
         for name, conf in desired.items():
@@ -451,12 +551,14 @@ class MediaMtxEngine:
         for name in list(self._path_errors):
             if name not in desired:
                 self._path_errors.pop(name, None)
-        cfg = attach_config(self.settings, self._recording, self._retention, self._recordings_dir, active,
-                            creds=self.mtx_credentials)
+        inert = await asyncio.to_thread(retention_paths, self._recordings_dir, active)
+        cfg = attach_config(self.settings, self._recording, self._retention, self._recordings_dir,
+                            {**inert, **active}, creds=self.mtx_credentials)
         changed = await asyncio.to_thread(write_if_changed, self.config_file, render_attach(cfg))
         self._applied = {name: conf_hash(conf) for name, conf in active.items()}
         if changed:
-            log.info("mediamtx.yml actualizado (%d rutas): MediaMTX lo recarga solo", len(active))
+            log.info("mediamtx.yml actualizado (%d rutas y %d solo para grabaciones antiguas): MediaMTX lo recarga "
+                     "solo", len(active), len(inert))
         return changed
 
     async def _sync_locked(self) -> None:
@@ -467,20 +569,22 @@ class MediaMtxEngine:
         if self.api is None or not self.running:
             raise EngineUnavailable("El motor de vídeo no está en marcha")
         desired = self._desired()
+        active = {n: c for n, c in desired.items() if not self._auth.is_paused(c["source"])}
+        # Cámaras sin ruta activa pero con grabaciones: ruta inerte (retención y reproducción, ver retention_paths)
+        wanted = {**await asyncio.to_thread(retention_paths, self._recordings_dir, active), **active}
         present = await self.api.config_path_names()
         for name in sorted(present):
             if parse_mtx_path(name) is None:
                 continue
-            conf = desired.get(name)
-            if conf is None or self._auth.is_paused(conf["source"]):
+            if name not in wanted:
                 if await self.api.delete_path(name):
                     log.info("Ruta %s retirada del motor", name)
                 self._applied.pop(name, None)
-        present = {n for n in present if n in desired and not self._auth.is_paused(desired[n]["source"])}
-        for name, conf in desired.items():
-            if self._auth.is_paused(conf["source"]):
+        present = {n for n in present if n in wanted}
+        for name in desired:
+            if name not in active:
                 self._path_errors[name] = AUTH_PAUSED_MSG
-                continue
+        for name, conf in wanted.items():
             h = conf_hash(conf)
             try:
                 if name not in present:
@@ -523,6 +627,7 @@ class MediaMtxEngine:
         if pm:
             name, rest = pm.group(1), pm.group(2)
             sm = _SOURCE_RE.match(rest)
+            rm = _RECORDER_RE.match(rest)
             if sm and m.group(1) in ("ERR", "WAR"):
                 raw = sm.group(1)
                 self._path_errors[name] = explain_source_error(raw)
@@ -530,6 +635,14 @@ class MediaMtxEngine:
                     self._on_auth_failure(name)
                 if self._repeated((name, raw)):
                     level = logging.DEBUG  # el mismo error cada 5 s no debe inundar el registro
+            elif rm and m.group(1) == "ERR":
+                # El grabador no puede escribir (permisos, disco lleno o desconectado): la ruta tiene vídeo, pero
+                # NO graba. Se borra cuando la comprobación periódica ve un tramo nuevo (check_recording).
+                raw = rm.group(1)
+                self._recorder_errors[name] = (datetime.now(timezone.utc), explain_recorder_error(raw))
+                # «open …\<segmento>.mp4: Access is denied.» cambia de archivo en cada reintento (~4 s)
+                if self._repeated((name, _SEGMENT_FILE_RE.sub("<segmento>", raw))):
+                    level = logging.DEBUG
             elif "is available and online" in rest or "is ready" in rest:
                 if name in self._path_errors and self._path_errors[name] != AUTH_PAUSED_MSG:
                     self._path_errors.pop(name, None)
@@ -615,6 +728,101 @@ class MediaMtxEngine:
                     if msg == AUTH_PAUSED_MSG:
                         self._path_errors.pop(name, None)
         return released
+
+    async def _recording_check_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.recording_check_interval)
+            try:
+                await self.check_recording()
+            except (EngineUnavailable, MtxApiError) as exc:
+                log.debug("Comprobación de la grabación aplazada: %s", exc)
+            except Exception:  # noqa: BLE001 - la vigilancia no puede morir
+                log.exception("Error comprobando que las cámaras graban")
+
+    async def check_recording(self) -> None:
+        """¿Graban de verdad las rutas que dicen grabar? Pide a MediaMTX el último tramo de cada una.
+
+        Solo se pregunta por el segmento más reciente de la carpeta (por su nombre), así /list lee una sola parte
+        del disco y nunca contesta 404/400: MediaMTX registraría un ERR en engine.log en cada comprobación. Si el
+        último segmento empezó hace más de un segmento y dos minutos, ni se pregunta: no se está grabando.
+
+        Sin servidor de reproducción (desactivado o caído) no se puede comprobar: esas rutas se quedan con la palabra
+        de MediaMTX y con los errores «[recorder]» que sigan llegando."""
+        if self.api is None or not self.running:
+            return
+        items = {str(i.get("name", "")): i for i in await self.api.paths_list()}
+        now = datetime.now(timezone.utc)
+        desired = self._desired()
+        checked: set[str] = set()
+        can_list = True
+        for name, conf in desired.items():
+            parsed = parse_mtx_path(name)
+            item = items.get(name) or {}
+            if (parsed is None or parsed[1] != "main" or not conf.get("record") or not item.get("ready")
+                    or self._auth.is_paused(conf["source"])):
+                continue
+            newest = await asyncio.to_thread(newest_segment_start, record_dir(self._recordings_dir, parsed[0]))
+            last_end: datetime | None = None
+            error = ""
+            if newest is not None and (now - newest).total_seconds() <= self._recording.segment_seconds + 120:
+                if not can_list:
+                    continue
+                try:
+                    spans = await self.api.list_recordings(name, newest - timedelta(seconds=1), None)
+                except EngineUnavailable as exc:
+                    log.debug("No se puede comprobar si graba %s: %s", name, exc.message)
+                    can_list = False   # el mismo motivo valdría para las demás: ni se pregunta
+                    continue
+                except EngineError as exc:
+                    error = exc.message
+                else:
+                    last_end = max((s.end for s in spans), default=None)
+            checked.add(name)
+            ready_time = str(item.get("readyTime") or "")
+            prev = self._rec_checks.get(name)
+            same = prev is not None and prev.ready_time == ready_time
+            if self._rec_wanted is not None and name not in self._rec_wanted:
+                since: datetime | None = now   # «Grabar 24/7» recién marcado: MediaMTX no reinicia la ruta
+            else:
+                since = prev.since if same and prev is not None else None
+            errors = ((prev.errors if same and prev is not None else 0) + 1) if error else 0
+            self._rec_checks[name] = _RecCheck(at=now, ready_time=ready_time, last_end=last_end, error=error,
+                                               since=since, errors=errors)
+            pending = self._recorder_errors.get(name)
+            if (pending is not None and last_end is not None and last_end >= pending[0]
+                    and (now - last_end).total_seconds() <= RECORDING_STALE_S):
+                self._recorder_errors.pop(name, None)   # ha vuelto a guardar después del error
+        for name in [n for n in self._rec_checks if n not in checked]:
+            self._rec_checks.pop(name, None)
+        for name, (at, _) in list(self._recorder_errors.items()):
+            if name not in desired or (now - at).total_seconds() > RECORDER_ERROR_TTL_S:
+                self._recorder_errors.pop(name, None)
+        self._rec_wanted = {n for n, c in desired.items() if c.get("record")}
+
+    def _recording_verdict(self, name: str, item: dict[str, Any]) -> tuple[bool, str]:
+        """(¿graba?, motivo si no) de una ruta principal con vídeo y `record`."""
+        ready_time = str(item.get("readyTime") or "")
+        try:
+            ready_since = parse_time(ready_time) if ready_time else None
+        except ValueError:
+            ready_since = None
+        pending = self._recorder_errors.get(name)
+        # Un error del grabador vale mientras se sigue repitiendo y si es de esta conexión, no de antes de reconectarse
+        if (pending is not None
+                and (datetime.now(timezone.utc) - pending[0]).total_seconds() <= RECORDER_ERROR_TTL_S
+                and (ready_since is None or pending[0] >= ready_since)):
+            return False, pending[1]
+        chk = self._rec_checks.get(name)
+        if chk is None or chk.ready_time != ready_time:
+            return True, ""   # aún sin comprobar desde que llegó el vídeo: se da por buena la palabra de MediaMTX
+        if chk.last_end is not None and (chk.at - chk.last_end).total_seconds() <= RECORDING_STALE_S:
+            return True, ""
+        start = max((t for t in (ready_since, chk.since) if t is not None), default=None)
+        if start is not None and (chk.at - start).total_seconds() < RECORDING_GRACE_S:
+            return True, ""   # recién conectada o recién activada: el primer segmento espera al fotograma clave
+        if chk.error and chk.errors < 2:
+            return True, ""   # un error suelto de /list no basta: se espera a la siguiente comprobación
+        return False, chk.error or RECORDING_STALE_MSG
 
     async def run_disk_guard(self) -> disk_guard.GuardResult:
         percent = float(self._retention.disk_guard_percent)
@@ -738,13 +946,18 @@ class MediaMtxEngine:
                 continue
             ready = bool(item.get("ready"))
             conf = desired.get(name) or {}
+            recording, rec_error = False, ""
+            if ready and conf.get("record"):
+                recording, rec_error = self._recording_verdict(name, item)
+            chk = self._rec_checks.get(name)
             out[name] = PathStatus(
                 name=name, camera_id=parsed[0], stream=parsed[1],  # type: ignore[arg-type]
                 ready=ready, source_online=ready, readers=len(item.get("readers") or []),
                 bytes_received=int(item.get("inboundBytes") or item.get("bytesReceived") or 0),
                 tracks=[str(t) for t in (item.get("tracks") or [])],
-                recording=ready and bool(conf.get("record")),
-                last_error="" if ready else self._path_errors.get(name, ""))
+                recording=recording, recording_error=rec_error,
+                last_recorded_at=chk.last_end if chk is not None else None,
+                last_error=rec_error if ready else self._path_errors.get(name, ""))
         for name in desired:
             if name not in out:
                 parsed = parse_mtx_path(name)
@@ -755,14 +968,69 @@ class MediaMtxEngine:
 
     async def list_recordings(self, camera_id: str, start: datetime | None,
                               end: datetime | None) -> list[RecordingSpan]:
+        """Tramos grabados (CONTRATO §6.7). Antes de preguntar a MediaMTX se mira la carpeta de la cámara:
+
+        - sin carpeta de grabaciones general → EngineError (disco desconectado; no es «nunca ha grabado»);
+        - sin carpeta de la cámara → [] sin preguntar (MediaMTX contestaría 400 y dejaría un ERR en engine.log cada
+          vez; la vigilancia de operación pregunta cada 10 min por cámara). Si la cámara está en el motor y este no
+          responde, se dice eso;
+        - con carpeta, si por los nombres de los segmentos no puede haber nada en el rango (carpeta vacía, rango
+          anterior al primer segmento o posterior al final del último que empieza antes) → [] sin preguntar: MediaMTX
+          contestaría 404 y dejaría otro ERR (p. ej. el resumen de hoy de una cámara apagada todo el día);
+        - una cámara desactivada o borrada solo tiene ruta en MediaMTX si tiene grabaciones (`retention_paths`):
+          si aún no ha llegado al motor, [] en vez de «no configurada»."""
         if self.api is None:
-            raise EngineUnavailable("El motor de vídeo no está en marcha")
-        return await self.api.list_recordings(mtx_path(camera_id, "main"), start, end)
+            raise EngineUnavailable(PLAYBACK_ENGINE_DOWN)
+        presence = await asyncio.to_thread(recordings_presence, self._recordings_dir, camera_id)
+        if presence == "no_root":
+            raise EngineError(RECORDINGS_DIR_MISSING, details={"reason": "no_root"})
+        path = mtx_path(camera_id, "main")
+        try:
+            if presence == "none" or (presence == "present" and not await self._may_have_recordings(
+                    path, record_dir(self._recordings_dir, camera_id), start, end)):
+                if camera_id in self._sources and not self.running:
+                    raise EngineUnavailable(PLAYBACK_ENGINE_DOWN)
+                return []
+            return await self.api.list_recordings(path, start, end)
+        except EngineError as exc:
+            if exc.details.get("kind") == "not_configured" and camera_id not in self._sources:
+                return []
+            raise
+
+    async def _may_have_recordings(self, path: str, folder: Path, start: datetime | None,
+                                   end: datetime | None) -> bool:
+        """¿Puede haber grabación de la ruta en [start, end)? Por los nombres de los segmentos y, si hace falta,
+        preguntando a MediaMTX solo por el último segmento que empieza antes del rango (eso nunca da 404).
+
+        Un segmento empieza a la hora de su nombre, pero cuánto dura no se sabe sin leerlo: puede seguir abierto
+        (en Windows la fecha de modificación no avanza hasta cerrarlo) o venir de cuando los segmentos eran más
+        largos. Si alguno empieza dentro del rango, seguro que hay algo."""
+        if start is not None and start.tzinfo is None:   # sin zona = UTC, como en `mtx_api.format_time`
+            start = start.replace(tzinfo=timezone.utc)
+        if end is not None and end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        starts = await asyncio.to_thread(segment_starts, folder)
+        if starts is None:
+            return True   # no se pudo leer la carpeta: que conteste MediaMTX, que dará el error real
+        if not starts or (end is not None and end <= starts[0]):
+            return False
+        if start is None or any(s >= start and (end is None or s < end) for s in starts):
+            return True
+        before = [s for s in starts if s < start]
+        if not before:
+            return False   # todos empiezan después del rango
+        if self.api is None:
+            raise EngineUnavailable(PLAYBACK_ENGINE_DOWN)
+        # [inicio del segmento − 1 s, start + 1 s]: si el segmento llega a `start`, el tramo que devuelve MediaMTX
+        # (recortado al final pedido) acaba después de `start`
+        probe_end = start + timedelta(seconds=1) if end is None else min(start + timedelta(seconds=1), end)
+        spans = await self.api.list_recordings(path, before[-1] - timedelta(seconds=1), probe_end)
+        return any(sp.end > start for sp in spans)
 
     def playback_get_url(self, camera_id: str, start: datetime, duration: float,
                          fmt: Literal["fmp4", "mp4"] = "fmp4") -> str:
         if not self._playback_base:
-            raise EngineUnavailable("La reproducción está desactivada (VMS_MTX_PLAYBACK_ADDRESS vacío)")
+            raise EngineUnavailable(PLAYBACK_DISABLED)
         query = urlencode({"path": mtx_path(camera_id, "main"), "start": format_time(start),
                            "duration": f"{float(duration):.3f}", "format": fmt})
         return f"{self._playback_base}/get?{query}"

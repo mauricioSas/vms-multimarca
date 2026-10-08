@@ -15,6 +15,8 @@ import httpx
 
 from vms.core.errors import EngineUnavailable
 from vms.core.interfaces import RecordingSpan
+from vms.core.recordings import (PLAYBACK_DISABLED, PLAYBACK_ENGINE_DOWN, classify_playback_error,
+                                 playback_error_text)
 
 log = logging.getLogger("vms.engine.api")
 
@@ -116,8 +118,13 @@ class MediaMtxApi:
 
     # ------------------------------------------------------------------ reproducción
     async def list_recordings(self, path: str, start: datetime | None, end: datetime | None) -> list[RecordingSpan]:
+        """Tramos grabados de una ruta. [] si no hay grabaciones (carpeta inexistente o vacía, o nada en el rango).
+
+        EngineUnavailable solo si el motor no contesta; si contesta con otro error (permisos, ruta no configurada,
+        401, 5xx), EngineError con el motivo en `details.reason`: antes cualquier 400 era «sin grabaciones» y
+        escondía, por ejemplo, una carpeta que el motor no puede leer."""
         if self.playback is None:
-            raise EngineUnavailable("La reproducción está desactivada (VMS_MTX_PLAYBACK_ADDRESS vacío)")
+            raise EngineUnavailable(PLAYBACK_DISABLED)
         params: dict[str, str] = {"path": path}
         if start is not None:
             params["start"] = format_time(start)
@@ -126,14 +133,15 @@ class MediaMtxApi:
         try:
             resp = await self.playback.get("/list", params=params)
         except httpx.HTTPError as exc:
-            raise EngineUnavailable("El servidor de reproducción no responde",
-                                    details={"reason": type(exc).__name__}) from exc
-        if resp.status_code in (400, 404):
-            # Sin grabaciones todavía (carpeta inexistente, ruta sin segmentos o fuera de rango)
-            log.debug("Sin grabaciones para %s: %s", path, resp.text[:200])
-            return []
-        if resp.status_code >= 400:
-            raise EngineUnavailable(f"El servidor de reproducción respondió {resp.status_code}")
+            raise EngineUnavailable(PLAYBACK_ENGINE_DOWN, details={"reason": type(exc).__name__}) from exc
+        if resp.status_code != 200:
+            error = playback_error_text(resp.content[:4096])
+            problem = classify_playback_error(resp.status_code, error)
+            if problem is None:
+                log.debug("Sin grabaciones para %s: %s", path, error[:200])
+                return []
+            log.warning("El servidor de reproducción respondió %s para %s: %s", resp.status_code, path, error[:200])
+            raise problem
         spans: list[RecordingSpan] = []
         for item in resp.json() or []:
             try:

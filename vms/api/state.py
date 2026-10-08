@@ -259,6 +259,9 @@ class AppState:
                 "readers": (main.readers if main else 0) + (sub.readers if sub else 0),
                 "bytes_received": main.bytes_received if main else 0,
                 "last_error": (main.last_error if main else "") if active else "",
+                # v2 (aditivo): con vídeo pero sin guardar (disco lleno, sin permiso…) y último tramo guardado
+                "recording_error": (main.recording_error if main else "") if active else "",
+                "last_recorded_at": main.last_recorded_at if main and active else None,
             })
         analytics = self.analytics_status()
         problems = []
@@ -267,6 +270,8 @@ class AppState:
         else:
             if any(c["enabled"] and c["online"] is False for c in cams):
                 problems.append("cámaras sin vídeo")
+            if any(c["enabled"] and c["online"] and c["recording_error"] for c in cams):
+                problems.append("cámaras con vídeo que no graban")
             guard = cfg.settings.retention.disk_guard_percent
             if disk is not None and guard and disk.percent > guard:
                 problems.append("disco por encima del umbral")

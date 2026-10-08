@@ -22,6 +22,7 @@ from vms.core.errors import EngineUnavailable
 from vms.core.interfaces import CameraSource, DiskUsage, EngineStatus, PathStatus, RecordingSpan
 from vms.core.models import RecordingSettings, RetentionSettings
 from vms.core.naming import mtx_path, parse_mtx_path
+from vms.core.recordings import PLAYBACK_ENGINE_DOWN, classify_playback_error, playback_error_text
 
 log = logging.getLogger("tests.web.mtx_engine")
 
@@ -194,11 +195,15 @@ class MtxTestEngine:
         try:
             r = await self._play.get("/list", params=params)
         except httpx.HTTPError as exc:
-            raise EngineUnavailable(f"El servidor de reproducción no responde: {exc}") from exc
-        if r.status_code == 404:
-            return []
+            raise EngineUnavailable(PLAYBACK_ENGINE_DOWN) from exc
         if r.status_code != 200:
-            raise EngineUnavailable(f"Reproducción: respuesta {r.status_code}")
+            # Igual que el motor del producto: solo «carpeta inexistente» y 404 son «sin grabaciones». Aquí además
+            # «ruta no configurada» (la cámara aún no se ha añadido por la API) cuenta como vacía, para no depender
+            # de cuándo llega la configuración en las pruebas de la interfaz.
+            problem = classify_playback_error(r.status_code, playback_error_text(r.content[:4096]))
+            if problem is None or problem.details.get("kind") == "not_configured":
+                return []
+            raise problem
         spans = []
         for item in r.json():
             st = datetime.fromisoformat(item["start"]).astimezone(timezone.utc)

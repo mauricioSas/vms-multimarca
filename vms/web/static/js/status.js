@@ -45,6 +45,7 @@ function overall(s, health) {
   const box = $("#st-overall");
   const cams = s.cameras || [];
   const offline = cams.filter((c) => !c.online);
+  const notSaving = cams.filter((c) => c.online && c.recording_error);   // con vídeo, pero no se guarda
   const diskBad = s.disk && s.disk.percent >= 90;
   const a = s.analytics || {};
   const analyticsBad = a.running && a.stale;
@@ -70,6 +71,13 @@ function overall(s, health) {
     if (diskBad) parts.push("disco casi lleno");
     if (analyticsBad) parts.push("la analítica no informa");
     text = `Atención: ${parts.join(", ")}.`;
+  }
+  if (s.engine && s.engine.running && notSaving.length) {
+    // Lo peor para una tienda: «Grabando» sin guardar nada. Va en rojo y delante de lo demás.
+    const n = notSaving.length;
+    const rest = cls === "info" ? "" : ` ${text}`;
+    cls = "bad";
+    text = `${n} ${n === 1 ? "cámara tiene vídeo pero no graba" : "cámaras tienen vídeo pero no graban"}. Qué hacer: sigue lo que dice la columna «Último error» de la tabla «Cámaras».${rest}`;
   }
   box.className = `banner ${cls}`.trim();
   box.textContent = text + (health && health.version ? ` · Versión ${health.version}` : "");
@@ -141,7 +149,8 @@ function render(s, health) {
       return `<tr>
         <td><strong>${esc(c.name)}</strong><div class="muted small mono">${esc(c.camera_id)}</div></td>
         <td>${c.online ? '<span class="pill ok">En vivo</span>' : '<span class="pill bad">Sin vídeo</span>'}</td>
-        <td>${c.recording ? '<span class="pill ok">Grabando</span>' : '<span class="pill off">No graba</span>'}</td>
+        <td>${c.recording ? '<span class="pill ok">Grabando</span>'
+          : c.recording_error ? '<span class="pill bad">No graba</span>' : '<span class="pill off">No graba</span>'}</td>
         <td>${Number(c.readers || 0)}</td>
         <td class="nowrap">${fmtBytes(c.bytes_received)}${rate}</td>
         <td class="small">${c.last_error ? esc(c.last_error) : '<span class="muted">—</span>'}</td>

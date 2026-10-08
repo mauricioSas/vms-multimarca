@@ -641,6 +641,26 @@ class StubBackend:
             return Response(status_code=200)
 
     # ------------------------------------------------------------------ grabaciones
+    def _timeline_notice(self, camera_id: str) -> dict[str, str] | None:
+        """Mismos códigos que el backend del producto (CONTRATO §6.7, `notice` de la línea de tiempo)."""
+        from vms.api.routes.recordings import (NOTICE_DEVICE_DISABLED, NOTICE_DISABLED, NOTICE_NEVER_RECORDED,
+                                               NOTICE_RECORDING_OFF)
+        from vms.core.recordings import recordings_presence
+
+        cfg = self.repo.snapshot()
+        cam = cfg.camera(camera_id)
+        dev = cfg.device(cam.device_id) if cam else None
+        if cam is not None and (dev is None or not dev.enabled):
+            return {"code": "camera_disabled", "message": NOTICE_DEVICE_DISABLED}
+        if cam is None or not cam.enabled:
+            return {"code": "camera_disabled", "message": NOTICE_DISABLED}
+        if not cam.record:
+            return {"code": "recording_off", "message": NOTICE_RECORDING_OFF}
+        root = getattr(self.engine, "recordings_dir", "") or self.paths.recordings_dir
+        if recordings_presence(root, camera_id) == "none":
+            return {"code": "never_recorded", "message": NOTICE_NEVER_RECORDED}
+        return None
+
     def _routes_recordings(self, app: FastAPI) -> None:
         b = self
 
@@ -663,7 +683,8 @@ class StubBackend:
                 raise NotFoundError("Cámara no encontrada")
             spans = await b.engine.list_recordings(camera_id, start, end)
             return {"camera_id": camera_id, "spans": [
-                {"start": iso(s.start), "end": iso(s.end), "duration": s.duration} for s in spans]}
+                {"start": iso(s.start), "end": iso(s.end), "duration": s.duration} for s in spans],
+                "notice": None if spans else b._timeline_notice(camera_id)}
 
         @app.get("/api/recordings/{camera_id}/video")
         async def video(request: Request, camera_id: str, start: datetime,
@@ -675,15 +696,18 @@ class StubBackend:
                 raise NotFoundError("Cámara no encontrada")
             url = b.engine.playback_get_url(camera_id, start, duration, format)
             req = b.http.build_request("GET", url, timeout=httpx.Timeout(None, connect=5))
+            from vms.api.routes.recordings import NO_RECORDING_THERE
+            from vms.core.recordings import PLAYBACK_ENGINE_DOWN, PLAYBACK_FAILED
+
             try:
                 r = await b.http.send(req, stream=True)
             except httpx.HTTPError as exc:
-                raise EngineUnavailable("El servidor de reproducción no responde") from exc
+                raise EngineUnavailable(PLAYBACK_ENGINE_DOWN) from exc
             if r.status_code != 200:
                 await r.aclose()
                 if r.status_code == 404:
-                    raise NotFoundError("No hay grabación en ese momento", code="no_recording")
-                raise EngineUnavailable(f"Reproducción: respuesta {r.status_code}")
+                    raise NotFoundError(NO_RECORDING_THERE, code="no_recording")
+                raise EngineUnavailable(PLAYBACK_FAILED, details={"status": r.status_code})
             headers = {"Cache-Control": "no-store"}
             if download:
                 safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in cam.name)[:40] or camera_id

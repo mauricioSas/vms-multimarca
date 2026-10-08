@@ -55,7 +55,17 @@ class NotConfigured(VmsError):
 
 
 class EngineUnavailable(VmsError):
+    """El motor de vídeo no responde (caído, arrancando o sin el servicio activado)."""
+
     code, status = "engine_unavailable", 503
+
+
+class EngineError(VmsError):
+    """El motor de vídeo responde, pero con un error (permisos, credenciales internas, carpeta que falta…).
+
+    Estado 502, como `device_error`: el fallo es de lo que hay detrás del backend, no de la petición."""
+
+    code, status = "engine_error", 502
 
 
 class DeviceError(VmsError):

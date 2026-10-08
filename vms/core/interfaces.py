@@ -342,8 +342,12 @@ class PathStatus(BaseModel):
     readers: int = 0
     bytes_received: int = 0
     tracks: list[str] = Field(default_factory=list)  # ["H264"], ["H265", "MPEG-4 Audio"]...
+    # Solo True si hay vídeo, `record` y se están guardando segmentos (v2: comprobado en disco, CONTRATO §5.2)
     recording: bool = False
     last_error: str = ""
+    # v2 (aditivo): por qué no graba una ruta con vídeo (texto con «Qué hacer:») y final del último tramo guardado
+    recording_error: str = ""
+    last_recorded_at: datetime | None = None
 
 
 class RecordingSpan(BaseModel):
