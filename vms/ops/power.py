@@ -128,13 +128,25 @@ def evaluate(snap: PowerSnapshot) -> dict[str, Any]:
     }
 
 
+_failure_logged = False   # el fallo de lectura ya está en vms.log (hasta que una lectura vuelva a ir bien)
+
+
 def power_status() -> dict[str, Any] | None:
-    """`evaluate(read_snapshot())`; None fuera de Windows. Un fallo al leer nunca tumba `/api/status`."""
+    """`evaluate(read_snapshot())`; None fuera de Windows. Un fallo al leer nunca tumba `/api/status`.
+
+    `/api/status` llama aquí cada 5 s por cada página de estado abierta: un fallo que se repite se registra una
+    sola vez con su traza (las siguientes, en depuración) y se vuelve a registrar si reaparece tras ir bien."""
+    global _failure_logged
     try:
         snap = read_snapshot()
     except Exception:  # noqa: BLE001 - leer la energía es informativo
-        log.exception("No se pudo leer la configuración de energía del PC")
+        if _failure_logged:
+            log.debug("Sigue sin poder leerse la configuración de energía del PC", exc_info=True)
+        else:
+            _failure_logged = True
+            log.exception("No se pudo leer la configuración de energía del PC")
         return None
+    _failure_logged = False
     return evaluate(snap) if snap is not None else None
 
 

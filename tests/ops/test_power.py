@@ -7,6 +7,7 @@ datos de energía se inyectan; la única prueba que lee Windows de verdad solo l
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
 from typing import Any
 
@@ -118,6 +119,26 @@ def test_a_read_failure_never_breaks_the_status(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(power, "read_snapshot", broken)
     assert power.power_status() is None
+
+
+def test_a_persistent_read_failure_is_logged_once(monkeypatch: pytest.MonkeyPatch,
+                                                  caplog: pytest.LogCaptureFixture) -> None:
+    """Revisión final: /api/status lee la energía cada 5 s por cada página de estado abierta y cada fallo dejaba una
+    traza entera en vms.log. Ahora una vez, y otra si vuelve a fallar después de haber ido bien."""
+    def broken() -> PowerSnapshot:
+        raise OSError("powrprof.dll no responde")
+
+    monkeypatch.setattr(power, "_failure_logged", False, raising=False)
+    monkeypatch.setattr(power, "read_snapshot", broken)
+    with caplog.at_level(logging.DEBUG, logger="vms"):
+        for _ in range(5):
+            assert power.power_status() is None
+        assert [r.levelno for r in caplog.records].count(logging.ERROR) == 1
+        monkeypatch.setattr(power, "read_snapshot", snap)
+        assert power.power_status() is not None
+        monkeypatch.setattr(power, "read_snapshot", broken)
+        assert power.power_status() is None
+    assert [r.levelno for r in caplog.records].count(logging.ERROR) == 2
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="lee las API de energía de Windows")
