@@ -761,7 +761,15 @@ class MediaMtxEngine:
             if (parsed is None or parsed[1] != "main" or not conf.get("record") or not item.get("ready")
                     or self._auth.is_paused(conf["source"])):
                 continue
-            newest = await asyncio.to_thread(newest_segment_start, record_dir(self._recordings_dir, parsed[0]))
+            folder = record_dir(self._recordings_dir, parsed[0])
+            starts = await asyncio.to_thread(segment_starts, folder)
+            if starts is None and await asyncio.to_thread(folder.is_dir):
+                # la carpeta existe pero el backend no puede leerla (ACL de una carpeta de grabaciones a medida):
+                # eso no dice que MediaMTX no escriba. Sin comprobar, vale su palabra y sus errores «[recorder]»;
+                # antes salía «No graba» (y bajaba `cameras_recording` del actualizador) grabando de verdad
+                log.debug("No se puede leer la carpeta de grabación de %s: no se comprueba si graba", name)
+                continue
+            newest = starts[-1] if starts else None
             last_end: datetime | None = None
             error = ""
             if newest is not None and (now - newest).total_seconds() <= self._recording.segment_seconds + 120:

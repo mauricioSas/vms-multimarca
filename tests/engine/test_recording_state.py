@@ -117,6 +117,27 @@ async def test_recorder_error_clears_when_a_new_segment_arrives(eng: MediaMtxEng
     assert st.recording and st.recording_error == ""
 
 
+async def test_unreadable_recordings_folder_is_unknown_not_not_recording(eng: MediaMtxEngine,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Revisión final: si el backend no puede listar la carpeta de grabación (ACL de una carpeta a medida), se
+    tomaba como «ningún segmento reciente» y a los 90 s salía «No graba» aunque MediaMTX estuviera escribiendo;
+    también bajaba `cameras_recording` de la salud del actualizador. Sin poder leerla no se sabe: vale la palabra
+    de MediaMTX y sus errores «[recorder]»."""
+    from vms.engine import engine as engine_mod
+
+    api = api_of(eng)
+    api.items = [ready_item(now() - timedelta(hours=1))]
+    segment(eng, now() - timedelta(seconds=30))              # la carpeta existe…
+    monkeypatch.setattr(engine_mod, "segment_starts", lambda folder: None)   # …pero no se puede listar
+    await eng.check_recording()
+    st = await main_status(eng)
+    assert st.recording and st.recording_error == "" and api.list_calls == []
+    # un error «[recorder]» sigue mandando
+    eng._on_line(f"2026/10/08 14:51:04 ERR [path {CAM}/main] [recorder] open C:\\x\\{CAM}\\main\\a.mp4: Access is "
+                 "denied.", relay=False)
+    assert not (await main_status(eng)).recording
+
+
 async def test_camera_without_video_is_not_checked(eng: MediaMtxEngine) -> None:
     api = api_of(eng)
     api.items = [{"name": f"{CAM}/main", "ready": False, "readyTime": None}]
