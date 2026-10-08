@@ -73,6 +73,16 @@ function overall(s, health) {
     if (analyticsBad) parts.push("la analítica no informa");
     text = `Atención: ${parts.join(", ")}.`;
   }
+  // Los avisos de energía (power.js, justo debajo) no cuentan en `status` ni en `problems` (CONTRATO §6.8), pero
+  // arriba no puede decir «Todo funciona con normalidad» si Windows va a suspender el PC y dejar de grabar
+  const powerWarnings = s.power && Array.isArray(s.power.warnings) ? s.power.warnings.length : 0;
+  if (powerWarnings && cls === "info") {
+    cls = "";
+    text = "Atención: Windows puede suspender este PC y entonces no se graba. Qué hacer: sigue los avisos de " +
+      "energía de aquí debajo.";
+  } else if (powerWarnings && cls === "") {
+    text += " Revisa también los avisos de energía de aquí debajo.";
+  }
   if (s.engine && s.engine.running && notSaving.length) {
     // Lo peor para una tienda: «Grabando» sin guardar nada. Va en rojo y delante de lo demás.
     const n = notSaving.length;

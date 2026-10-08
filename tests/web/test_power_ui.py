@@ -54,6 +54,10 @@ def test_status_page_shows_power_warnings_and_settings(power_stub: Any, make_con
     assert texts[1].startswith("Con corriente, Windows suspende este PC tras 2 h")
     assert texts[2].startswith("Al cerrar la tapa, Windows suspende el PC y deja de grabar. Qué hacer:")
     assert all("Qué hacer:" in t and not voseo_in(t) for t in texts)
+    # revisión final: arriba decía «Todo funciona con normalidad.» con estos tres avisos justo debajo
+    overall = page.inner_text("#st-overall")
+    assert overall.startswith("Atención: Windows puede suspender este PC") and "Qué hacer:" in overall, overall
+    assert "Todo funciona con normalidad" not in overall
     details = page.inner_text("#power-root")
     assert "Con batería" in details and "queda un 62 %" in details
     assert "Se suspende tras 2 h sin uso" in details and "Se suspende tras 3 min sin uso" in details
@@ -68,6 +72,7 @@ def test_status_page_shows_power_warnings_and_settings(power_stub: Any, make_con
     details = page.inner_text("#power-root")
     assert "Enchufado a la corriente" in details and "No se suspende nunca" in details
     assert "No hacer nada" in details and page.locator("#power-root .pill.warn").count() == 0
+    assert page.inner_text("#st-overall").startswith("Todo funciona con normalidad.")
 
     # fuera de Windows no hay comprobación: no se pinta nada
     data["snap"] = None

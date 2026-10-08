@@ -530,7 +530,10 @@ se graba nada. Es una sección aparte: **no** cambia `status` ni `problems`.
   y «apagar la pantalla» no se mira: con la pantalla apagada se sigue grabando.
 - La página la pinta `power.js` (`#power-alerts` arriba con los avisos, justo debajo del aviso del motor
   `#st-engine-problem`, y `#power-root` con los valores); no pide nada por su cuenta: `status.js` lanza el
-  evento `vms:status` con el cuerpo de cada `GET /api/status`.
+  evento `vms:status` con el cuerpo de cada `GET /api/status`. `power` sigue sin tocar `status` ni `problems`,
+  pero con avisos de energía el resumen de arriba (`#st-overall`, solo en la web) ya no dice «Todo funciona con
+  normalidad»: dice «Atención: Windows puede suspender este PC…» con su «Qué hacer:» (o, si ya había otro aviso,
+  añade que se revisen también los de energía).
 
 ### 6.9 Ajustes
 
