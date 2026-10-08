@@ -70,6 +70,9 @@ def field_errors(errors: list[Any]) -> list[dict[str, Any]]:
             msg = msg.removeprefix("Value error, ")
         elif etype == "assertion_error":
             msg = msg.removeprefix("Assertion failed, ")
+        elif etype in ("too_long", "too_short") and (e.get("ctx") or {}).get("field_type") == "Value":
+            # longitud de un texto que no es `str` (p. ej. una contraseña SecretStr): no son «elementos» de una lista
+            msg = _FIELD_MESSAGES[f"string_{etype}"]
         else:
             msg = _FIELD_MESSAGES.get(etype, msg)
         out.append({"loc": loc, "msg": msg})

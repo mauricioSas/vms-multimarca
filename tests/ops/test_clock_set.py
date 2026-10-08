@@ -243,6 +243,9 @@ async def test_admin_password_has_the_same_length_cap_as_other_credentials(api: 
     admin = await api.login()
     r = await admin.post(f"/api/clock/devices/{d['id']}/set", json={"username": "admin", "password": "x" * 257})
     assert r.status_code == 422 and mock.requests == []
+    # revisión final: la contraseña (SecretStr) daba «Demasiados elementos», el mensaje de las listas
+    assert r.json()["error"]["details"]["fields"] == [{"loc": ["password"], "msg": "Texto demasiado largo"}]
+    assert "x" * 20 not in r.text, "nunca se devuelve lo escrito"
 
 
 async def test_locked_user_is_not_tried_again(api: Harness) -> None:
