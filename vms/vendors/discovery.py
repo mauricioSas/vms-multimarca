@@ -226,18 +226,34 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
     """WS-Discovery + SADP + DHIP a la vez; resultado por IP con la marca decidida por el registro.
 
     Con `targets` (WSD) y sin `multicast=True` solo se sondean los destinos dados (pruebas, VPN): SADP y DHIP
-    solo se usan entonces si se les pasan sus propios destinos."""
-    from . import dhip, sadp
+    solo se usan entonces si se les pasan sus propios destinos.
+
+    Si hay un informe abierto (`scanreport.collecting`, lo abre la API), anota las tarjetas de la búsqueda y su
+    perfil de red en Windows para explicar una búsqueda vacía. El perfil se lee de nuevo en cada búsqueda y a la
+    vez que se busca (alrededor de 1 s); si PowerShell tarda, puede alargarla hasta `winnet.PROFILE_TIMEOUT_S`."""
+    from . import dhip, sadp, scanreport, winnet
     from .registry import guess_vendor_id
 
     timeout = max(0.2, min(float(timeout), 30.0))
     lan = multicast if multicast is not None else not (targets or sadp_targets or dhip_targets)
+    report = scanreport.current()
     if lan and interfaces is None:
         # Todas las tarjetas: con el WiFi y un switch de cámaras a la vez, o con el PC en 169.254 (switch sin
         # router), la tarjeta «por defecto» no es la del cable de las cámaras.
         from .localnet import local_ipv4
 
-        interfaces = [n.ip for n in local_ipv4()] or None
+        nets = local_ipv4()
+        interfaces = [n.ip for n in nets] or None
+        if report is not None:
+            report.nics = [scanreport.NicInfo(ip=n.ip, name=n.name) for n in nets]
+
+    async def read_profiles() -> None:
+        if report is None or not report.nics:
+            return
+        try:
+            report.add_profiles(await asyncio.to_thread(winnet.network_profiles))
+        except Exception:  # noqa: BLE001 - el informe es una ayuda: nunca tumba la búsqueda
+            log.exception("No se pudo leer el perfil de red de las tarjetas")
 
     async def run_wsd() -> list[DiscoveredDevice]:
         if not (lan or targets):
@@ -263,7 +279,7 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
                                       for i, iface in enumerate(ifaces)))
         return [d for run in runs for d in run]
 
-    wsd_found, sadp_found, dhip_found = await asyncio.gather(run_wsd(), run_sadp(), run_dhip())
+    wsd_found, sadp_found, dhip_found, _ = await asyncio.gather(run_wsd(), run_sadp(), run_dhip(), read_profiles())
     found: dict[str, DiscoveredDevice] = {}
     for d in wsd_found:
         _merge(found, d)

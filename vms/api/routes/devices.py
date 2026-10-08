@@ -12,6 +12,7 @@ from starlette.responses import Response
 from vms.core.errors import ConflictError, DeviceError, NotFoundError, ValidationFailed
 from vms.core.interfaces import ChannelInfo, DeviceInfo
 from vms.core.models import AppConfig, Camera, Device, DeviceCreate, DeviceTestRequest, DeviceUpdate
+from vms.vendors import scanreport
 from vms.vendors.localnet import local_ipv4, subnet_hint
 
 from ..deps import Principal, get_state, require_admin, require_operator
@@ -272,9 +273,16 @@ async def import_channels(device_id: str, body: ImportRequest, p: Principal = De
 async def discovery_scan(body: ScanRequest | None = None, _: Principal = Depends(require_admin),
                          state: AppState = Depends(get_state)) -> Response:
     timeout = (body or ScanRequest()).timeout_s
-    found = await state.discoverer(timeout)
+    with scanreport.collecting() as report:      # discover() anota tarjetas, perfil de red y escucha SADP
+        found = await state.discoverer(timeout)
     hosts = {d.host.lower() for d in state.config().devices}
     nets = local_ipv4() if found else []
     out = [d.model_copy(update={"already_added": d.host.lower() in hosts,
                                 "network_hint": subnet_hint(d.host, nets)}) for d in found]
-    return json_response({"devices": out})
+    explained = report.as_dict(found)
+    if explained["warnings"]:
+        adapters = {n.name: n.category or "?" for n in report.nics}     # una vez por tarjeta, aunque tenga dos IP
+        log.info("Búsqueda en la red con %d equipos y avisos: %s (tarjetas: %s)", len(found),
+                 ", ".join(w["code"] for w in explained["warnings"]),
+                 ", ".join(f"{name}={category}" for name, category in adapters.items()))
+    return json_response({"devices": out, "report": explained})

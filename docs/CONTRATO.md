@@ -306,6 +306,15 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
 - WS-Discovery **propio** (UDP multicast 239.255.255.250:3702, Probe `dn:NetworkVideoTransmitter`);
   `targets` permite enviar el Probe a direcciones concretas (pruebas con `tools.mocks.wsdiscovery`).
   Fabricante deducido de los scopes (`hardware/`, `name/`) y del modelo.
+- SADP escucha el multicast en el 37020 con `SO_REUSEADDR` en 0.0.0.0 y, si otro programa lo tiene en todas las
+  IP, con un socket por IP de tarjeta (Windows). Con SADPServer.exe en la IP de una tarjeta (como en el PC del
+  usuario) el bind en 0.0.0.0 funciona; comprobado con los dos sockets **del mismo usuario**: entre la cuenta del
+  servicio del backend y la de SADPServer, Windows puede negarlo, y entonces se avisa. En el modo por tarjeta, lo
+  que llega directo a `<IP de la tarjeta>:37020` va a nuestro socket mientras dura la búsqueda y no al del otro
+  programa (el multicast llega a los dos). `sadp.search(port=…)` cambia ese puerto solo en pruebas. Si no se puede
+  escuchar: aviso en el registro (WARNING la primera vez; el mismo problema repetido, DEBUG) con quién tiene el
+  puerto y en el `report` de `POST /api/discovery/scan` (§6.3), que abre la API con `scanreport.collecting()`;
+  las firmas de `discover()` y del `Discoverer` no cambian.
 - Errores: `DeviceUnreachable`, `DeviceAuthFailed`, `DeviceProtocolError`, `DeviceUnsupported`
   (mensajes en español). Ojo: muchas cámaras bloquean el usuario tras varios fallos; no reintentar
   credenciales malas en bucle.
@@ -410,7 +419,22 @@ se suscribe a cambios de configuración (aplicación con antirrebote de 1 s) →
 | `POST /api/devices/{id}/test` | A | → `DeviceTestResult` con la contraseña guardada |
 | `GET /api/devices/{id}/channels` | A | → `[ChannelInfo]` (502 si el equipo falla) |
 | `POST /api/devices/{id}/channels/import` | A | `{channels: [int] \| "all"}` → 201 `[Camera]` (omite canales ya dados de alta) |
-| `POST /api/discovery/scan` | A | `{timeout_s: 1..10 = 3}` → `{devices: [DiscoveredDevice]}` (`already_added` según host; `network_hint`: aviso si el equipo está en otra red que el PC) |
+| `POST /api/discovery/scan` | A | `{timeout_s: 1..10 = 3}` → `{devices: [DiscoveredDevice], report: ScanReport}` (`already_added` según host; `network_hint`: aviso si el equipo está en otra red que el PC; `report`, aditivo: por qué pudo salir vacía, ver abajo) |
+
+`ScanReport` (aditivo; lo rellena `discover()` durante la búsqueda, `vms/vendors/scanreport.py`):
+`{nics: [{ip, name, category: "public"|"private"|"domain"|"" (no se sabe), network, internet: bool|null, index}],
+sadp_listen: {port, ok, mode: "all"|"per_nic"|"", in_use, error, holders: [{pid, name, ip}]} | null,
+warnings: [{code: "public_network"|"sadp_port_busy"|"sadp_listen_failed", text_es, command}]}`.
+- `nics`: IP por las que se buscó (una entrada por IP: una tarjeta con dos IP sale dos veces) y el perfil de red
+  de su tarjeta en Windows (`MSFT_NetConnectionProfile`, solo lectura, leído de nuevo en cada búsqueda; vacío si no
+  se sabe). `sadp_listen`: si se pudo escuchar el multicast de SADP en el 37020 y, si no, quién tiene el
+  puerto (p. ej. `SADPServer.exe` de iVMS-4200 o HikCentral). Con otro `Discoverer` (dobles) puede venir vacío.
+- `warnings`, en español con «Qué hacer:»: `sadp_port_busy`/`sadp_listen_failed` siempre que no se pudo escuchar;
+  `public_network` uno por tarjeta «Pública» con todas sus IP (primero las que no tienen Internet y al final las
+  virtuales de Hyper-V/WSL, VMware, VirtualBox o VPN, por su nombre; como mucho 3) si nada respondió por SADP.
+  `command` (o "") es una línea para PowerShell como administrador que la web muestra tras el texto con «Copiar»
+  (`Set-NetConnectionProfile … -NetworkCategory Private`). El programa **nunca** cambia el perfil ni abre el
+  firewall en el perfil Público: solo lo explica.
 
 ### 6.4 Cámaras
 

@@ -448,7 +448,8 @@ class StubBackend:
             timeout = max(1.0, min(10.0, float(body.get("timeout_s", 3))))
             found = await b.opt.discover(timeout) if b.opt.discover else []
             hosts = {d.host for d in b.repo.snapshot().devices}
-            return {"devices": [{**dump(d), "already_added": d.host in hosts} for d in found]}
+            return {"devices": [{**dump(d), "already_added": d.host in hosts} for d in found],
+                    "report": {"nics": [], "sadp_listen": None, "warnings": []}}
 
     # ------------------------------------------------------------------ cámaras, muros
     def _routes_cameras(self, app: FastAPI) -> None:

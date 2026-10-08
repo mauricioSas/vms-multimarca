@@ -135,7 +135,8 @@
       "anchor": "#discover-title",
       "title": "Buscar equipos en la red",
       "intro": [
-        "Busca cámaras y grabadores que anuncian su presencia en la red (ONVIF). Tarda unos segundos.",
+        "Busca cámaras y grabadores que anuncian su presencia en la red: ONVIF, Hikvision (SADP) y Dahua (DHIP). Tarda unos segundos.",
+        "Si falta algún equipo, mira los avisos encima de la lista: dicen si Windows tiene la red como «Pública» o si otro programa ocupa el puerto de la búsqueda de Hikvision, y qué hacer.",
         "Algunos equipos traen ONVIF desactivado de fábrica: si no aparece, añádelo a mano con su IP."
       ],
       "buttons": [

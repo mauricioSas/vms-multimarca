@@ -595,6 +595,29 @@ $("#btn-discover-run").after(ipCheckBtn);
 
 const SOURCE_LABELS = { wsd: "ONVIF", sadp: "SADP", dhip: "DHIP" };
 
+// Avisos del servidor que explican por qué pueden faltar equipos (red «Pública» en Windows, puerto de SADP
+// ocupado por otro programa). Si traen una línea de PowerShell, se puede copiar con un botón.
+const discoverReport = document.createElement("div");
+discoverReport.id = "discover-report";
+discoverReport.hidden = true;
+$("#discover-table").closest(".table-wrap").before(discoverReport);
+
+function showScanWarnings(warnings) {
+  discoverReport.innerHTML = warnings.map((w, i) => `<div class="discover-warn">${
+    esc(w.text_es).replace("Qué hacer:", "<strong>Qué hacer:</strong>")}${w.command
+    ? `<div class="discover-cmd"><code class="mono">${esc(w.command)}</code>
+        <button type="button" class="btn btn-sm" data-copy-cmd="${i}">Copiar</button></div>` : ""}</div>`).join("");
+  discoverReport.hidden = !warnings.length;
+  discoverReport.querySelectorAll("[data-copy-cmd]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(warnings[Number(b.dataset.copyCmd)].command);
+      toast("Línea copiada: pégala en PowerShell abierto como administrador", "ok");
+    } catch {
+      toast("No se pudo copiar la línea. Qué hacer: selecciónala con el ratón y cópiala con Ctrl+C", "bad", 9000);
+    }
+  }));
+}
+
 // Tipo probable a partir del modelo («XVR…», «…DVR…», «NVR…»); el instalador puede cambiarlo.
 function guessKind(d) {
   const text = `${d.model || ""} ${d.name || ""}`;
@@ -608,15 +631,20 @@ $("#btn-discover-run").addEventListener("click", async (ev) => {
   const tbody = $("#discover-table tbody");
   const timeout = Number($("#discover-timeout").value) || 3;
   tbody.innerHTML = `<tr><td colspan="5" class="empty">Buscando durante ${timeout} s…</td></tr>`;
+  showScanWarnings([]);
   await busy(ev.currentTarget, async () => {
     try {
       const res = await post("/api/discovery/scan", { timeout_s: timeout }, { timeoutMs: (timeout + 15) * 1000 });
       const list = res.devices || [];
+      const warnings = (res.report && res.report.warnings) || [];
+      showScanWarnings(warnings);
       if (!list.length) {
+        // Con avisos del servidor, el motivo concreto ya está arriba; si no, los motivos habituales.
         tbody.innerHTML = `<tr><td colspan="5" class="empty"><strong>No se encontró ningún equipo</strong>
-          Comprueba que el cable de la cámara y el del PC van al mismo switch y que la red de este PC está como
-          «Privada» en Windows (Configuración → Red e Internet → Ethernet → Tipo de perfil de red). Si sabes la IP
-          de la cámara, añádela con «Añadir equipo».</td></tr>`;
+          ${warnings.length ? "Qué hacer: mira los avisos de arriba. Si sabes la IP de la cámara, añádela con «Añadir equipo»."
+            : `Qué hacer: comprueba que el cable de la cámara y el del PC van al mismo switch y que la red de este PC
+          está como «Privada» en Windows (Configuración → Red e Internet → Ethernet → Tipo de perfil de red). Si
+          sabes la IP de la cámara, añádela con «Añadir equipo».`}</td></tr>`;
         return;
       }
       tbody.innerHTML = list.map((d, i) => `<tr>
@@ -645,6 +673,7 @@ ipCheckBtn.addEventListener("click", async (ev) => {
   const tbody = $("#discover-table tbody");
   const timeout = Number($("#discover-timeout").value) || 3;
   tbody.innerHTML = `<tr><td colspan="5" class="empty">Buscando equipos que cambiaron de IP durante ${timeout} s…</td></tr>`;
+  showScanWarnings([]);
   await busy(ev.currentTarget, async () => {
     try {
       const res = await post("/api/devices/ip-check", { timeout_s: timeout }, { timeoutMs: (timeout + 15) * 1000 });

@@ -232,9 +232,11 @@ Publícalos en la próxima beta junto con el arreglo del motor.
 
 ### Otras mejoras pendientes
 
-- La búsqueda en red (beta.3) no se ha probado con una cámara real. Si la red de Windows es «Pública»
-  (red no identificada, típico con un switch sin router), el firewall no deja pasar las respuestas SADP.
-  Valora avisarlo en la propia pantalla de búsqueda.
+- La búsqueda en red (beta.3) no se ha probado con una cámara real. Si no encuentra nada, ya explica por qué
+  encima de la lista (`report` de `POST /api/discovery/scan`, CONTRATO §6.3): red de Windows «Pública», con
+  la línea `Set-NetConnectionProfile` para copiar, o el UDP 37020 ocupado por `SADPServer.exe`. Falta
+  comprobar en el PC del usuario que la cuenta `NT SERVICE\VMSBackend` puede leer el perfil de red (si no,
+  no sale el aviso de «Pública») y que SADP convive con HikCentral (`vms.log`: «se escucha por cada tarjeta»).
 - En Windows, el backend usa psycopg **asíncrono** en `vms/api/routes/counts.py` (CSV de conteos) y en
   `vms/ops/service.py` (`_analytics_alerts`, avisos de la analítica en la línea de tiempo). El backend corre
   con Proactor, así que con `VMS_PG_DSN` el CSV responde 503 y la línea de tiempo pierde esos avisos. Lo

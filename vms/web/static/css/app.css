@@ -355,3 +355,11 @@ dl.kv dd { margin: 0; }
   margin-top: 6px; padding: 6px 8px; border-radius: 8px; max-width: 34em;
   border: 1px solid var(--warn-line); background: var(--warn-soft); color: var(--warn);
 }
+/* avisos de la búsqueda (red «Pública», puerto de SADP ocupado), encima de la tabla */
+#discover-report { margin-top: 14px; display: grid; gap: 8px; }
+#discover-report .discover-warn { max-width: none; margin-top: 0; padding: 8px 10px; }
+.discover-cmd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.discover-cmd code {
+  user-select: all; overflow-wrap: anywhere; padding: 4px 6px; border-radius: 6px;
+  background: var(--panel); color: var(--text);
+}
