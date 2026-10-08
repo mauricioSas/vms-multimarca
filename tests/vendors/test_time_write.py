@@ -304,6 +304,19 @@ async def test_onvif_refuses_ntp_mode() -> None:
     assert mock.set_bodies == []
 
 
+async def test_onvif_refuses_when_it_does_not_say_its_time_mode() -> None:
+    """Revisión final: sin `DateTimeType` (modo «unknown») se mandaba `SetSystemDateAndTime` con `DateTimeType`
+    Manual, que apagaría un NTP que el equipo no dijo tener. CONTRATO §18.3: solo con la hora puesta a mano."""
+    mock = _onvif_1970(date_time_type="")
+    client = client_for(make_device("onvif"), TEST_PASSWORD, transport=asgi(mock.app))
+    try:
+        with pytest.raises(DeviceClockManaged) as err:
+            await client.set_device_time()   # type: ignore[attr-defined]
+    finally:
+        await client.aclose()
+    assert mock.set_bodies == [] and err.value.time_mode == "sin informar"
+
+
 async def test_onvif_not_authorized_on_set_is_write_denied_and_does_not_fuse() -> None:
     """ONVIF Core: un usuario sin la clase WRITE_SYSTEM recibe el mismo `NotAuthorized` que una contraseña mala.
     Como la lectura autenticada de antes pasó, es falta de permisos: ni se funde el cliente ni se dice «contraseña

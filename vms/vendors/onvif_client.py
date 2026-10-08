@@ -534,7 +534,7 @@ class OnvifClient:
     async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime:
         """«Poner en hora con este PC» por ONVIF `SetSystemDateAndTime` (CONTRATO §18.3): `DateTimeType` Manual, la
         hora UTC de este PC y la MISMA zona (`TZ`) y horario de verano que dio el equipo. Solo si ya está en hora
-        manual: con NTP se lanza `DeviceClockManaged` sin escribir. Antes de escribir se comprueba la contraseña con
+        manual: con NTP, o si no dice su modo, se lanza `DeviceClockManaged` sin escribir. Antes de escribir se comprueba la contraseña con
         una lectura autenticada (`GetDeviceInformation`, repetida con credenciales si el equipo la contesta sin
         ellas: ONVIF anónimo), así un rechazo de la escritura es falta de permisos
         (`DeviceWriteDenied`: en la política por defecto solo el Administrator tiene WRITE_SYSTEM). Después se lee
@@ -555,6 +555,10 @@ class OnvifClient:
             raise self._failure or self._bad_password()
         if before.time_mode == "ntp":
             raise DeviceClockManaged(self.label, "NTP", before.ntp_server)
+        if before.time_mode != "manual":
+            # sin `DateTimeType` no se sabe quién pone la hora: escribir `DateTimeType` Manual apagaría un NTP que
+            # el equipo no ha dicho tener (CONTRATO §18.3: solo con la hora puesta a mano, como en Hikvision)
+            raise DeviceClockManaged(self.label, "sin informar")
         await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
         if not self._auth_ok and self._auth is not None:
             # equipo con ONVIF anónimo: contestó SIN credenciales (así se aprende el modo) y la contraseña sigue sin
@@ -562,7 +566,7 @@ class OnvifClient:
             # (cliente fundido y 30 min sin leer la hora ni sacar instantáneas) cuando lo normal es un usuario sin
             # permiso para cambiarla
             await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
-        zones =[self.time_zone, ""] if self.time_zone else [""]
+        zones = [self.time_zone, ""] if self.time_zone else [""]
         for i, tz in enumerate(zones):
             u = (datetime.now(timezone.utc) + timedelta(milliseconds=500)).replace(microsecond=0)
             body = ("<m:DateTimeType>Manual</m:DateTimeType>"
