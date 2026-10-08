@@ -24,6 +24,7 @@ Operación, IA de verificación y onboarding dentro del backend. Lo arranca el `
 | `security/` | Auditoría de equipos sin atacar; tabla de avisos propia (`advisories.json`, versión vs. actualización TUF) |
 | `counts.py` | CSV de conteos para Excel (tienda y central) |
 | `onboarding.py` | Progreso del asistente y de los recorridos por usuario |
+| `power.py` | Energía del PC para Estado del sistema (`power` de `/api/status`, CONTRATO §6.8): batería, suspensión con corriente y con batería y tapa, leídas sin administrador y sin cambiar nada; avisos con «Qué hacer:» armados con los valores reales. Solo Windows |
 | `store.py` | SQLite (WAL) en `<datos>/ops/ops.sqlite3` |
 
 Pruebas: `tests/ops/` (imágenes sintéticas, dobles de hora ONVIF/ISAPI/CGI, servidores SMTP/RTSP/webhook de prueba,

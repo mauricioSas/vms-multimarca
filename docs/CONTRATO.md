@@ -462,7 +462,7 @@ licencia). El vídeo viaja directo al puerto ICE (§4.1).
 | Método y ruta | Rol | Respuesta |
 |---|---|---|
 | `GET /api/health` | — | `{status: ok\|degraded\|down, version, uptime_s, engine: {running, api_ok}}` (sin datos sensibles; lo usa el kiosco y el instalador) |
-| `GET /api/status` | O | `{engine: EngineStatus, disk: DiskUsage, cameras: [{camera_id, name, online, recording, readers, bytes_received, last_error}], analytics: <§8.6 + stale>, credential_backend, config_warning}` |
+| `GET /api/status` | O | `{engine: EngineStatus, disk: DiskUsage, cameras: [{camera_id, name, online, recording, readers, bytes_received, last_error}], analytics: <§8.6 + stale>, credential_backend, config_warning, power?}` (`power` solo en Windows, ver abajo) |
 
 `status`: `down` si el motor no corre; `degraded` si hay cámaras sin vídeo, disco por encima
 del umbral o analítica activada sin estado reciente; si no, `ok`.
@@ -485,6 +485,28 @@ v2 (aditivo): cada cámara de `/api/status` lleva además `recording_error` (por
 con «Qué hacer:»; `""` si graba) y `last_recorded_at` (final del último tramo guardado que vio la comprobación de
 §5.2, o `null`). `recording` ya no es «vídeo + `record`»: es que se guardan segmentos. Una cámara con vídeo que no
 graba añade el problema «cámaras con vídeo que no graban» (`degraded`).
+
+**`power` (aditivo, solo en Windows; fuera de Windows no se envía).** Energía del PC, leída sin
+administrador y **sin cambiar nada** (`vms/ops/power.py`): `GetSystemPowerStatus`, `GetPwrCapabilities` y,
+del plan activo, `PowerRead{AC,DC}ValueIndex` de `STANDBYIDLE`, `HIBERNATEIDLE` y `LIDACTION` (si una
+directiva de grupo fija el valor, manda la directiva). Mientras el PC está suspendido, hibernado o apagado no
+se graba nada. Es una sección aparte: **no** cambia `status` ni `problems`.
+```json
+{"on_battery": true, "battery_percent": 62, "has_battery": true, "lid_present": true, "modern_standby": true,
+ "sleep_ac_s": 7200, "sleep_dc_s": 180, "hibernate_ac_s": 0, "hibernate_dc_s": 57600,
+ "lid_action_ac": "sleep", "lid_action_dc": "sleep", "ok": false,
+ "warnings": [{"code": "on_battery", "message_es": "El PC funciona con batería (queda un 62 %) y Windows lo suspende tras 3 min sin usar el teclado ni el ratón: … Qué hacer: enchúfalo a la corriente."}]}
+```
+- Plazos en segundos, `0` = nunca; `null` = no se pudo leer (no se inventa nada ni se avisa por ello).
+  `on_battery` `null` = Windows no lo sabe. `lid_action_*`: `nothing` | `sleep` | `hibernate` | `shutdown`.
+- `warnings[].code` (en este orden): `on_battery` (con el plazo real de suspensión con batería),
+  `idle_sleep_ac` (con corriente se suspende, o en un PC sin espera moderna se hiberna, tras `N` sin uso) y
+  `lid_ac` (hay tapa y al cerrarla con corriente se suspende, hiberna o apaga). Cada `message_es` lleva
+  «Qué hacer:» y se arma con los valores leídos. La suspensión con batería solo sale en `on_battery`
+  y «apagar la pantalla» no se mira: con la pantalla apagada se sigue grabando.
+- La página la pinta `power.js` (`#power-alerts` arriba con los avisos, justo debajo del aviso del motor
+  `#st-engine-problem`, y `#power-root` con los valores); no pide nada por su cuenta: `status.js` lanza el
+  evento `vms:status` con el cuerpo de cada `GET /api/status`.
 
 ### 6.9 Ajustes
 
@@ -922,6 +944,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | motor | §6.8/§13.10 (revisión, sin cambios de forma): el primer «bind» de un arranque es la causa aunque lo sigan muchas líneas de cámaras o conexiones (antes, con 4 cámaras o más, un puerto ocupado salía como `crash_loop` «sin ningún mensaje de error»); un «bind» que no es «puerto ocupado» pasa a `crash_loop` citando el error; `starting` si el puerto lo tiene el MediaMTX que `vmsctl` acaba de relanzar; sin `status-VMSEngine.json`, «[vmsctl] parado» da `stopped` y una caída de hace más de 10 min ya no es la causa. Se documenta de dónde sale `crashes_10min` sin ese archivo. |
 | 2026-10-08 | paradas | §14.1: en Windows la única orden de parada de `vmsctl run` es cerrar la entrada estándar, y ahora la vigilan también el actualizador (`vms_updater/_stdin_stop.py`), la analítica, el latido y el panel central (`vms/core/stdin_stop.py`); antes `vmsctl` los mataba a los 10 s en cada parada. `grace_s` de VMSBackend pasa de 10 a 12 s (uvicorn espera 3 s, no 10, y la aplicación pendiente al motor 3 s); `vmshost` sigue esperando 15 s. §6.11 (sin cambio de forma): al empezar la parada del backend los flujos `/api/events` terminan y el navegador vuelve a conectar solo. §13.5: el temporal de `atomic_write` en Python es propio de cada escritura (`<nombre>.tmp-<pid>-<azar>`) y `public-status.json` y `updater.json` se reescriben bajo un cerrojo por archivo. |
 | 2026-10-08 | reproducción | Reproducción y «Grabando» sin mentir (todo aditivo salvo lo marcado): `EngineError` (502 `engine_error`) en `vms.core.errors`; §5.2 `list_recordings` mira la carpeta antes de preguntar a MediaMTX y solo «carpeta inexistente»/404 son «sin grabaciones» (antes, cualquier 400, que escondía p. ej. una carpeta sin permiso); §5.2/§6.8 `recording` exige segmentos recientes y `PathStatus`/`/api/status` llevan `recording_error` y `last_recorded_at`; §6.7 `notice` en la línea de tiempo y **`/video` de una cámara que nunca grabó responde 404 (antes 400 `playback_rejected`)**, también el de una cámara desactivada sin ruta en el motor (antes 502); §5.2 un día sin segmentos no se pregunta tal cual a MediaMTX (404 + ERR en su registro); §4.3 rutas inertes de retención para cámaras borradas, desactivadas o en pausa. |
+| 2026-10-08 | energía | §6.8 (aditivo): `GET /api/status` trae `power` en Windows (batería, suspensión con corriente y con batería, acción de la tapa y avisos con «Qué hacer:»), solo lectura y sin tocar `status`/`problems`. §18.9: `#power-alerts` y `#power-root` con `power.js` en `status.html`; `status.js` lanza el evento `vms:status` tras cada lectura. Motivo: un portátil de tienda dejó de grabar a batería (suspensión a los 3 min) y con la tapa cerrada sin que nada lo avisara. |
 
 ---
 
@@ -1505,6 +1528,7 @@ Ya están en las páginas (vacíos y ocultos); el dueño solo edita su módulo:
 | `index.html` (diálogo de alta) | `#device-form-root` | `devices.js` | B5 |
 | `status.html` | `#updates-root` | `updates.js` (+ `updates.css`) | B4 |
 | `status.html` | `#health-root`, `#security-audit-root`, `#notifications-root` | `health.js`, `security.js`, `notifications.js` | B6 |
+| `status.html` | `#power-alerts`, `#power-root` (energía del PC, §6.8 `power`) | `power.js` | energía |
 | `playback.html` | `#timeline-events-root`, `#bookmarks-root`, `#evidence-root` | `timeline-events.js`, `bookmarks.js`, `evidence.js` | B6 |
 | `analytics.html` | `#counts-export-root` | `counts-export.js` | B6 |
 

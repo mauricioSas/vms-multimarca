@@ -84,6 +84,8 @@ class StubOptions:
     # snapshot alternativo (p. ej. un frame del RTSP local); en memoria, nunca a disco
     snapshot: Callable[[str, str], Awaitable[bytes]] | None = None
     analytics_status: Callable[[], dict[str, Any]] | None = None
+    # campo `power` de /api/status (energía del PC); sin él, como fuera de Windows: no se envía
+    power: Callable[[], dict[str, Any] | None] | None = None
 
 
 class StubBackend:
@@ -749,8 +751,10 @@ class StubBackend:
                              "bytes_received": main.bytes_received if main else 0,
                              "last_error": main.last_error if main else ""})
             analytics = b.opt.analytics_status() if b.opt.analytics_status else {"running": False}
+            power = b.opt.power() if b.opt.power else None
             return {"engine": dump(st), "disk": dump(disk), "cameras": cams, "analytics": analytics,
-                    "credential_backend": b.creds.backend_name, "config_warning": b.repo.load_warning}
+                    "credential_backend": b.creds.backend_name, "config_warning": b.repo.load_warning,
+                    **({"power": power} if power is not None else {})}
 
         # v2 · B4 (CONTRATO §15.6): /status carga updates.js, que pide esto. Mismo cuerpo que la ruta real (sin
         # ella, el 404 rompe tests/web/test_ui.py::test_status_page por el error de consola).

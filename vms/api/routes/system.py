@@ -1,6 +1,7 @@
 """Salud, estado y ajustes del sistema (CONTRATO §6.8 y §6.9)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -10,6 +11,7 @@ from starlette.responses import Response
 from vms import __version__
 from vms.core.errors import ValidationFailed
 from vms.core.models import AppConfig, RetentionSettings, SystemSettings, known_fields_only
+from vms.ops import power as pc_power
 
 from ..deps import Principal, get_state, require_admin, require_operator
 from ..errors import json_response
@@ -42,11 +44,13 @@ async def health(state: AppState = Depends(get_state)) -> Response:
 @router.get("/status")
 async def status(p: Principal = Depends(require_operator), state: AppState = Depends(get_state)) -> Response:
     ov = await state.overview()
+    power = await asyncio.to_thread(pc_power.power_status)   # batería, suspensión y tapa (solo Windows)
     return json_response({
         "status": ov["status"], "problems": ov["problems"], "version": __version__, "uptime_s": state.uptime_s(),
         "engine": ov["engine"], "disk": ov["disk"], "cameras": filter_by_camera(state, p, ov["cameras"], "live"),
         "analytics": scoped_analytics_status(state, p, ov["analytics"]),
         "credential_backend": state.creds.backend_name, "config_warning": state.repo.load_warning,
+        **({"power": power} if power is not None else {}),
     })
 
 

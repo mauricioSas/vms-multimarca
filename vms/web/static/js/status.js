@@ -178,6 +178,7 @@ async function refresh() {
   try {
     const [s, health] = await Promise.all([get("/api/status"), get("/api/health", { auth: false }).catch(() => null)]);
     render(s, health);
+    document.dispatchEvent(new CustomEvent("vms:status", { detail: s }));   // power.js y otros módulos
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return;
     const box = $("#st-overall");
