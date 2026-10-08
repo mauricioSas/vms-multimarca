@@ -135,7 +135,9 @@ Dos ejecutables firmados hechos con
      Hace lo siguiente:
      - Lanza `runtime\python.exe -m vms`, `engine\mediamtx.exe`, etc.
      - Lo mete en un *Job Object* (si el anfitrión muere, mueren los hijos: nunca hay procesos huérfanos).
-     - Parada ordenada en 3 escalones: `POST /api/internal/shutdown` o `CTRL_BREAK`, después 10 s, y al final `TerminateJobObject`.
+     - Parada ordenada en 3 escalones: cierra la entrada estándar del proceso (en POSIX, además SIGTERM), espera
+       `grace_s` (10 s; 12 s VMSBackend; 0 MediaMTX) y al final `TerminateJobObject` (CONTRATO §14.1). En Windows
+       no hay `CTRL_BREAK` para un servicio: cada servicio Python vigila su entrada estándar.
      - Reinicio con backoff (1, 2, 5, 10, 30 s).
      - Captura stdout/stderr, **oculta credenciales** con las mismas reglas que `vms.core.rtsp.redact` (ver la nota de abajo) y escribe `logs\<servicio>.log` con rotación de 10 × 10 MB.
      - Informa de su estado a `vmshost`.
