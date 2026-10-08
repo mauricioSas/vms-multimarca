@@ -56,7 +56,7 @@
         {"label": "Probar", "text": "Comprueba ahora mismo que el equipo responde y que el usuario y la contraseña son correctos."},
         {"label": "Importar canales", "text": "En un grabador, elige qué cámaras (canales) quieres ver y grabar."},
         {"label": "Editar", "text": "Cambia el nombre, la IP, los puertos, el usuario o la contraseña del equipo."},
-        {"label": "¿Por qué no conecta?", "text": "Hace una revisión paso a paso (red, puertos, contraseña, vídeo, hora) y te dice la causa más probable y qué hacer. Solo prueba la contraseña una vez para no bloquear el usuario."},
+        {"label": "¿Por qué no conecta?", "text": "Hace una revisión paso a paso (tarjeta de red de este PC, red, puertos, contraseña, vídeo, hora) y te dice la causa más probable y qué hacer. Lo que conviene revisar sin ser la causa sale como «Aviso». Solo prueba la contraseña una vez para no bloquear el usuario."},
         {"label": "Borrar", "text": "Quita el equipo y sus cámaras del VMS. Las grabaciones ya hechas se borran al cumplir los días de retención."}
       ],
       "tasks": ["anadir-camara", "por-que-no-conecta"]
@@ -167,7 +167,7 @@
       "intro": [
         "Aquí ves lo grabado: eliges cámara y día, y pulsas en la línea de tiempo el momento que quieres ver.",
         "Los tramos de color de la línea de tiempo son lo grabado; los huecos sin color son momentos sin grabación.",
-        "Si no sale ningún tramo, el reproductor dice por qué y qué hacer: la cámara aún no ha grabado, tiene la cámara o la grabación desactivada, o el motor de vídeo no responde."
+        "Si no sale ningún tramo, el reproductor dice por qué y qué hacer: la cámara aún no ha grabado, está desactivada o no tiene activada la grabación, o el motor de vídeo no responde."
       ],
       "buttons": [
         {"label": "Cámara y Día", "text": "Qué cámara y qué día quieres ver."},
@@ -343,7 +343,7 @@
       "title": "Estado del sistema",
       "intro": [
         "Resumen de cómo está todo: motor de vídeo, cámaras, disco, salud de la imagen, hora de los equipos, seguridad y avisos.",
-        "Si algo va mal verás un aviso arriba con el problema en palabras de tienda."
+        "Si algo va mal verás un aviso arriba con el problema en palabras de tienda y qué hacer: por ejemplo, por qué no arranca el motor de vídeo o que Windows va a suspender el PC y dejar de grabar."
       ],
       "buttons": [
         {"label": "Actualizar", "text": "Vuelve a leer el estado ahora mismo (se actualiza solo cada pocos segundos)."}
@@ -356,9 +356,18 @@
       "anchor": "#card-engine .label",
       "title": "Resumen",
       "intro": [
-        "Motor de vídeo: el programa que recibe y graba el vídeo. Tiene que estar «En marcha».",
+        "Motor de vídeo: el programa que recibe y graba el vídeo. Tiene que estar «En marcha». Si pone «Arrancando», espera unos segundos; si pone «No arranca», «Sin conexión», «No responde» o «Detenido», arriba sale el motivo y qué hacer.",
         "Cámaras con vídeo y Grabando: cuántas cámaras envían imagen y cuántas se están guardando.",
         "Disco de grabación: cuánto está lleno. Al llegar al límite se borra lo más antiguo."
+      ]
+    },
+    "status.power": {
+      "page": "/status",
+      "anchor": "#h-st-power",
+      "title": "Energía del PC",
+      "intro": [
+        "Dice si este PC va enchufado o con batería, cuándo lo suspende o hiberna Windows y qué hace al cerrar la tapa. Mientras el PC está suspendido, hibernado o apagado no se graba ninguna cámara.",
+        "Son los valores de Windows: el programa solo los lee y no cambia nada. Si alguno hace que el PC deje de grabar, sale un aviso arriba con qué hacer."
       ]
     },
     "status.cameras": {
@@ -446,7 +455,7 @@
       "anchor": "#h-ops-diagnose",
       "title": "¿Por qué no conecta?",
       "intro": [
-        "Revisa un equipo paso a paso: si responde en la red, si los puertos están abiertos, si el usuario y la contraseña valen, si el vídeo responde y en qué formato, la hora y si el vídeo llega al VMS.",
+        "Revisa un equipo paso a paso: por qué tarjeta de red sale este PC hacia él, si responde en la red, si los puertos están abiertos, si el usuario y la contraseña valen, si el vídeo responde y en qué formato, la hora y si el vídeo llega al VMS.",
         "La contraseña se prueba UNA sola vez: Hikvision y Dahua bloquean el usuario tras varios fallos."
       ],
       "buttons": [

@@ -173,7 +173,8 @@ def test_help_button_in_every_section(browser: Any, server: tuple[RealBackend, S
     assert keys
     for k in keys:
         anchor = HELP["sections"][k]["anchor"]
-        if k == "panel.wizard" or (k == "status.updates" and page.locator(anchor).count() == 0):
+        # «Energía del PC» solo sale en Windows (fuera, `power` es None y no hay sección)
+        if k == "panel.wizard" or (k in ("status.updates", "status.power") and page.locator(anchor).count() == 0):
             continue
         page.wait_for_selector(f".help-btn[data-help='{k}']", state="attached", timeout=8000)
     first = keys[0]
@@ -188,6 +189,20 @@ def test_help_button_in_every_section(browser: Any, server: tuple[RealBackend, S
     for task in REQUIRED_TASKS:
         assert HELP["tasks"][task]["title"] in body, task
     assert errs.unexpected() == []
+
+
+def test_help_covers_the_sections_and_steps_added_in_v2() -> None:
+    """Revisión final: la sección «Energía del PC» (power.js) no tenía ayuda, así que no salía su «?», y la ayuda de
+    «¿Por qué no conecta?» no nombraba el paso nuevo «Tarjeta de red de este PC»."""
+    power_js = (ROOT / "vms" / "web" / "static" / "js" / "power.js").read_text(encoding="utf-8")
+    assert 'id="h-st-power"' in power_js
+    power = [s for s in HELP["sections"].values() if s["anchor"] == "#h-st-power"]
+    assert len(power) == 1 and power[0]["page"] == "/status" and power[0]["title"] == "Energía del PC"
+    assert "tarjeta de red" in " ".join(HELP["sections"]["status.diagnose"]["intro"])
+    devices = {b["label"]: b["text"] for b in HELP["sections"]["panel.devices"]["buttons"]}
+    assert "tarjeta de red" in devices["¿Por qué no conecta?"]
+    summary = " ".join(HELP["sections"]["status.summary"]["intro"])
+    assert all(f"«{label}»" in summary for label in ("Arrancando", "No arranca", "Sin conexión", "No responde"))
 
 
 def test_help_texts_cover_required_tasks_and_buttons() -> None:
