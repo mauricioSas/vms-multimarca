@@ -94,6 +94,10 @@ En Windows, y sobre todo en un PC con el producto instalado (como este):
     (`HKLM\SOFTWARE\VMSMultimarca`), o que lance un programa cuya línea de órdenes las nombre. Vigila solo el
     proceso de pytest: lo que hagan por dentro los programas que lanza, el registro y `ctypes` no los ve. Solo se
     salta en el e2e del instalador.
+  - Otro vigilante (`ProductPortGuard`) hace fallar la prueba que se conecte en este equipo a los puertos por
+    defecto del programa (8600, 8643, 8554, 8889, 8189, 9996 y 9997), donde responde el programa instalado. Usa
+    la fixture `settings`, `FakeEngine` o `get_free_port()`; para hablar de verdad con el programa instalado,
+    `@pytest.mark.product_ports`. Tampoco ve los procesos hijos ni Chromium: dales puertos libres.
   - `cargo test` de `vmsctl` crea el grupo y escribe el registro a través de un doble en memoria (`sys::Runner`).
   - `tools.dev_run` también fija `VMS_ENV_FILE_ONLY=1` en sus procesos y no arranca si `--env-file` no tiene
     `VMS_DATA_DIR`.
@@ -111,8 +115,8 @@ Windows, así que la referencia es GitHub (verde). Las que siguen fallando aquí
 - no hay `bash`: 3 de `tests/central/test_deploy.py`;
 - cosas de Windows: DPAPI en `test_review_credentials.py`, la tubería con nombre del actualizador y
   `test_release_tools.py::test_keyring_rules`;
-- tiempo, red o navegador: `test_health_imaging`, `test_rtsp_chaos`, `test_hikvision_dahua`, `test_ui_b6`,
-  `test_evidence` y `test_wall_sessions`;
+- tiempo, red o navegador: `test_health_imaging`, `test_rtsp_chaos`, `test_hikvision_dahua` y `test_evidence`
+  (`test_ui_b6` y `test_wall_sessions` fallaban porque les contestaba el programa instalado; ya pasan);
 - 3 de `tests/web/test_ui.py` (`test_add_device_and_assign_to_monitor`, `test_vendor_selector_fills_paths` y
   `test_pages_fit_phone_width[/]`): «No se pudo leer el registro de marcas» y un 404 en la consola. Fallan al
   pasar ese archivo solo (también en `91b123f`); dentro de la batería completa de `vms/` pasan;

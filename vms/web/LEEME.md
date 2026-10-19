@@ -56,7 +56,8 @@ Mayúsculas, saltos de 10 min). «Descargar clip» genera un MP4 desde la grabac
 ```bash
 # simulador de cámaras + MediaMTX real + backend de pruebas, con dos NVR ya dados de alta
 .venv/bin/python -m tests.web.stub_backend --camsim
-# abre http://127.0.0.1:8600/  (admin / admin-pass-1234)
+# abre la dirección que sale en pantalla (admin / admin-pass-1234); --port 8601 para fijar el puerto
+# (no uses el 8600: es el del programa instalado)
 ```
 
 Pruebas automáticas en Chromium (Playwright), con capturas en `tests/e2e/screenshots/`:

@@ -13,14 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from tests.conftest import get_free_port
+from tests.conftest import isolated_settings
 from tests.web.stub_backend import DEFAULT_USERS, StubOptions
 from vms.core.credentials import CredentialStore, EncryptedFileBackend
 from vms.core.errors import VmsError
 from vms.core.interfaces import DeviceClient, DeviceTestResult, Engine
 from vms.core.models import User
 from vms.core.paths import AppPaths
-from vms.core.settings import VmsSettings
 
 
 @dataclass
@@ -56,10 +55,9 @@ class RealBackend:
         self.opt = _Opt(kiosk_token=opt.kiosk_token or "kiosk-token-pruebas")
         key = EncryptedFileBackend.load_or_create_key(self.paths.secrets_dir)
         self.creds = CredentialStore(EncryptedFileBackend(self.paths.secrets_dir / "credentials.enc", key))
-        settings = VmsSettings(
-            _env_file=None,  # type: ignore[call-arg]
-            data_dir=self.paths.base, site_id="site-test", http_host="127.0.0.1", http_port=get_free_port(),
-            internal_token="token-interno-de-pruebas", kiosk_token=self.opt.kiosk_token, credential_backend="file")
+        # Todos los puertos libres, también los del motor y el HTTPS: con los por defecto, lo que el backend
+        # calcula de ellos (credenciales del RTSP local, avisos de puertos) sería el MediaMTX del programa instalado.
+        settings = isolated_settings(self.paths.base, kiosk_token=self.opt.kiosk_token)
 
         factory = opt.device_client or (lambda d, p: FakeDeviceClient(d.vendor, channels=4 if d.kind == "nvr" else 1,
                                                                        kind=d.kind))

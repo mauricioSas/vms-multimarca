@@ -125,6 +125,7 @@ markers = [
     "needs_postgres: necesita PostgreSQL (pgserver o VMS_TEST_PG_DSN)",
     "needs_browser: necesita Chromium de Playwright",
     "needs_model: necesita pesos de RF-DETR descargados",
+    "product_ports: habla de verdad con los puertos por defecto del programa en este equipo (ProductPortGuard)",
 ]
 filterwarnings = [
     "ignore:`torch.jit.script` is deprecated:FutureWarning",

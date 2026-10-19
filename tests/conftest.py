@@ -11,12 +11,18 @@ Aislamiento garantizado:
     en el e2e del instalador (tests/windows/e2e y tests/windows/test_update_*.py).
   - Los temporales de pytest van a <proyecto>/.tmp/pytest (no a /tmp del sistema).
   - Todos los puertos se piden libres al sistema: varias sesiones de pytest pueden correr a la vez.
+  - Ninguna prueba se conecta a los puertos por defecto del programa (8600, 8643, 8554, 8889, 8189, 9996 y 9997)
+    en el propio equipo, donde responde el programa instalado: otro vigilante (ProductPortGuard) lo corta y hace
+    fallar la prueba, salvo con @pytest.mark.product_ports o en el e2e del instalador.
   - PostgreSQL: un servidor pgserver por sesión y una BASE NUEVA por prueba (clonada de una
     plantilla ya migrada), así ninguna prueba ve datos de otra. En Windows, con zonas horarias
     (tools/pgserver_tz.py) y con el bucle de eventos que acepta psycopg asíncrono donde hace falta.
 """
 from __future__ import annotations
 
+import errno
+import importlib.util
+import ipaddress
 import os
 import re
 import shutil
@@ -24,9 +30,11 @@ import socket
 import sys
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+import weakref
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -196,6 +204,290 @@ def _real_install_untouched(request: pytest.FixtureRequest) -> Iterator[None]:
                     "sistema.", pytrace=False)
 
 
+# =========================================================================== los puertos del programa instalado
+# Para qué es cada puerto por defecto (VmsSettings); un ajuste nuevo sin nombre aquí sale como «el programa (campo)».
+_PORT_ROLES = {
+    "http_port": "la web del programa",
+    "https_port": "la web por HTTPS",
+    "mtx_rtsp_address": "el vídeo RTSP del motor",
+    "mtx_webrtc_address": "la vista en vivo (WebRTC) del motor",
+    "mtx_webrtc_ice_udp": "el ICE de WebRTC del motor",
+    "mtx_webrtc_ice_tcp": "el ICE de WebRTC del motor",
+    "mtx_api_address": "la API de control del motor",
+    "mtx_playback_address": "la reproducción de grabaciones del motor",
+}
+
+
+def product_default_ports() -> dict[int, str]:
+    """Puertos por defecto del producto → para qué son. Salen de los valores por defecto de VmsSettings, que son
+    los de la instalación real: un puerto nuevo en los ajustes queda vigilado sin tocar nada aquí."""
+    out: dict[int, str] = {}
+    for name, field in VmsSettings.model_fields.items():
+        value = field.default
+        if name.endswith("_port") and isinstance(value, int) and not isinstance(value, bool):
+            port = value
+        elif name.startswith("mtx_") and isinstance(value, str) and value.rpartition(":")[2].isdigit():
+            port = int(value.rpartition(":")[2])  # «127.0.0.1:8554», «:8189»
+        else:
+            continue
+        out.setdefault(port, _PORT_ROLES.get(name, f"el programa ({name})"))
+    return out
+
+
+class ProductPortTouched(ConnectionRefusedError):
+    """Una prueba ha intentado conectarse a un puerto por defecto del programa en este equipo."""
+
+
+class ProductPortGuard:
+    """Ninguna prueba se conecta a los puertos por defecto del programa en el propio equipo (127.0.0.1, ::1,
+    localhost, 0.0.0.0): en un PC con VMS Multimarca instalado ahí responden de verdad su web y su motor de vídeo.
+    El 8/10/2026 el MediaMTX instalado recibía, mientras pasaban las pruebas, peticiones RTSP y WebRTC de cámaras
+    inventadas («path 'cam-xxxxxxxx/sub' is not configured»): FakeEngine apuntaba al 8554, al 8889 y al 9996.
+
+    Contesta como un puerto cerrado (ConnectionRefusedError: lo mismo que en la CI, donde no escucha nadie) y
+    además apunta el intento, para que la prueba falle aunque el código se trague el error. Vigila:
+      - socket.connect, connect_ex y sendto (gancho de auditoría, PEP 578): httpx, asyncio con selector, socket…;
+      - asyncio con ProactorEventLoop (Windows), que conecta con ConnectEx sin pasar por el gancho;
+      - cv2.VideoCapture: el FFmpeg de dentro de OpenCV lee el RTSP del motor (instantánea y salud de imagen) y
+        tampoco pasa por el gancho. Ahí no salta error: la captura queda sin abrir, como con el puerto cerrado.
+    No ve lo que haga por dentro un proceso hijo (ffmpeg, MediaMTX, el backend lanzado con subprocess) ni
+    Chromium de Playwright: que reciban puertos libres.
+
+    Un servidor de la propia prueba en uno de esos puertos sí se puede usar (en la CI no hay programa instalado):
+    vale si el puerto lo escucha este proceso o uno de sus hijos. Para hablar con el programa instalado de verdad
+    (el e2e del instalador ya va exento), `@pytest.mark.product_ports`.
+
+    De paso, en Windows las conexiones TCP a los puertos cerrados de FakeEngine (`tests.fakes.CLOSED_PORTS`)
+    contestan «rechazado» al momento y sin apuntar nada, si de verdad no escucha nadie en ellos (UDP nunca: un
+    servidor UDP de la prueba puede tener el mismo número): en Linux un puerto local cerrado se
+    rechaza al instante, pero Windows tarda 3 s (5 s con OpenCV) y web, api, ops, engine y vendors iban 4 minutos
+    más lentas.
+    """
+
+    def __init__(self, ports: dict[int, str]) -> None:
+        self.ports = dict(ports)
+        self.active = False
+        self.hits: list[str] = []
+        self._bound: weakref.WeakSet[socket.socket] = weakref.WeakSet()
+        self._cv2_done = False
+
+    @staticmethod
+    def is_local(host: str) -> bool:
+        h = host.strip("[]").lower()
+        if h == "localhost" or h.endswith(".localhost"):
+            return True
+        try:
+            ip = ipaddress.ip_address(h.split("%", 1)[0])
+        except ValueError:
+            return False
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback or ip.is_unspecified
+
+    def _own_socket(self, port: int) -> bool:
+        for sock in list(self._bound):
+            try:
+                if sock.fileno() != -1 and sock.getsockname()[1] == port:
+                    return True
+            except (OSError, IndexError, TypeError):
+                continue
+        return False
+
+    @staticmethod
+    def _own_process(port: int) -> bool:
+        """¿Lo escucha este proceso o uno de sus hijos (MediaMTX, un backend lanzado por la prueba…)?"""
+        try:
+            import psutil
+
+            me = psutil.Process()
+            procs = [me, *me.children(recursive=True)]
+        except Exception:  # noqa: BLE001 - sin psutil (o con un doble de prueba) solo cuentan los sockets propios
+            return False
+        for proc in procs:
+            try:
+                conns = proc.net_connections(kind="inet")
+            except Exception:  # noqa: BLE001 - un hijo que ya terminó o sin permiso
+                continue
+            for c in conns:
+                laddr = getattr(c, "laddr", None)
+                if laddr and laddr.port == port and (c.status == psutil.CONN_LISTEN or c.type == socket.SOCK_DGRAM):
+                    return True
+        return False
+
+    @staticmethod
+    def closed_ports() -> Collection[int]:
+        """Los puertos cerrados de FakeEngine (sin importar tests.fakes: si no está cargado, no hay ninguno)."""
+        return getattr(sys.modules.get("tests.fakes"), "CLOSED_PORTS", ())
+
+    def verdict(self, host: object, port: object, via: str, *, tcp: bool = True) -> str:
+        """«product» (y lo apunta) si es un puerto del programa en este equipo que no es de la propia prueba;
+        «closed» si es un puerto TCP cerrado de FakeEngine; «» si se deja pasar.
+
+        «closed» solo vale para conexiones TCP (`tcp`): FakeEngine reserva números TCP, pero los sockets UDP de las
+        pruebas (vinculados al 0) salen del mismo rango y un responder UDP propio podía caer en uno de esos números.
+        Sus datagramas se rechazaban (en UDP sendto nunca da «rechazado») y test_discovery_v2 fallaba al azar."""
+        if not self.active or not isinstance(host, str) or not isinstance(port, int):
+            return ""
+        if port in self.ports:
+            if not self.is_local(host) or self._own_socket(port) or self._own_process(port):
+                return ""
+            self.hits.append(f"{self._where(host, port)} ({self.ports[port]}) por {via}")
+            return "product"
+        if tcp and sys.platform == "win32" and port in self.closed_ports() and self.is_local(host) \
+                and self._nobody_listens(port):
+            return "closed"
+        return ""
+
+    @staticmethod
+    def is_tcp(sock: object) -> bool:
+        return getattr(sock, "type", None) == socket.SOCK_STREAM
+
+    @staticmethod
+    def _nobody_listens(port: int) -> bool:
+        """¿Seguro que nadie escucha en ese puerto TCP? (unos 8 ms). Por si el sistema ya se lo ha dado a otro."""
+        try:
+            import psutil
+
+            return not any(c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN
+                           for c in psutil.net_connections(kind="tcp"))
+        except Exception:  # noqa: BLE001 - sin psutil o sin permiso: se intenta de verdad
+            return False
+
+    @staticmethod
+    def _where(host: str, port: int) -> str:
+        return f"[{host.strip('[]')}]:{port}" if ":" in host else f"{host}:{port}"
+
+    def check(self, address: object, via: str, *, tcp: bool) -> None:
+        if not isinstance(address, tuple) or len(address) < 2:
+            return
+        verdict = self.verdict(address[0], address[1], via, tcp=tcp)
+        if verdict == "product":
+            raise ProductPortTouched(errno.ECONNREFUSED, "Las pruebas no se conectan a los puertos del programa "
+                                     f"instalado: {self._where(address[0], address[1])} es {self.ports[address[1]]}")
+        if verdict == "closed":
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "Nadie escucha en "
+                                         f"{self._where(address[0], address[1])} (puerto cerrado de FakeEngine)")
+
+    def url_refused(self, url: object, via: str) -> bool:
+        """Para OpenCV: ¿la URL va a un puerto del programa (se apunta) o a uno cerrado de FakeEngine?"""
+        if not isinstance(url, str) or "://" not in url:
+            return False
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError:
+            return False
+        return parts.hostname is not None and port is not None and self.verdict(parts.hostname, port, via) != ""
+
+    def __call__(self, event: str, args: tuple[Any, ...]) -> None:
+        if event == "socket.bind":
+            # Servidores de la propia prueba (en cualquier momento: también los de fixtures de sesión)
+            if len(args) >= 2 and isinstance(args[1], tuple) and len(args[1]) >= 2 and args[1][1] in self.ports:
+                try:
+                    self._bound.add(args[0])
+                except TypeError:
+                    pass
+        elif event in ("socket.connect", "socket.sendto") and self.active and len(args) >= 2:
+            # Un connect de UDP (fija el destino) o un sendto nunca toman el atajo de «cerrado»
+            self.check(args[1], event, tcp=event == "socket.connect" and self.is_tcp(args[0]))
+
+    def watch_proactor(self) -> None:
+        """ProactorEventLoop conecta con ConnectEx (y envía UDP con WSASendTo) sin avisar al gancho de auditoría."""
+        if sys.platform != "win32":
+            return
+        from asyncio import windows_events
+
+        proactor = windows_events.IocpProactor
+        if getattr(proactor.connect, "_vms_port_guard", False):
+            return
+        connect, sendto = proactor.connect, proactor.sendto
+        guard = self
+
+        def guarded_connect(self: Any, conn: Any, address: Any) -> Any:
+            guard.check(address, "asyncio (Proactor)", tcp=guard.is_tcp(conn))
+            return connect(self, conn, address)
+
+        def guarded_sendto(self: Any, conn: Any, buf: Any, flags: int = 0, addr: Any = None) -> Any:
+            guard.check(addr, "asyncio (Proactor, UDP)", tcp=False)
+            return sendto(self, conn, buf, flags, addr)
+
+        guarded_connect._vms_port_guard = True  # type: ignore[attr-defined]
+        proactor.connect = guarded_connect  # type: ignore[method-assign]
+        proactor.sendto = guarded_sendto  # type: ignore[method-assign]
+
+    def watch_cv2(self) -> None:
+        """cv2.VideoCapture vigilado. Se carga OpenCV una vez por sesión (unos 0,2 s), al empezar la primera prueba:
+        si se esperase a que lo importe el código, su primera captura se escaparía."""
+        if self._cv2_done:
+            return
+        self._cv2_done = True
+        if importlib.util.find_spec("cv2") is None:
+            return
+        try:
+            import cv2
+        except Exception:  # noqa: BLE001 - OpenCV roto: lo dirán sus propias pruebas
+            return
+        original = cv2.VideoCapture
+        if getattr(original, "_vms_port_guard", False):
+            return
+        guard = self
+
+        class GuardedVideoCapture:
+            """Envuelve la captura de OpenCV (una subclase del tipo de OpenCV revienta al liberarla: access
+            violation en el recolector de basura)."""
+            _vms_port_guard = True
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                source = args[0] if args else kwargs.get("filename")
+                # Sin abrir: lo mismo que con el puerto cerrado
+                refused = guard.url_refused(source, "cv2.VideoCapture")
+                self._capture = original() if refused else original(*args, **kwargs)
+
+            def open(self, *args: Any, **kwargs: Any) -> Any:
+                source = args[0] if args else kwargs.get("filename")
+                if guard.url_refused(source, "cv2.VideoCapture.open"):
+                    return False
+                return self._capture.open(*args, **kwargs)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._capture, name)
+
+        cv2.VideoCapture = GuardedVideoCapture
+
+
+PRODUCT_PORT_GUARD = ProductPortGuard(product_default_ports())
+sys.addaudithook(PRODUCT_PORT_GUARD)
+PRODUCT_PORT_GUARD.watch_proactor()
+
+
+def product_ports_allowed(item: pytest.Item) -> bool:
+    """El e2e del instalador habla con el programa instalado (en una VM o en GitHub Actions); las demás, solo si
+    lo piden con @pytest.mark.product_ports."""
+    return real_install_allowed(Path(item.path)) or item.get_closest_marker("product_ports") is not None
+
+
+@pytest.fixture(autouse=True)
+def _product_ports_untouched(request: pytest.FixtureRequest) -> Iterator[None]:
+    if product_ports_allowed(request.node):
+        yield
+        return
+    PRODUCT_PORT_GUARD.watch_cv2()
+    PRODUCT_PORT_GUARD.hits.clear()
+    PRODUCT_PORT_GUARD.active = True
+    try:
+        yield
+    finally:
+        PRODUCT_PORT_GUARD.active = False
+    if PRODUCT_PORT_GUARD.hits:
+        hits = list(dict.fromkeys(PRODUCT_PORT_GUARD.hits))
+        PRODUCT_PORT_GUARD.hits.clear()
+        pytest.fail("La prueba ha intentado conectarse a los puertos del programa instalado en este equipo: " +
+                    "; ".join(hits[:5]) + ". En un PC con VMS Multimarca instalado ahí responden de verdad su web y "
+                    "su motor de vídeo. Qué hacer: usa la fixture settings (o isolated_settings), FakeEngine (ya "
+                    "apunta a puertos libres) o get_free_port(); si la prueba tiene que hablar con el programa "
+                    "instalado, márcala con @pytest.mark.product_ports.", pytrace=False)
+
+
 # =========================================================================== utilidades
 def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -262,25 +554,33 @@ def app_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppPaths:
     return AppPaths(base).ensure()
 
 
+def isolated_settings(data_dir: Path, **overrides: Any) -> VmsSettings:
+    """Ajustes de prueba sin .env y con TODOS los puertos libres (web, HTTPS y MediaMTX): nunca los por defecto,
+    que en un PC con el programa instalado son los suyos (ProductPortGuard)."""
+    values: dict[str, Any] = {
+        "data_dir": data_dir,
+        "site_id": "site-test",
+        "http_host": "127.0.0.1",
+        "http_port": get_free_port(),
+        "https_port": get_free_port(),
+        "mtx_rtsp_address": f"127.0.0.1:{get_free_port()}",
+        "mtx_webrtc_address": f"127.0.0.1:{get_free_port()}",
+        "mtx_webrtc_ice_udp": f":{get_free_port()}",
+        "mtx_webrtc_ice_tcp": "",
+        "mtx_api_address": f"127.0.0.1:{get_free_port()}",
+        "mtx_playback_address": f"127.0.0.1:{get_free_port()}",
+        "internal_token": "token-interno-de-pruebas",
+        "kiosk_token": "token-kiosco-de-pruebas",
+        "credential_backend": "file",
+    }
+    values.update(overrides)
+    return VmsSettings(_env_file=None, **values)  # type: ignore[call-arg]
+
+
 @pytest.fixture
 def settings(app_paths: AppPaths) -> VmsSettings:
-    """Ajustes de prueba: puertos de MediaMTX libres y token interno fijo."""
-    return VmsSettings(
-        _env_file=None,  # type: ignore[call-arg]
-        data_dir=app_paths.base,
-        site_id="site-test",
-        http_host="127.0.0.1",
-        http_port=get_free_port(),
-        mtx_rtsp_address=f"127.0.0.1:{get_free_port()}",
-        mtx_webrtc_address=f"127.0.0.1:{get_free_port()}",
-        mtx_webrtc_ice_udp=f":{get_free_port()}",
-        mtx_webrtc_ice_tcp="",
-        mtx_api_address=f"127.0.0.1:{get_free_port()}",
-        mtx_playback_address=f"127.0.0.1:{get_free_port()}",
-        internal_token="token-interno-de-pruebas",
-        kiosk_token="token-kiosco-de-pruebas",
-        credential_backend="file",
-    )
+    """Ajustes de prueba: todos los puertos libres y token interno fijo."""
+    return isolated_settings(app_paths.base)
 
 
 @pytest.fixture

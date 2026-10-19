@@ -789,7 +789,8 @@ Lo que la analítica necesita del backend y aún no existe en `vms/` (lo conecta
 
 | Fixture | Qué da |
 |---|---|
-| `app_paths`, `settings`, `credential_store`, `config_repo` | carpeta de datos aislada, ajustes con puertos libres, almacén cifrado, repositorio |
+| `app_paths`, `settings`, `credential_store`, `config_repo` | carpeta de datos aislada, ajustes con **todos** los puertos libres (web, HTTPS y MediaMTX), almacén cifrado, repositorio |
+| `isolated_settings(data_dir, **cambios)` | lo mismo que `settings` sin fixture (backends de prueba como `tests/web/real_backend.py`) |
 | `free_port` / `get_free_port()` | puerto TCP libre |
 | `mediamtx_bin`, `ffmpeg_bin`, `ffprobe_bin` | rutas o `skip` explicado |
 | `people_video` | `tests/assets/people-walking-h264.mp4` (1280x720, 15 fps, H.264 baseline sin B-frames) |
@@ -803,7 +804,9 @@ Lo que la analítica necesita del backend y aún no existe en `vms/` (lo conecta
 
 Además el `conftest` borra las variables `VMS_*` del entorno (salvo `VMS_TEST_*` y `VMS_MEDIAMTX_BIN*`),
 fija `VMS_ENV_FILE_ONLY=1` (§3.1), usa keyring en memoria y manda los temporales a `.tmp/pytest`.
-Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`). También:
+Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`). Las URL internas de `FakeEngine` (WHEP, RTSP y
+reproducción) van a puertos libres en los que no escucha nadie (`rtsp_port`, `webrtc_port`, `playback_port`,
+distintos en cada instancia), nunca a los por defecto del motor. También:
 
 - **Instalación real intocable**: un gancho de auditoría (`RealInstallGuard`) hace fallar la prueba que
   abra, liste, cree o borre algo en `%ProgramData%\VMSMultimarca`, `%ProgramFiles%\VMSMultimarca` o las
@@ -815,6 +818,20 @@ Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`). También:
   (`tests/windows/e2e/` y `tests/windows/test_update_*.py`). `TEST_ONLY_ENV` (`VMS_ENV_FILE`,
   `VMS_ENV_FILE_ONLY`, `PYTHON_KEYRING_BACKEND`) nunca se pasa al instalador real ni a los programas
   instalados (`tests/windows/harness.product_environ()`).
+- **Puertos del programa instalado intocables**: otro vigilante (`ProductPortGuard`) corta toda conexión de la
+  prueba a `127.0.0.1`, `::1`, `localhost` o `0.0.0.0` en los puertos por defecto del producto (los de
+  `VmsSettings`: 8600, 8643, 8554, 8889, 8189, 9996 y 9997, `product_default_ports()`) como si el puerto
+  estuviera cerrado (`ProductPortTouched`, subclase de `ConnectionRefusedError`) y hace fallar la prueba aunque
+  el código se trague el error. Vigila `socket.connect`/`connect_ex`/`sendto` (gancho de auditoría), asyncio con
+  `ProactorEventLoop` (conecta sin pasar por el gancho) y `cv2.VideoCapture` (la captura queda sin abrir). Un
+  servidor de la propia prueba en esos puertos sí vale (lo escucha el proceso de pytest o uno de sus hijos: en la
+  CI no hay programa instalado). No ve lo que hagan por dentro los procesos hijos ni Chromium: que reciban
+  puertos libres. Para hablar de verdad con el programa instalado, `@pytest.mark.product_ports`; el e2e del
+  instalador va exento como en el vigilante anterior. En Windows, además, las conexiones TCP a los puertos
+  cerrados de `FakeEngine` (`tests.fakes.CLOSED_PORTS`) se rechazan al momento si de verdad no escucha nadie en
+  ellos (Windows tarda 3 s en rechazar un puerto local cerrado; Linux, nada). UDP (`sendto`, `connect` de un
+  socket UDP, datagramas de asyncio) nunca toma ese atajo: los puertos UDP de las pruebas salen del mismo rango y
+  un servidor UDP propio puede tener el número de un puerto cerrado de `FakeEngine`.
 - **PostgreSQL en Windows**: `pg_server_dsn` usa una copia de `pginstall` con las zonas horarias de `tzdata`
   en `.tmp/pginstall-<pgserver>-tz<IANA>` (`tools/pgserver_tz.py`; la rueda de Windows de pgserver no las
   trae). El servidor embebido corre en UTC siempre que tenga zonas horarias; en Windows sin `tzdata` se queda
@@ -851,7 +868,8 @@ Dobles: `tests/fakes.py` (`FakeEngine`, `FakeDeviceClient`). También:
 
 ### 9.4 Reglas
 
-Puertos siempre libres y dinámicos. Ningún proceso huérfano (paradas en `finally`/fixtures).
+Puertos siempre libres y dinámicos, nunca los por defecto del producto (§9.1, `ProductPortGuard`). Ningún
+proceso huérfano (paradas en `finally`/fixtures).
 Nada fuera del proyecto y del scratchpad. Las pruebas que necesitan binarios o red se
 saltan con un motivo claro, no fallan de forma críptica.
 
@@ -975,6 +993,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | diagnóstico | §18.11 (aditivo): paso nuevo `route` al principio (`vms/ops/netroute.py`, solo con una IPv4 de red local y sin tráfico nuevo: por qué tarjeta de red sale este PC hacia el equipo) y campo `DiagnosisStep.warning` (`false` por defecto; la web lo marca «Aviso» y el resumen cuenta los avisos). **Cambio de comportamiento:** un equipo guardado sin cámaras da `path_ready` en fallo (antes `ok: null`) con la acción de darlas de alta; con todas sus cámaras desactivadas, la acción es activarlas (antes «espera un minuto»), y el resumen solo dice que el vídeo llega si `path_ready` está bien. Motivo: en el PC del usuario, una cámara guardada con la contraseña mala quedó sin su vídeo y el diagnóstico decía que no tenía cámaras o incluso «Todo correcto»; y con el cable del PC desconectado el tráfico salía por el WiFi de la misma red sin que nada lo dijera. |
 | 2026-10-08 | hora de las cámaras | §16.2 nueva capacidad `time_write` (`DeviceClockWriter`; Hikvision y todos los perfiles con `OnvifClient`). §18.3 nueva ruta `POST /api/clock/devices/{device_id}/set` («Poner en hora con este PC», A, auditada), relectura de la hora al volver el vídeo, textos de hora con causa y acción separadas, `useAbsoluteTimestamp: false` fijado en `pathDefaults` y servidor SNTP sin sincronizar descartado. Compatibles: `ClockCheck` no cambia; `DeviceAuthFailed` de un 403 lleva `details.status = 403`; `not_supported()` ya no toma `lowPrivilege` por «recurso que no existe»: ahora es `DevicePermissionDenied`, subclase de `DeviceUnsupported` con el mismo código, así las lecturas se comportan como antes. Revisión del mismo día: la relectura al volver el vídeo solo avisa si la hora empeora (y espera 3 min si la pone otro sistema); `audit.log` también anota las negativas sin hablar con el equipo; ONVIF expresa la hora en su `LocalDateTime`; el botón de la web solo sale con hora manual. Segunda revisión: 422 `validation_error` si llega solo el usuario o solo la contraseña del administrador temporal (antes se descartaban y se probaba el usuario guardado); `DeviceWriteDenied` lleva `details.auth_rejection`/`remaining_attempts` y un rechazo así no se reintenta con la misma contraseña guardada en 30 min; ONVIF comprueba la contraseña con credenciales aunque el equipo conteste sin ellas; un 200 con `lowPrivilege` también es `DevicePermissionDenied`; hora escrita sin poder comprobarla = 200 con `ok: false` (`DeviceTimeUnverified`, `written_unverified`); al arrancar no se relee la hora antes de la primera comprobación horaria. |
 | 2026-10-08 | integración | §18.11 (sin cambios de forma): el paso `clock` de «¿Por qué no conecta?» solo es fallo con la hora `critical`; `warning` (hora a mano, desfase pequeño o zona distinta) pasa a `ok: true` con `warning: true`. Antes, una cámara en hora tras «Poner en hora con este PC» (queda en manual) salía «Falla», era la causa probable y nunca salía «Todo correcto». Misma revisión: §18.3 por ONVIF, sin `DateTimeType` (modo desconocido) «Poner en hora» responde 409 `device_clock_managed` (`time_mode` «sin informar») sin escribir; §6.1 la longitud de un `SecretStr` da «Texto demasiado largo/corto» en `details.fields` (antes «Demasiados elementos»); §6.8 con avisos de energía el resumen de la web ya no dice «Todo funciona con normalidad» (el servidor no cambia). |
+| 2026-10-08 | pruebas-puertos | §9 (solo pruebas): `FakeEngine` deja de dar los puertos por defecto del motor (8889, 8554 y 9996) y usa puertos libres cerrados (`rtsp_port`, `webrtc_port`, `playback_port`); `settings` e `isolated_settings()` (nuevo; lo usa `tests/web/real_backend.py`) dan libres también el HTTPS y todas las direcciones de MediaMTX; vigilante `ProductPortGuard` y marca `product_ports` (§9.1); `python -m tests.web.stub_backend` usa un puerto libre si no se le da `--port`. Motivo: mientras pasaban las pruebas en el PC del usuario, el MediaMTX del programa instalado recibía peticiones RTSP y WebRTC de cámaras inventadas («path 'cam-xxxxxxxx/sub' is not configured»): el proxy WHEP, la reproducción y la instantánea por OpenCV de las pruebas iban a sus puertos. |
 
 ---
 

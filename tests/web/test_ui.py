@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 import pytest
 
-from tests.conftest import get_free_port
 from tests.web.conftest import ADMIN, OPERATOR, PageErrors, login
 from tests.web.demo import ServerThread
 from tests.web.stub_backend import StubBackend
@@ -40,10 +39,7 @@ def add_nvr(c: httpx.Client, name: str = "NVR cajas", channels: Any = "all") -> 
 
 @pytest.fixture
 def stub(fake_stub: tuple[StubBackend, ServerThread]) -> tuple[StubBackend, ServerThread]:
-    backend, _ = fake_stub
-    # que el WHEP del FakeEngine apunte a un puerto cerrado (y no a un 8889 que pudiera existir)
-    dead = get_free_port()
-    backend.engine.whep_url = lambda cid, stream: f"http://127.0.0.1:{dead}/{cid}/{stream}/whep"  # type: ignore[method-assign]
+    # El WHEP del FakeEngine ya apunta a un puerto cerrado (nunca al 8889 del programa instalado)
     return fake_stub
 
 

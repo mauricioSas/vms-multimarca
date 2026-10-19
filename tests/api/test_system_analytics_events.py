@@ -118,7 +118,7 @@ async def test_analytics_rules_cameras_and_internal_config(api: Harness) -> None
     assert cfg["site"]["id"] == "site-test" and cfg["alerts"]["telegram_enabled"] is False
     assert [c["camera_id"] for c in cfg["cameras"]] == [c1]  # c2 no tiene la analítica activada
     cam = cfg["cameras"][0]
-    assert cam["rtsp_url"] == f"rtsp://127.0.0.1:8554/{c1}/sub" and cam["fps"] == 12.0
+    assert cam["rtsp_url"] == f"rtsp://127.0.0.1:{api.engine.rtsp_port}/{c1}/sub" and cam["fps"] == 12.0
     assert cam["detector"] == "rfdetr-small" and cam["rules"][0]["name"] == "Puerta norte"
     assert "Cl@ve" not in r.text and "admin:" not in r.text
     etag = r.headers["etag"]

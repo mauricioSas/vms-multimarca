@@ -6,6 +6,7 @@ ampliarlos; si cambia un Protocol, se actualizan aquí en el mismo cambio.
 """
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,9 +36,29 @@ def default_spans(now: datetime, tz: ZoneInfo = SITE_TZ) -> list[RecordingSpan]:
             RecordingSpan(start=base + timedelta(hours=1, minutes=5), duration=1800.0)]
 
 
+# Puertos que FakeEngine reservó cerrados. En Windows, tests/conftest.py (ProductPortGuard) los rechaza al momento,
+# como Linux, en vez de esperar los 3 s que tarda Windows en dar por cerrado un puerto local.
+CLOSED_PORTS: set[int] = set()
+
+
+def closed_port() -> int:
+    """Un puerto libre de este equipo en el que no escucha nadie."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = int(s.getsockname()[1])
+    CLOSED_PORTS.add(port)
+    return port
+
+
 class FakeEngine:
+    """Motor sin MediaMTX. Sus URL internas (WHEP, RTSP y reproducción) van a puertos libres en los que no escucha
+    nadie, distintos en cada instancia: lo mismo que en la CI. Antes eran los por defecto (8889, 8554 y 9996) y,
+    en un PC con el programa instalado, el proxy WHEP, la reproducción y la instantánea por OpenCV de las pruebas
+    llegaban a su MediaMTX de verdad con cámaras inventadas (tests/conftest.py, ProductPortGuard)."""
+
     def __init__(self, *, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.clock = clock
+        self.rtsp_port, self.webrtc_port, self.playback_port = closed_port(), closed_port(), closed_port()
         self.running = False
         self.sources: dict[str, CameraSource] = {}
         self.recording: RecordingSettings | None = None
@@ -95,14 +116,14 @@ class FakeEngine:
 
     def playback_get_url(self, camera_id: str, start: datetime, duration: float,
                          fmt: Literal["fmp4", "mp4"] = "fmp4") -> str:
-        return (f"http://127.0.0.1:9996/get?path={mtx_path(camera_id, 'main')}&start={start.isoformat()}"
-                f"&duration={duration}&format={fmt}")
+        return (f"http://127.0.0.1:{self.playback_port}/get?path={mtx_path(camera_id, 'main')}"
+                f"&start={start.isoformat()}&duration={duration}&format={fmt}")
 
     def whep_url(self, camera_id: str, stream: Literal["main", "sub"]) -> str:
-        return f"http://127.0.0.1:8889/{mtx_path(camera_id, stream)}/whep"
+        return f"http://127.0.0.1:{self.webrtc_port}/{mtx_path(camera_id, stream)}/whep"
 
     def rtsp_read_url(self, camera_id: str, stream: Literal["main", "sub"]) -> str:
-        return f"rtsp://127.0.0.1:8554/{mtx_path(camera_id, stream)}"
+        return f"rtsp://127.0.0.1:{self.rtsp_port}/{mtx_path(camera_id, stream)}"
 
     async def disk_usage(self) -> DiskUsage:
         return DiskUsage(path="/fake", total=1_000_000_000_000, used=400_000_000_000,

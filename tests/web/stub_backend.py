@@ -967,7 +967,9 @@ def main() -> None:  # pragma: no cover - herramienta manual
     from tests.fakes import FakeEngine
     from tests.web.demo import ServerThread
     parser = argparse.ArgumentParser(description="Backend de pruebas de la interfaz web")
-    parser.add_argument("--port", type=int, default=8600)
+    # 0 = un puerto libre (sale en pantalla). El 8600 es el del programa instalado: en un PC que lo tenga, o no
+    # arrancaría o el navegador acabaría en el programa de verdad.
+    parser.add_argument("--port", type=int, default=0, help="puerto de la web (0 = uno libre)")
     parser.add_argument("--data", type=Path, default=Path(".tmp/web-demo"))
     parser.add_argument("--camsim", action="store_true",
                         help="simulador de cámaras + MediaMTX real, con dos NVR ya dados de alta")
