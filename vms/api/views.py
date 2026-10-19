@@ -6,7 +6,7 @@ from typing import Any
 
 from vms.core.credentials import CredentialError, CredentialStore
 from vms.core.interfaces import PathStatus
-from vms.core.models import AppConfig, Camera, Device
+from vms.core.models import AppConfig, Camera, Device, PlacedCamera
 
 log = logging.getLogger("vms.api")
 
@@ -66,6 +66,19 @@ def camera_out(cfg: AppConfig, cam: Camera, paths: dict[str, PathStatus] | None)
     data["vendor"] = dev.vendor if dev else "generic"
     data["live"] = camera_live(cam, dev, paths)
     return data
+
+
+def placements_out(placed: list[PlacedCamera], camera_id: str | None = None) -> list[dict[str, Any]]:
+    """`wall_placements` de las altas (CONTRATO §6.3/§6.4): dónde se ha puesto cada cámara nueva en los muros.
+    Con `camera_id`, solo las de esa cámara."""
+    return [p._asdict() for p in placed if camera_id is None or p.camera_id == camera_id]
+
+
+def log_placements(log: logging.Logger, cfg: AppConfig, placed: list[PlacedCamera]) -> None:
+    for p in placed:
+        cam = cfg.camera(p.camera_id)
+        log.info("Cámara «%s» puesta en el monitor %d, celda %d (%s)", cam.name if cam else p.camera_id, p.monitor,
+                 p.cell + 1, "vuelve a su sitio" if p.restored else "primer hueco libre")
 
 
 def device_out(cfg: AppConfig, dev: Device, creds: CredentialStore, paths: dict[str, PathStatus] | None,

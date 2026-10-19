@@ -172,9 +172,24 @@ cambios, revalida el documento entero, guarda y notifica a los suscriptores (mot
 - `analytics_rules[]: LineRule | ZoneRule` — discriminadas por `kind` (`"line"`/`"zone"`).
 - `settings: SystemSettings` — `site`, `retention` (`days`, `disk_guard_percent`),
   `recording` (`segment_seconds`, `part_seconds`, `recordings_dir`), `alerts` (`telegram_enabled`, `telegram_chat_id`).
+- `wall_memory[]: WallPlacement` (v2, aditivo) — `{host, vendor, channel, monitor, cell, removed_at}`: celda en la
+  que estaba cada cámara cuando se borró. `host` en minúsculas; nunca credenciales ni nombres. Como mucho
+  `WALL_MEMORY_MAX` = 64 entradas (las más recientes) de los últimos `WALL_MEMORY_DAYS` = 30 días. Es solo una
+  ayuda: una entrada dañada se descarta al cargar sin dar config.json por dañado.
 
 Borrados en cascada: `AppConfig.remove_device()` / `remove_camera()` limpian celdas de muros,
-reglas y ajustes de analítica. Además, al borrar un equipo, la API borra su contraseña.
+reglas y ajustes de analítica. Además, al borrar un equipo, la API borra su contraseña. Antes de vaciar sus
+celdas, `remove_camera()` las anota en `wall_memory` (sustituye lo que hubiera de la misma cámara).
+
+Colocación de las cámaras nuevas (`AppConfig.place_new_cameras(cameras)`, la llaman las tres altas de §6.3 y §6.4):
+1. Si `wall_memory` tiene la misma cámara (misma `host` + `vendor` + `channel`, aunque el id sea otro), vuelve a
+   cada celda recordada que siga libre y a la vista (índice menor que `grid`). Esas entradas se borran.
+2. Si no ha vuelto a ninguna, va al primer hueco libre a la vista del monitor 1 (monitor 1 vacío con `grid` 1 =
+   lo ocupa entero). Las que vuelven a su sitio van antes que las nuevas del mismo alta.
+
+Nunca pisa una celda ocupada, nunca cambia `grid` ni `name`, y no pone cámaras nuevas en los monitores 2 a 4 (solo
+devuelve allí las que estaban). Devuelve `[PlacedCamera(camera_id, monitor, cell, restored)]`; una cámara sin
+hueco no aparece.
 
 ### 3.4 Identificadores
 
@@ -423,15 +438,21 @@ se suscribe a cambios de configuración (aplicación con antirrebote de 1 s) →
 | Método y ruta | Rol | Petición → Respuesta |
 |---|---|---|
 | `GET /api/devices` | O | → `[DeviceOut]` |
-| `POST /api/devices` | A | `DeviceCreate` → 201 `DeviceOut`. Si `import_channels` (lista o `"all"`), consulta canales y crea cámaras (nombre del canal). Si falla la consulta, el equipo se crea igual y `details.import_error` lo explica. |
+| `POST /api/devices` | A | `DeviceCreate` → 201 `DeviceOut` + `wall_placements`. Si `import_channels` (lista o `"all"`), consulta canales y crea cámaras (nombre del canal) y las pone en los muros (§3.3). Si falla la consulta, el equipo se crea igual y `details.import_error` lo explica. |
 | `GET /api/devices/{id}` | O | → `DeviceOut` |
 | `PATCH /api/devices/{id}` | A | `DeviceUpdate` → `DeviceOut` (`password` null = sin cambio, "" = borrar) |
 | `DELETE /api/devices/{id}` | A | → 204 (cascada §3.3 + borra contraseña) |
 | `POST /api/devices/test` | A | `DeviceTestRequest` (sin guardar) → `DeviceTestResult` (siempre 200) |
 | `POST /api/devices/{id}/test` | A | → `DeviceTestResult` con la contraseña guardada |
 | `GET /api/devices/{id}/channels` | A | → `[ChannelInfo]` (502 si el equipo falla) |
-| `POST /api/devices/{id}/channels/import` | A | `{channels: [int] \| "all"}` → 201 `[Camera]` (omite canales ya dados de alta) |
+| `POST /api/devices/{id}/channels/import` | A | `{channels: [int] \| "all"}` → 201 `[Camera + {wall_placements}]` (omite canales ya dados de alta; cada cámara lleva solo sus celdas) |
 | `POST /api/discovery/scan` | A | `{timeout_s: 1..10 = 3}` → `{devices: [DiscoveredDevice], report: ScanReport}` (`already_added` según host; `network_hint`: aviso si el equipo está en otra red que el PC; `report`, aditivo: por qué pudo salir vacía, ver abajo) |
+
+`wall_placements` (aditivo, solo en las respuestas de las tres altas: `POST /api/devices`, `.../channels/import` y
+`POST /api/cameras`): `[{camera_id, monitor, cell, restored}]`, dónde ha puesto `place_new_cameras` (§3.3) cada
+cámara nueva. `cell` empieza en 0; `restored: true` = ha vuelto a la celda que tenía antes de borrarla. Lista vacía si
+no había hueco libre en el monitor 1: la web lo dice con su «Qué hacer:». Si se ha puesto alguna, además del
+`config` de su alta se publica `config` con scope `walls` (§6.11).
 
 `ScanReport` (aditivo; lo rellena `discover()` durante la búsqueda, `vms/vendors/scanreport.py`):
 `{nics: [{ip, name, category: "public"|"private"|"domain"|"" (no se sabe), network, internet: bool|null, index}],
@@ -457,7 +478,7 @@ no lo reproduce por WebRTC. Cámbialo a H.264 en el NVR»).
 | Método y ruta | Rol | Petición → Respuesta |
 |---|---|---|
 | `GET /api/cameras` | K | → `[CameraOut]` |
-| `POST /api/cameras` | A | `CameraCreate` → 201 `CameraOut` (409 si ese equipo+canal ya existe) |
+| `POST /api/cameras` | A | `CameraCreate` → 201 `CameraOut` + `wall_placements` (§6.3; 409 si ese equipo+canal ya existe) |
 | `GET /api/cameras/{id}` | K | → `CameraOut` |
 | `PATCH /api/cameras/{id}` | A | `CameraUpdate` → `CameraOut` |
 | `DELETE /api/cameras/{id}` | A | → 204 (cascada) |
@@ -575,7 +596,11 @@ se graba nada. Es una sección aparte: **no** cambia `status` ni `problems`.
 `GET /api/events` (K) — Server-Sent Events:
 - `event: config` · `data: {"revision": 13, "scope": "devices|cameras|walls|settings|analytics|users"}`
 - `event: status` (cada 5 s) · `data: {"cameras": [{"camera_id", "online", "recording"}], "engine": {"running"}}`
-- comentario `: ping` cada 15 s. Los muros recargan su layout al recibir `config` con scope `walls`/`cameras`.
+- comentario `: ping` cada 15 s. Los muros recargan su layout al recibir `config` con scope `walls`/`cameras`
+  (también `devices`). Un alta que pone cámaras en los muros (§3.3) publica además `walls`. El panel junta los
+  scopes que llegan seguidos y recarga los muros con cualquiera de los tres; con cambios sin guardar en
+  «Monitores», las celdas que el usuario no ha tocado siguen al servidor y las que ha tocado se quedan como él las
+  dejó.
 - Al parar el backend, el flujo termina en cuanto empieza la parada (`AppState.begin_stop`) y el navegador vuelve
   a conectar solo (`retry: 3000`): un panel abierto ya no retiene la parada (§14.1).
 
@@ -1012,6 +1037,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | zona horaria | §18.3 (revisión, solo textos y web): tras un 422 `clock_zone_unsupported` el diálogo desmarca la casilla; sin casilla (`pc_zone.error_es`) ya no dice «solo cambia si marcas la casilla de abajo». **Cambio de texto:** el aviso de después dice «Ya usa la zona horaria de este PC (…)» (antes «Usa…», que se leía como una orden a quien lee). |
 | 2026-10-08 | zona horaria | §18.3 (revisión, sin cambios de forma): el aviso de zona distinta de la fila compara la zona del equipo en el instante de la medida (la regla de `zone`, como `ClockCheck.utc_offset_s` y el diálogo) con la del PC en ese instante. Antes usaba el desfase de la propia hora del equipo: con la zona de Madrid y la fecha de 1970, en verano, la fila decía «UTC+1, distinta de la de este PC (UTC+2)» y el diálogo «ya usa la misma zona». |
 | 2026-10-08 | zona horaria | §16.2/§18.3 (aditivo): `DeviceTimeUnverified.details["previous_zone"]` (la zona que tenía el equipo antes de escribir, si se sabe) y `audit.log` la anota en `zone_before` con `written_unverified`. Antes quedaba en `null` aunque, con la casilla de la zona, la zona pudo cambiar. |
+| 2026-10-08 | muros | §3.3 nuevo campo `AppConfig.wall_memory` (aditivo, **sin** subir `version`, §13.8) y `place_new_cameras`; §6.3/§6.4 `wall_placements` en las respuestas de las tres altas; §6.11 esas altas publican también `config` con scope `walls`; §18.8 el kiosco ve la cámara nueva en cuanto se da de alta. **Cambio de comportamiento:** una cámara dada de alta (a mano, al crear el equipo o con «Canales») ya no se queda fuera de los muros: vuelve a las celdas que tenía si se borró en los últimos 30 días (misma dirección, marca y canal) y siguen libres, o va al primer hueco libre del monitor 1; nunca pisa una celda ocupada ni toca la cuadrícula ni los monitores 2 a 4 (salvo para devolverla a su sitio). Motivo: en el PC del usuario, la cámara borrada y vuelta a dar de alta grababa y se veía en Reproducción, pero desapareció de «Monitores» y el muro se quedó vacío. |
 
 ---
 
@@ -1168,6 +1194,9 @@ versión salvo `/ALLOWDOWNGRADE`. Cerrojo compartido por la tubería (§15.2, or
 
 - `CONFIG_VERSION = 2`. `vms/core/config_migrations.py` (dueño B4): `MIGRATIONS = {1: v1_to_v2, …}`,
   funciones puras sobre el JSON; `ConfigStore` las aplica al cargar.
+- Un campo nuevo con valor por defecto (por ejemplo `wall_memory`, §3.3) **no** sube `version`: la versión que no
+  lo conoce lo conserva (`extra="allow"`) y la que lo conoce lo rellena al cargar. Subir `version` dejaría en solo
+  lectura a las versiones anteriores tras una vuelta atrás; solo se sube cuando hay que transformar datos.
 - Modelos persistentes (`Device`, `Camera`, `WallLayout`, reglas, ajustes, `AppConfig`, `UserPublic`/`User`,
   `Site`): `extra="allow"`. Una versión N-1 conserva lo que no conoce. Nunca se conserva un `password` en
   claro dentro de un equipo (se descarta y se avisa, como en la v1).
@@ -1685,7 +1714,9 @@ cuadra). Nunca se recodifica (sin libx264); H.265 se entrega tal cual.
 `User.camera_scope: CameraScope | None` (`cameras`, `live`, `playback`, `export`, `bookmark`). `None` =
 todas (compatibilidad v1); los administradores no tienen ámbito; el kiosco ve el vivo de las cámaras de
 los muros (una cámara que no está en ninguna celda de los 4 muros responde 404 al kiosco, también en
-`GET /api/cameras`). Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la fase 0 en:
+`GET /api/cameras`). Las altas (solo administradores) ponen la cámara nueva en el monitor 1 si hay hueco (§3.3), así
+que el kiosco la ve en cuanto se da de alta; la web dice en qué monitor ha quedado para que el administrador la
+quite si no debe verse. Se aplica **solo** en `vms/api/permissions.py`, ya llamado desde la fase 0 en:
 - cámaras, vivo, grabaciones y descargas: una cámara fuera del ámbito responde 404;
 - `PUT /api/walls/{monitor}`: una cámara que se **añade** al muro tiene que estar en el ámbito `live` (si
   no, 422 «La cámara no existe», como una inexistente); las que ya estaban se pueden dejar o quitar. Así un

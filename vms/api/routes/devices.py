@@ -11,14 +11,15 @@ from starlette.responses import Response
 
 from vms.core.errors import ConflictError, DeviceError, NotFoundError, ValidationFailed
 from vms.core.interfaces import ChannelInfo, DeviceInfo
-from vms.core.models import AppConfig, Camera, Device, DeviceCreate, DeviceTestRequest, DeviceUpdate
+from vms.core.models import (AppConfig, Camera, Device, DeviceCreate, DeviceTestRequest, DeviceUpdate,
+                             PlacedCamera)
 from vms.vendors import scanreport
 from vms.vendors.localnet import local_ipv4, subnet_hint
 
 from ..deps import Principal, get_state, require_admin, require_operator
 from ..errors import json_response
 from ..state import AppState
-from ..views import device_out
+from ..views import device_out, log_placements, placements_out
 
 log = logging.getLogger("vms.api.devices")
 router = APIRouter(tags=["devices"])
@@ -132,23 +133,30 @@ async def create_device(body: DeviceCreate, p: Principal = Depends(require_admin
     if password:
         state.creds.set_device_password(dev.id, password)
 
-    def mutate(cfg: AppConfig) -> None:
+    def mutate(cfg: AppConfig) -> list[PlacedCamera]:
         _check_duplicate(cfg, dev)
         cfg.devices.append(dev)
         cfg.cameras.extend(new_cams)
+        # un equipo borrado y vuelto a dar de alta recupera sus celdas; si no, al primer hueco del monitor 1
+        return cfg.place_new_cameras(new_cams)
 
     try:
-        await state.update_config(mutate, "devices")
+        placed = await state.update_config(mutate, "devices")
     except Exception:
         if password:
             state.creds.delete_device_password(dev.id)
         raise
     if new_cams:
         state.publish_config("cameras")
+    if placed:
+        state.publish_config("walls")
     log.info("Equipo «%s» (%s, %s) creado por «%s» con %d cámaras", dev.name, dev.vendor, dev.host, p.username,
              len(new_cams))
+    log_placements(log, state.config(), placed)
     paths = await state.paths_status_safe()
-    return json_response(device_out(state.config(), dev, state.creds, paths, details or None), 201)
+    out = device_out(state.config(), dev, state.creds, paths, details or None)
+    out["wall_placements"] = placements_out(placed)
+    return json_response(out, 201)
 
 
 @router.post("/api/devices/test")
@@ -257,16 +265,20 @@ async def import_channels(device_id: str, body: ImportRequest, p: Principal = De
     dev = _get_device(state.config(), device_id)
     _info, channels = await _fetch(state, dev, state.creds.get_device_password(device_id), probe=False)
 
-    def mutate(cfg: AppConfig) -> list[Camera]:
+    def mutate(cfg: AppConfig) -> tuple[list[Camera], list[PlacedCamera]]:
         _get_device(cfg, device_id)
         existing = {c.channel for c in cfg.cameras_of(device_id)}
         new = cameras_from_channels(dev, channels, body.channels, existing)
         cfg.cameras.extend(new)
-        return new
+        return new, cfg.place_new_cameras(new)
 
-    new = await state.update_config(mutate, "cameras")
+    new, placed = await state.update_config(mutate, "cameras")
+    if placed:
+        state.publish_config("walls")
     log.info("%d cámaras importadas del equipo «%s» por «%s»", len(new), dev.name, p.username)
-    return json_response(new, 201)
+    log_placements(log, state.config(), placed)
+    return json_response([{**c.model_dump(mode="json"), "wall_placements": placements_out(placed, c.id)}
+                          for c in new], 201)
 
 
 @router.post("/api/discovery/scan")

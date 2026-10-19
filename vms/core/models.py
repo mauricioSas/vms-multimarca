@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, NamedTuple, Union, get_args, get_origin
 
-from pydantic import (BaseModel, ConfigDict, Field, SecretStr, field_validator,
+from pydantic import (BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator,
                       model_validator)
 
 from . import rtsp
@@ -347,6 +347,49 @@ class WallUpdate(_Model):
     cells: list[EntityId | None] | None = Field(None, max_length=WALL_SLOTS)
 
 
+# Memoria de celdas de las cámaras borradas (`AppConfig.wall_memory`, CONTRATO §3.3): cuánto dura y cuántas entradas
+# guarda como mucho (las celdas de los 4 muros: más no pueden hacer falta).
+WALL_MEMORY_DAYS = 30
+WALL_MEMORY_MAX = MAX_MONITORS * WALL_SLOTS
+
+
+class WallPlacement(_Persisted):
+    """Celda de un muro en la que estaba una cámara cuando se borró.
+
+    Al volver a dar de alta la cámara, tiene otro id; se reconoce por la dirección del equipo, la marca y el canal.
+    Nunca lleva credenciales ni el nombre de la cámara."""
+
+    host: str = Field(min_length=1, max_length=253, description="IP o nombre del equipo, en minúsculas")
+    vendor: str = Field(min_length=1, max_length=32)
+    channel: int = Field(ge=1, le=512)
+    monitor: int = Field(ge=1, le=MAX_MONITORS)
+    cell: int = Field(ge=0, lt=WALL_SLOTS)
+    removed_at: datetime = Field(default_factory=utcnow)
+
+    @field_validator("host")
+    @classmethod
+    def _host(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @field_validator("removed_at")
+    @classmethod
+    def _aware(cls, v: datetime) -> datetime:
+        # una fecha sin zona (editada a mano) se toma como UTC: si no, compararla con la hora actual fallaría
+        return v if v.tzinfo is not None else v.replace(tzinfo=timezone.utc)
+
+    def key(self) -> tuple[str, str, int]:
+        return (self.host, self.vendor, self.channel)
+
+
+class PlacedCamera(NamedTuple):
+    """Celda en la que se ha puesto una cámara recién dada de alta (`wall_placements` en la API)."""
+
+    camera_id: str
+    monitor: int
+    cell: int
+    restored: bool        # True = ha vuelto a la celda que tenía antes de borrarla
+
+
 # --------------------------------------------------------------------------- usuarios
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._\-]{3,32}$")
 
@@ -577,6 +620,24 @@ class AppConfig(_Persisted):
     analytics_cameras: list[CameraAnalytics] = Field(default_factory=list)
     analytics_rules: list[AnalyticsRule] = Field(default_factory=list)
     settings: SystemSettings = Field(default_factory=SystemSettings)
+    # v2 (aditivo, no sube `version`): dónde estaban las cámaras borradas, para devolverlas a su celda si se vuelven
+    # a dar de alta (`place_new_cameras`). Un config.json sin este campo carga con la lista vacía.
+    wall_memory: list[WallPlacement] = Field(default_factory=list)
+
+    @field_validator("wall_memory", mode="before")
+    @classmethod
+    def _tolerant_memory(cls, v: object) -> object:
+        """Es solo una ayuda: una entrada dañada (por ejemplo, editada a mano) se descarta en vez de dar todo
+        config.json por dañado, y nunca se pasa del máximo (se quedan las más recientes)."""
+        if not isinstance(v, list):
+            return []
+        out: list[WallPlacement] = []
+        for item in v:
+            try:
+                out.append(WallPlacement.model_validate(item))
+            except ValidationError:
+                continue
+        return out[-WALL_MEMORY_MAX:]
 
     # ---- consultas -------------------------------------------------------
     def device(self, device_id: str) -> Device | None:
@@ -598,20 +659,93 @@ class AppConfig(_Persisted):
         return next((a for a in self.analytics_cameras if a.camera_id == camera_id), None)
 
     # ---- borrado en cascada ---------------------------------------------
-    def remove_camera(self, camera_id: str) -> None:
+    def remove_camera(self, camera_id: str, *, now: datetime | None = None) -> None:
+        """Borra la cámara de la lista, de los muros y de la analítica. Antes anota en `wall_memory` en qué celdas
+        estaba, para devolverla a su sitio si se vuelve a dar de alta."""
+        cam = self.camera(camera_id)
+        if cam is not None:
+            self._remember_cells(cam, now or utcnow())
         self.cameras = [c for c in self.cameras if c.id != camera_id]
         for w in self.walls:
             w.cells = [None if c == camera_id else c for c in w.cells]
         self.analytics_rules = [r for r in self.analytics_rules if r.camera_id != camera_id]
         self.analytics_cameras = [a for a in self.analytics_cameras if a.camera_id != camera_id]
 
-    def remove_device(self, device_id: str) -> list[str]:
+    def remove_device(self, device_id: str, *, now: datetime | None = None) -> list[str]:
         """Borra el equipo y sus cámaras. Devuelve los ids de cámara eliminados."""
         removed = [c.id for c in self.cameras_of(device_id)]
         for cid in removed:
-            self.remove_camera(cid)
+            self.remove_camera(cid, now=now)
         self.devices = [d for d in self.devices if d.id != device_id]
         return removed
+
+    # ---- colocación en los muros -----------------------------------------
+    def _camera_key(self, cam: Camera) -> tuple[str, str, int] | None:
+        """Lo que reconoce a una cámara aunque se borre y se vuelva a dar de alta: dirección del equipo, marca y
+        canal (el id cambia)."""
+        dev = self.device(cam.device_id)
+        return None if dev is None else (dev.host.strip().lower(), dev.vendor, cam.channel)
+
+    def _fresh_memory(self, now: datetime) -> list[WallPlacement]:
+        oldest = now - timedelta(days=WALL_MEMORY_DAYS)
+        return [m for m in self.wall_memory if m.removed_at >= oldest]
+
+    def _remember_cells(self, cam: Camera, now: datetime) -> None:
+        key = self._camera_key(cam)
+        if key is None:
+            return
+        # lo anterior de la misma cámara deja de valer: manda dónde estaba al borrarla (o que no estaba en ninguno)
+        memory = [m for m in self._fresh_memory(now) if m.key() != key]
+        for wall in sorted(self.walls, key=lambda w: w.monitor):
+            memory += [WallPlacement(host=key[0], vendor=key[1], channel=key[2], monitor=wall.monitor, cell=i,
+                                     removed_at=now)
+                       for i, cid in enumerate(wall.cells) if cid == cam.id]
+        self.wall_memory = memory[-WALL_MEMORY_MAX:]
+
+    def _put_in_cell(self, monitor: int, cell: int, camera_id: str) -> bool:
+        """Pone la cámara en la celda si existe, está a la vista (dentro de la cuadrícula) y está libre."""
+        wall = self.wall(monitor)
+        if wall is None or not 0 <= cell < wall.grid or wall.cells[cell] is not None:
+            return False
+        cells = list(wall.cells)
+        cells[cell] = camera_id
+        wall.cells = cells
+        return True
+
+    def place_new_cameras(self, cameras: Iterable[Camera], *, now: datetime | None = None) -> list[PlacedCamera]:
+        """Pone en los muros las cámaras recién dadas de alta, para que se vean sin tener que ir a «Monitores»:
+
+        1. Si en los últimos `WALL_MEMORY_DAYS` días se borró una cámara con la misma dirección, marca y canal,
+           vuelve a las celdas que tenía, si siguen libres y a la vista.
+        2. Si no, va al primer hueco libre a la vista del monitor 1 (con el monitor 1 vacío y cuadrícula de 1, lo
+           ocupa entero).
+
+        Nunca pisa una celda ocupada, no cambia la cuadrícula ni pone nada nuevo en los monitores 2 a 4. Devuelve
+        dónde ha puesto cada una (una cámara sin hueco no aparece)."""
+        now = now or utcnow()
+        memory = self._fresh_memory(now)
+        placed: list[PlacedCamera] = []
+        pending: list[Camera] = []
+        for cam in cameras:
+            key = self._camera_key(cam)
+            restored = False
+            if key is not None:
+                for spot in [m for m in memory if m.key() == key]:
+                    if self._put_in_cell(spot.monitor, spot.cell, cam.id):
+                        placed.append(PlacedCamera(cam.id, spot.monitor, spot.cell, True))
+                        restored = True
+                memory = [m for m in memory if m.key() != key]   # la cámara vuelve a existir: ya no hace falta
+            if not restored:
+                pending.append(cam)
+        first = self.wall(1)
+        for cam in pending:
+            free = next((i for i in range(first.grid) if first.cells[i] is None), None) if first else None
+            if free is None:
+                break
+            self._put_in_cell(1, free, cam.id)
+            placed.append(PlacedCamera(cam.id, 1, free, False))
+        self.wall_memory = memory
+        return placed
 
     # ---- coherencia ------------------------------------------------------
     def repair(self) -> list[str]:

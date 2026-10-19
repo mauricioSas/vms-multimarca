@@ -83,7 +83,8 @@
       "title": "Monitores",
       "intro": [
         "Aquí decides qué cámaras salen en cada monitor de la tienda (hasta 4 monitores, con 1, 4, 9 o 16 cámaras cada uno).",
-        "Arrastra una cámara de la lista a una celda o elígela en la lista de la celda. Después pulsa «Guardar monitor»: el muro cambia solo, sin recargar."
+        "Arrastra una cámara de la lista a una celda o elígela en la lista de la celda. Después pulsa «Guardar monitor»: el muro cambia solo, sin recargar.",
+        "Las cámaras que das de alta se ponen solas en el primer hueco libre del monitor 1. Si borras una cámara y la vuelves a dar de alta en menos de 30 días, vuelve a la celda que tenía, si sigue libre."
       ],
       "buttons": [
         {"label": "Monitor 1-4", "text": "Elige qué monitor estás editando."},

@@ -4,7 +4,9 @@ import {
   $, $$, esc, mountShell, toast, toastError, busy, confirmDialog, showFieldErrors, clearFieldErrors,
   errorText,
 } from "./ui.js";
-import { bindDevices, openDeviceDialog, presetFor, renderDevices, setFormError, vendorLabel } from "./devices.js";
+import {
+  bindDevices, openDeviceDialog, placementText, presetFor, renderDevices, setFormError, vendorLabel,
+} from "./devices.js";
 
 
 const state = {
@@ -45,8 +47,29 @@ async function loadCameras() {
 }
 
 async function loadWalls({ keepDraft = false } = {}) {
+  const before = state.walls.find((w) => w.monitor === state.monitor);
   state.walls = await get("/api/walls");
-  if (!keepDraft || !state.dirty) selectMonitor(state.monitor, { force: true });
+  if (!keepDraft || !state.dirty || !state.draft) {
+    selectMonitor(state.monitor, { force: true });
+    return;
+  }
+  // Hay cambios sin guardar en este monitor: se conservan, pero las celdas que el usuario no ha tocado siguen al
+  // servidor (una cámara recién dada de alta que el servidor ha puesto en un hueco, o una borrada que ha quitado).
+  // Así «Guardar monitor» no deshace esos cambios ni manda una cámara que ya no existe.
+  const after = state.walls.find((w) => w.monitor === state.monitor);
+  if (before && after && before.monitor === state.draft.monitor) {
+    let changed = false;
+    for (let i = 0; i < state.draft.cells.length; i++) {
+      const was = before.cells[i] || null;
+      const now = after.cells[i] || null;
+      if (now !== was && (state.draft.cells[i] || null) === was) {
+        state.draft.cells[i] = now;
+        changed = true;
+      }
+    }
+    if (changed) renderScreen();
+  }
+  renderMonitorTabs();
 }
 
 async function loadAll() {
@@ -188,11 +211,14 @@ cameraForm.addEventListener("submit", async (ev) => {
   await busy($("#btn-camera-save"), async () => {
     try {
       const cam = state.editingCamera;
+      let where = "";
       if (cam) await patch(`/api/cameras/${enc(cam.id)}`, body);
-      else await post("/api/cameras", { ...body, device_id: f.device_id.value });
-      toast(`Cámara «${body.name}» guardada`, "ok");
+      else where = placementText((await post("/api/cameras", { ...body, device_id: f.device_id.value })).wall_placements, 1);
+      toast(where ? `Cámara «${body.name}» guardada. ${where}` : `Cámara «${body.name}» guardada`, "ok",
+        where.includes("Qué hacer:") ? 12000 : 6000);
       cameraDialog.close();
-      await Promise.all([loadDevices(), loadCameras()]);
+      // una cámara nueva puede haber quedado en el monitor 1: el editor de monitores se pone al día
+      await Promise.all([loadDevices(), loadCameras(), loadWalls({ keepDraft: true })]);
     } catch (err) {
       if (!showFieldErrors(cameraForm, err)) setFormError($("#camera-form-error"), errorText(err));
     }
@@ -385,13 +411,23 @@ window.addEventListener("beforeunload", (ev) => {
 });
 
 // ================================================================== tiempo real
+// Un alta llega como varios avisos seguidos («devices», «cameras» y «walls»): se juntan todos los que llegan en
+// 400 ms y se recarga lo de cada uno (antes solo contaba el último y se perdían los demás). Los muros se recargan
+// también con «devices» y «cameras»: borrar o dar de alta cámaras cambia sus celdas.
 let refreshTimer = null;
+const pendingScopes = new Set();
 function scheduleRefresh(scope) {
+  pendingScopes.add(scope);
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(async () => {
+    const scopes = new Set(pendingScopes);
+    pendingScopes.clear();
+    const cams = scopes.has("devices") || scopes.has("cameras");
+    const jobs = [];
+    if (cams) jobs.push(loadDevices(), loadCameras());
+    if (cams || scopes.has("walls")) jobs.push(loadWalls({ keepDraft: true }));
     try {
-      if (scope === "walls") await loadWalls({ keepDraft: true });
-      else if (scope === "devices" || scope === "cameras") await Promise.all([loadDevices(), loadCameras()]);
+      await Promise.all(jobs);
     } catch (err) {
       console.warn("No se pudo refrescar tras un cambio", err);
     }

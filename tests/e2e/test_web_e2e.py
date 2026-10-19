@@ -115,6 +115,7 @@ def test_full_flow_live_wall_playback_and_pages(env: Env, make_context: Any, scr
     page.select_option("[data-slot-select='0']", hik_cams[0]["id"])   # canal 1 = vídeo de personas
     page.drag_and_drop(f".cam-chip[data-camera='{dah_cams[0]['id']}']", "[data-slot='1']")
     page.select_option("[data-slot-select='2']", hik_cams[1]["id"])
+    page.select_option("[data-slot-select='3']", "")   # el alta la llenó sola (CONTRATO §3.3): se deja una vacía
     page.click("#btn-save-wall")
     page.wait_for_selector("#wall-dirty", state="hidden")
     assert env.api.get("/api/walls/1").json()["cells"][:4] == [hik_cams[0]["id"], dah_cams[0]["id"],

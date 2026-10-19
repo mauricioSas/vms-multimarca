@@ -72,10 +72,11 @@ async def test_lists_and_status_are_filtered(api: Harness) -> None:
 
 async def test_cannot_add_out_of_scope_camera_to_a_wall_and_kiosk_unchanged(api: Harness) -> None:
     admin, op, c1, c2, _ = await _setup(api)
-    r = await op.put("/api/walls/1", json={"cells": [c1, c2]})
+    # monitor 3: el alta solo pone las cámaras nuevas en el monitor 1 (CONTRATO §3.3)
+    r = await op.put("/api/walls/3", json={"cells": [c1, c2]})
     assert r.status_code == 422 and r.json()["error"]["details"]["fields"] == [{"loc": ["cells", 1],
                                                                                  "msg": "La cámara no existe"}]
-    assert (await op.put("/api/walls/1", json={"cells": [c1]})).status_code == 200
+    assert (await op.put("/api/walls/3", json={"cells": [c1]})).status_code == 200
     # el kiosco ve en vivo cualquier cámara de los muros, como en la v1
     assert (await admin.put("/api/walls/2", json={"cells": [c1, c2]})).status_code == 200
     k = await api.kiosk()

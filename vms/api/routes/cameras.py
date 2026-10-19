@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 from vms.core.audit import audit
 from vms.core.errors import ConflictError, DeviceError, NotFoundError, RateLimited, ValidationFailed
-from vms.core.models import AppConfig, Camera, CameraCreate, CameraUpdate, Device
+from vms.core.models import AppConfig, Camera, CameraCreate, CameraUpdate, Device, PlacedCamera
 from vms.core.mtx_auth import with_reader_credentials
 
 from ..deps import Principal, get_state, require_admin, require_kiosk
@@ -20,7 +20,7 @@ from ..errors import json_response
 from ..security import client_ip
 from ..permissions import ensure_camera_access, visible_camera_ids
 from ..state import AppState
-from ..views import camera_out
+from ..views import camera_out, log_placements, placements_out
 
 log = logging.getLogger("vms.api.cameras")
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
@@ -61,13 +61,19 @@ async def create_camera(body: CameraCreate, p: Principal = Depends(require_admin
                         state: AppState = Depends(get_state)) -> Response:
     cam = Camera(**body.model_dump())
 
-    def mutate(cfg: AppConfig) -> None:
+    def mutate(cfg: AppConfig) -> list[PlacedCamera]:
         _validate(cfg, cam)
         cfg.cameras.append(cam)
+        return cfg.place_new_cameras([cam])   # que se vea en el muro sin ir a «Monitores» (CONTRATO §3.3)
 
-    await state.update_config(mutate, "cameras")
+    placed = await state.update_config(mutate, "cameras")
+    if placed:
+        state.publish_config("walls")         # muros abiertos y visor: recargan su disposición
     log.info("Cámara «%s» creada por «%s»", cam.name, p.username)
-    return json_response(camera_out(state.config(), cam, await state.paths_status_safe()), 201)
+    log_placements(log, state.config(), placed)
+    out = camera_out(state.config(), cam, await state.paths_status_safe())
+    out["wall_placements"] = placements_out(placed)
+    return json_response(out, 201)
 
 
 @router.get("/{camera_id}")

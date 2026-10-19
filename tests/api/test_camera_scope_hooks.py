@@ -32,17 +32,18 @@ async def test_operator_cannot_put_an_out_of_scope_camera_on_a_wall(api: Harness
     c1, c2 = (await new_device(admin, import_channels=[1, 2]))["cameras"]
     hidden.add(c2)
     op = await api.operator()
-    r = await op.put("/api/walls/1", json={"cells": [c1, c2]})
+    # monitor 2: el alta solo pone las cámaras nuevas en el monitor 1 (CONTRATO §3.3)
+    r = await op.put("/api/walls/2", json={"cells": [c1, c2]})
     assert r.status_code == 422, r.text
     assert r.json()["error"]["details"]["fields"] == [{"loc": ["cells", 1], "msg": "La cámara no existe"}]
-    assert (await op.get("/api/walls/1")).json()["cells"][:2] == [None, None]
+    assert (await op.get("/api/walls/2")).json()["cells"][:2] == [None, None]
     # el administrador sí puede; después el operador puede editar ese muro sin quitarla…
-    assert (await admin.put("/api/walls/1", json={"cells": [None, c2]})).status_code == 200
-    r = await op.put("/api/walls/1", json={"cells": [c1, c2], "name": "Cajas"})
+    assert (await admin.put("/api/walls/2", json={"cells": [None, c2]})).status_code == 200
+    r = await op.put("/api/walls/2", json={"cells": [c1, c2], "name": "Cajas"})
     assert r.status_code == 200 and r.json()["cells"][:2] == [c1, c2]
     # …y quitarla, pero no volver a ponerla
-    assert (await op.put("/api/walls/1", json={"cells": [c1]})).status_code == 200
-    assert (await op.put("/api/walls/1", json={"cells": [c1, c2]})).status_code == 422
+    assert (await op.put("/api/walls/2", json={"cells": [c1]})).status_code == 200
+    assert (await op.put("/api/walls/2", json={"cells": [c1, c2]})).status_code == 422
 
 
 async def test_analytics_and_status_lists_respect_the_scope(api: Harness, hidden: set[str]) -> None:

@@ -72,6 +72,32 @@ function isProfile(v) {
   return v.id !== "onvif" && v.id !== "generic" && !v.capabilities.includes("api_channels");
 }
 
+// ================================================================== cámaras nuevas en los monitores
+/**
+ * Frase para el aviso de un alta: en qué monitor han quedado las cámaras nuevas (`wall_placements` de la API,
+ * CONTRATO §6.3). El servidor las devuelve a su celda si se borraron hace poco o las pone en el primer hueco libre
+ * del monitor 1; si no cabe ninguna, se dice qué hacer. `count` = cámaras nuevas (0 = no hay nada que decir).
+ */
+export function placementText(placements, count) {
+  if (!count) return "";
+  const list = Array.isArray(placements) ? placements : [];
+  const placed = new Set(list.map((p) => p.camera_id)).size;
+  const monitors = [...new Set(list.map((p) => Number(p.monitor)))].sort((a, b) => a - b);
+  const where = monitors.length === 1 ? `al monitor ${monitors[0]}`
+    : `a los monitores ${monitors.slice(0, -1).join(", ")} y ${monitors[monitors.length - 1]}`;
+  const missing = count - placed;
+  const todo = (n) => `Qué hacer: ${n === 1 ? "arrástrala" : "arrástralas"} a una celda en «Monitores» y pulsa «Guardar monitor».`;
+  if (!placed) return `No había hueco libre en el monitor 1. ${todo(count)}`;
+  if (!missing) return `${count === 1 ? "Añadida" : "Añadidas"} ${where}.`;
+  return `${placed} ${placed === 1 ? "añadida" : "añadidas"} ${where}; ${missing} sin hueco libre. ${todo(missing)}`;
+}
+
+/** Aviso de un alta con su frase de monitores (más tiempo en pantalla si hay que hacer algo). */
+function toastWithPlacement(text, placements, count) {
+  const where = placementText(placements, count);
+  toast(where ? `${text}. ${where}` : text, "ok", where.includes("Qué hacer:") ? 12000 : 6000);
+}
+
 // ================================================================== equipos
 function deviceStatus(d) {
   if (!d.enabled) return '<span class="pill off">Desactivado</span>';
@@ -498,18 +524,22 @@ deviceForm.addEventListener("submit", async (ev) => {
         }
         const created = await post("/api/devices", body, { timeoutMs: 45000 });
         const importError = created && (created.import_error || (created.details && created.details.import_error));
+        let nCams = created && created.cameras ? created.cameras.length : 0;
+        let placements = (created && created.wall_placements) || [];
         if (manual && !tested) {
           const mainPath = deviceForm.main_path.value.trim();
           const subPath = deviceForm.sub_path.value.trim();
           if (mainPath) {
-            await post("/api/cameras", {
+            const cam = await post("/api/cameras", {
               name: body.name, device_id: created.id, channel: 1,
               main_path: mainPath, sub_path: subPath || null, has_sub: !!subPath,
             });
+            nCams += 1;
+            placements = placements.concat((cam && cam.wall_placements) || []);
           }
         }
-        const nCams = created && created.cameras ? created.cameras.length : 0;
-        toast(`Equipo «${body.name}» añadido${nCams ? ` con ${nCams} ${nCams === 1 ? "cámara" : "cámaras"}` : ""}`, "ok");
+        toastWithPlacement(`Equipo «${body.name}» añadido${nCams ? ` con ${nCams} ${nCams === 1 ? "cámara" : "cámaras"}` : ""}`,
+          placements, nCams);
         if (importError) {
           const end = /[.!?]$/.test(String(importError).trim()) ? " " : ". ";
           toast(`El equipo se ha guardado sin cámaras porque no se han podido importar: ${importError}${end}`
@@ -522,7 +552,8 @@ deviceForm.addEventListener("submit", async (ev) => {
         }
       }
       deviceDialog.close();
-      await Promise.all([ctx.loadDevices(), ctx.loadCameras()]);
+      // también los monitores: el alta puede haber puesto las cámaras en el monitor 1 (sin «Cambios sin guardar»)
+      await Promise.all([ctx.loadDevices(), ctx.loadCameras(), ctx.loadWalls({ keepDraft: true })]);
     } catch (err) {
       if (!showFieldErrors(deviceForm, err)) setFormError($("#device-form-error"), errorText(err));
     }
@@ -570,9 +601,11 @@ $("#btn-channels-import").addEventListener("click", async (ev) => {
   await busy(ev.currentTarget, async () => {
     try {
       const created = await post(`/api/devices/${enc(dev.id)}/channels/import`, { channels }, { timeoutMs: 45000 });
-      toast(`${created.length} ${created.length === 1 ? "cámara añadida" : "cámaras añadidas"}`, "ok");
+      const placements = created.flatMap((c) => c.wall_placements || []);
+      toastWithPlacement(`${created.length} ${created.length === 1 ? "cámara dada de alta" : "cámaras dadas de alta"}`,
+        placements, created.length);
       channelsDialog.close();
-      await Promise.all([ctx.loadDevices(), ctx.loadCameras()]);
+      await Promise.all([ctx.loadDevices(), ctx.loadCameras(), ctx.loadWalls({ keepDraft: true })]);
     } catch (err) {
       toastError(err, "No se pudieron importar los canales");
     }

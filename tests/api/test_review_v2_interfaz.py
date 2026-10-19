@@ -118,6 +118,8 @@ async def test_sse_walls_get_no_notices_health_or_evidence(api: Harness) -> None
 async def test_kiosk_only_sees_cameras_on_the_walls(api: Harness) -> None:
     admin = await api.login()
     c1, c2 = (await new_device(admin, import_channels=[1, 2]))["cameras"]
+    # el alta las pone solas en el monitor 1 (CONTRATO §3.3): se vacía para que solo quede c1 en el monitor 3
+    assert (await admin.put("/api/walls/1", json={"cells": []})).status_code == 200
     assert (await admin.put("/api/walls/3", json={"cells": [c1]})).status_code == 200
     k = await api.kiosk()
     ids = [c["id"] for c in (await k.get("/api/cameras")).json()]

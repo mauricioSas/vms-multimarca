@@ -40,7 +40,7 @@ from vms.core.errors import (AuthError, ConflictError, EngineUnavailable, Forbid
 from vms.core.interfaces import (ChannelInfo, DeviceClient, DeviceTestResult, DiscoveredDevice, Engine,
                                  PathStatus)
 from vms.core.models import (AnalyticsRule, AppConfig, Camera, CameraAnalytics, CameraCreate, CameraUpdate,
-                             Device, DeviceCreate, DeviceTestRequest, DeviceUpdate, LineRule,
+                             Device, DeviceCreate, DeviceTestRequest, DeviceUpdate, LineRule, PlacedCamera,
                              RetentionSettings, SystemSettings, WallUpdate, ZoneRule, utcnow)
 from vms.core.naming import mtx_path
 from vms.core.paths import AppPaths
@@ -62,6 +62,11 @@ def iso(dt: datetime) -> str:
 
 def dump(model: Any) -> Any:
     return json.loads(model.model_dump_json())
+
+
+def placements_out(placed: list[PlacedCamera], camera_id: str | None = None) -> list[dict[str, Any]]:
+    """`wall_placements` de las altas, igual que `vms.api.views.placements_out` (CONTRATO §6.3)."""
+    return [p._asdict() for p in placed if camera_id is None or p.camera_id == camera_id]
 
 
 @dataclass
@@ -120,6 +125,11 @@ class StubBackend:
                 {"loc": list(e["loc"]), "msg": e["msg"]} for e in exc.errors()]}) from exc
         self._broadcast("config", {"revision": self.repo.revision, "scope": scope})
         return result
+
+    def _walls_changed(self, placed: list[PlacedCamera]) -> None:
+        """Un alta ha puesto cámaras en los muros: aviso `walls` como el backend real (CONTRATO §6.11)."""
+        if placed:
+            self._broadcast("config", {"revision": self.repo.revision, "scope": "walls"})
 
     def _broadcast(self, event: str, data: dict[str, Any]) -> None:
         msg = f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -346,13 +356,16 @@ class StubBackend:
                 except VmsError as exc:
                     import_error = exc.message
 
-            def mutate(cfg: AppConfig) -> None:
+            def mutate(cfg: AppConfig) -> list[PlacedCamera]:
                 cfg.devices.append(dev)
                 cfg.cameras.extend(new_cams)
+                return cfg.place_new_cameras(new_cams)   # como el backend real (CONTRATO §3.3)
 
-            await b._update("devices", mutate)
+            placed = await b._update("devices", mutate)
+            b._walls_changed(placed)
             cfg, paths = b.repo.snapshot(), await b._paths()
             out = b._device_out(cfg, dev, paths)
+            out["wall_placements"] = placements_out(placed)
             if import_error:
                 out["details"] = {"import_error": import_error}
             return out
@@ -439,8 +452,14 @@ class StubBackend:
                 await client.aclose()
             wanted = body.get("channels", "all")
             new_cams = b._cameras_from_channels(cfg, dev, chans, wanted if wanted == "all" else [int(x) for x in wanted])
-            await b._update("cameras", lambda c: c.cameras.extend(new_cams))
-            return [dump(c) for c in new_cams]
+
+            def mutate(c: AppConfig) -> list[PlacedCamera]:
+                c.cameras.extend(new_cams)
+                return c.place_new_cameras(new_cams)
+
+            placed = await b._update("cameras", mutate)
+            b._walls_changed(placed)
+            return [{**dump(c), "wall_placements": placements_out(placed, c.id)} for c in new_cams]
 
         @app.post("/api/discovery/scan")
         async def scan(request: Request, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
@@ -466,15 +485,18 @@ class StubBackend:
             b._session(request, "admin")
             cam = Camera(**body.model_dump())
 
-            def mutate(cfg: AppConfig) -> None:
+            def mutate(cfg: AppConfig) -> list[PlacedCamera]:
                 if not cfg.device(cam.device_id):
                     raise NotFoundError("Equipo no encontrado")
                 if any(c.channel == cam.channel for c in cfg.cameras_of(cam.device_id)):
                     raise ConflictError("Ese canal de ese equipo ya está dado de alta")
                 cfg.cameras.append(cam)
+                return cfg.place_new_cameras([cam])
 
-            await b._update("cameras", mutate)
-            return b._camera_out(b.repo.snapshot(), cam, await b._paths())
+            placed = await b._update("cameras", mutate)
+            b._walls_changed(placed)
+            return {**b._camera_out(b.repo.snapshot(), cam, await b._paths()),
+                    "wall_placements": placements_out(placed)}
 
         @app.get("/api/cameras/{camera_id}")
         async def get_camera(request: Request, camera_id: str) -> dict[str, Any]:
