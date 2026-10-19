@@ -37,8 +37,10 @@ from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings,
 from vms.core.models import DeviceBase, Vendor
 
 from ._http import USER_AGENT, VendorAuth, VendorHttp, device_label
-from .errors import BasicNotAllowed, DeviceClockManaged, DeviceTimeUnverified, DeviceWriteDenied
-from .clock import Stopwatch, round_offset
+from .errors import (BasicNotAllowed, DeviceClockManaged, DeviceTimeUnverified, DeviceWriteDenied, DeviceZoneNotApplied,
+                     DeviceZoneUnsupported)
+from . import clock as _clock
+from .clock import Stopwatch, posix_zone, round_offset, zone_matches
 from .codec import normalize_codec
 
 log = logging.getLogger("vms.vendors.onvif")
@@ -528,27 +530,36 @@ class OnvifClient:
         shown = self.device_utc if self.local_offset is None else self.device_utc.astimezone(timezone(self.local_offset))
         return DeviceTime(device_time=shown, measured_at=self._measured,
                           round_trip_ms=round(self._rtt, 1), time_mode=self.time_mode, ntp_server=ntp, source="onvif",
-                          credentials_rejected=rejected)
+                          credentials_rejected=rejected, zone=(self.time_zone or "")[:64])
 
     # ------------------------------------------------------------------ TIME_WRITE
-    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime:
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "", *,
+                              zone: str = "") -> DeviceTime:
         """«Poner en hora con este PC» por ONVIF `SetSystemDateAndTime` (CONTRATO §18.3): `DateTimeType` Manual, la
         hora UTC de este PC y la MISMA zona (`TZ`) y horario de verano que dio el equipo. Solo si ya está en hora
         manual: con NTP, o si no dice su modo, se lanza `DeviceClockManaged` sin escribir. Antes de escribir se comprueba la contraseña con
         una lectura autenticada (`GetDeviceInformation`, repetida con credenciales si el equipo la contesta sin
         ellas: ONVIF anónimo), así un rechazo de la escritura es falta de permisos
         (`DeviceWriteDenied`: en la política por defecto solo el Administrator tiene WRITE_SYSTEM). Después se lee
-        de nuevo la hora. Con `admin_username`, credenciales de administrador temporales (no se guardan; sin Basic)."""
+        de nuevo la hora. Con `admin_username`, credenciales de administrador temporales (no se guardan; sin Basic).
+
+        Con `zone` (POSIX, la de este PC) va en `TZ` en la misma operación, con `DaylightSavings` true si tiene
+        horario de verano (ONVIF: «ajustar el horario de verano según la zona»). Si el equipo la rechaza no se
+        repite sin ella: `DeviceZoneUnsupported` (no ha cambiado nada). Al leer de nuevo se comprueba que su `TZ`
+        tiene las mismas reglas y que su hora local va con ese desfase; si no, `DeviceZoneNotApplied`."""
         if not admin_username:
-            return await self._set_time()
+            return await self._set_time(zone)
         dev = self.device.model_copy(update={"username": admin_username, "allow_basic": False})
         writer = OnvifClient(dev, admin_password, timeout=self.timeout, transport=self._transport, port=self.port)
         try:
-            return await writer._set_time()
+            return await writer._set_time(zone)
         finally:
             await writer.aclose()
 
-    async def _set_time(self) -> DeviceTime:
+    async def _set_time(self, zone: str = "") -> DeviceTime:
+        target = posix_zone(zone) if zone else None
+        if zone and (target is None or (target.has_dst and (target.start is None or target.end is None))):
+            raise DeviceZoneUnsupported(self.label, zone, "no es una zona POSIX con reglas que se entiendan")
         before = await self.device_time()
         if before.credentials_rejected:
             # GetNTP ya rechazó la contraseña: se dice eso (quien llama la deja en pausa) y no se gasta otro intento
@@ -566,11 +577,17 @@ class OnvifClient:
             # (cliente fundido y 30 min sin leer la hora ni sacar instantáneas) cuando lo normal es un usuario sin
             # permiso para cambiarla
             await self._soap(self.device_xaddr, NS_DEVICE, "GetDeviceInformation")
-        zones = [self.time_zone, ""] if self.time_zone else [""]
+        previous = self.time_zone
+        if target is not None:
+            zones = [zone]                   # la de este PC; si no la acepta, no se escribe otra cosa
+            dst = "true" if target.has_dst else "false"
+        else:
+            zones = [self.time_zone, ""] if self.time_zone else [""]
+            dst = "true" if self.daylight_savings == "true" else "false"
         for i, tz in enumerate(zones):
-            u = (datetime.now(timezone.utc) + timedelta(milliseconds=500)).replace(microsecond=0)
+            u = (_clock.utc_now() + timedelta(milliseconds=500)).replace(microsecond=0)
             body = ("<m:DateTimeType>Manual</m:DateTimeType>"
-                    f"<m:DaylightSavings>{'true' if self.daylight_savings == 'true' else 'false'}</m:DaylightSavings>"
+                    f"<m:DaylightSavings>{dst}</m:DaylightSavings>"
                     + (f"<m:TimeZone><tt:TZ>{escape(tz)}</tt:TZ></m:TimeZone>" if tz else "")
                     + "<m:UTCDateTime><tt:Time>"
                     f"<tt:Hour>{u.hour}</tt:Hour><tt:Minute>{u.minute}</tt:Minute><tt:Second>{u.second}</tt:Second>"
@@ -580,6 +597,9 @@ class OnvifClient:
                 await self._soap(self.device_xaddr, NS_DEVICE, "SetSystemDateAndTime", body, write=True)
                 break
             except DeviceProtocolError as exc:
+                if target is not None:
+                    # rechazó la zona de este PC (p. ej. InvalidTimeZone): la operación entera no se aplicó
+                    raise DeviceZoneUnsupported(self.label, zone, exc.message) from exc
                 if i + 1 == len(zones):
                     raise
                 # hay equipos que no aceptan de vuelta la zona que ellos mismos dan (InvalidTimeZone): sin zona,
@@ -588,11 +608,21 @@ class OnvifClient:
                          self.label, exc.message)
         # el reloj del equipo ya es el del PC: el «Created» de las siguientes peticiones firmadas, también
         self.clock_offset = timedelta(0)
-        log.info("Hora de %s puesta con la de este PC por ONVIF (zona del equipo sin cambios)", self.label)
+        if target is not None:
+            log.info("Hora y zona de %s puestas con las de este PC por ONVIF (zona %s → %s)", self.label,
+                     previous[:40] or "-", zone)
+        else:
+            log.info("Hora de %s puesta con la de este PC por ONVIF (zona del equipo sin cambios)", self.label)
         try:
-            return await self.device_time()
+            after = await self.device_time()
         except DeviceError as exc:          # escrita: lo que falla es solo la comprobación
-            raise DeviceTimeUnverified(self.label, exc) from exc
+            raise DeviceTimeUnverified(self.label, exc, previous_zone=previous) from exc
+        after = after.model_copy(update={"previous_zone": previous[:64]})
+        if target is not None:
+            local = round_offset(self.local_offset) if self.local_offset is not None else None
+            if not zone_matches(target, after.zone, local, after.device_time):
+                raise DeviceZoneNotApplied(self.label, zone, after)
+        return after
 
     # ------------------------------------------------------------------ SECURITY_READ
     async def security_settings(self, admin_username: str, admin_password: str) -> DeviceSecuritySettings:

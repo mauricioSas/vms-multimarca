@@ -111,6 +111,12 @@ class DeviceTime(BaseModel):
     # v2 (aditivo, revisión): la hora se leyó sin autenticar, pero el equipo rechazó la contraseña guardada en la
     # parte autenticada (ONVIF `GetNTP`). B6 deja de usar esa contraseña un rato para no bloquear el usuario.
     credentials_rejected: bool = False
+    # v2 (aditivo, zona horaria): la zona tal como la da el equipo (Hikvision `timeZone`, ONVIF `TZ`; «» si no la da),
+    # p. ej. «CST-8:00:00» (la de fábrica, China). Solo informativa; los drivers la recortan a 64 caracteres.
+    zone: str = ""
+    # v2 (aditivo, zona horaria): solo en lo que devuelve `set_device_time`: la zona que tenía el equipo ANTES de
+    # escribir (None = no se sabe). Si se pidió la zona de este PC, `zone` es la nueva.
+    previous_zone: str | None = None
 
     @property
     def skew_s(self) -> float:
@@ -146,9 +152,14 @@ class DeviceClockClient(Protocol):
 @runtime_checkable
 class DeviceClockWriter(Protocol):
     """Capacidad opcional `TIME_WRITE`: «Poner en hora con este PC» (CONTRATO §18.3), una sola escritura que pide
-    la persona. Escribe la hora de este PC en el reloj del equipo **sin cambiar su zona horaria** y devuelve la hora
-    leída de nuevo para comprobarla. Solo si el equipo tiene la hora puesta a mano: si la pone otro sistema (NTP,
-    HikCentral/iVMS por SDK, el grabador…) se niega con `DeviceClockManaged` sin escribir nada.
+    la persona. Escribe la hora de este PC en el reloj del equipo y devuelve la hora leída de nuevo para comprobarla
+    (con `previous_zone`, la zona que tenía). Solo si el equipo tiene la hora puesta a mano: si la pone otro sistema
+    (NTP, HikCentral/iVMS por SDK, el grabador…) se niega con `DeviceClockManaged` sin escribir nada.
+
+    `zone`: vacía = **no se cambia la zona horaria del equipo**. Con una zona POSIX («CET-1CEST,M3.5.0,M10.5.0/3»,
+    la de este PC, `vms.core.tzposix.pc_zone`), se escribe a la vez que la hora (en la misma escritura) y se comprueba
+    al leer de nuevo: si el equipo no puede expresarla o no la acepta, `DeviceZoneUnsupported` sin escribir nada; si
+    la acepta pero al leer de nuevo tiene otra, `DeviceZoneNotApplied` (con la lectura en `reading`).
 
     `admin_username`/`admin_password`: credenciales de administrador TEMPORALES (no se guardan ni se registran;
     solo Digest, nunca Basic). Vacías = el usuario guardado. Si ese usuario no tiene permiso para cambiar ajustes,
@@ -156,7 +167,8 @@ class DeviceClockWriter(Protocol):
     pero falla la lectura de comprobación, lanza `DeviceTimeUnverified` (código `clock_set_unverified`): la hora sí
     se escribió."""
 
-    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime: ...
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "", *,
+                              zone: str = "") -> DeviceTime: ...
 
 
 class DeviceSecuritySettings(BaseModel):

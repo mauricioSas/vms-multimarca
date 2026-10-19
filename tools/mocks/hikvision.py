@@ -11,7 +11,8 @@ Endpoints imitados (respuestas XML con el espacio de nombres real ver20):
   PUT /ISAPI/System/time                                    («Poner en hora»: cambia el reloj y guarda el cuerpo;
                                                              403 `lowPrivilege` si el usuario no está en `write_users`,
                                                              o 401 con reto con `write_denied_status=401`, que
-                                                             cuenta como intento fallido)
+                                                             cuenta como intento fallido; con `reject_zone_http`,
+                                                             `badParameters`/`notSupport` a una zona nueva)
   GET /ISAPI/System/Network/{telnetd,ssh,UPnP,EZVIZ}, /ISAPI/Security/adminAccesses
 Cualquier otra ruta → 404 con <ResponseStatus> como el equipo real.
 
@@ -35,6 +36,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from vms.vendors import clock as _clock
 from vms.vendors.clock import posix_zone
 
 from .http_auth import AuthMode, HttpAuthChecker
@@ -98,6 +100,11 @@ class HikvisionMock:
     clock_offset_s: float = 0.0
     time_mode: str = "NTP"
     tz_hours: float | None = None   # zona del equipo; None = la del PC (misma tienda)
+    tz_text: str = ""               # zona escrita con PUT tal cual (con horario de verano); manda sobre `tz_hours`
+    ignore_zone: bool = False       # firmware que acepta el PUT pero no cambia `timeZone` (se queda con la suya)
+    # firmware que rechaza el PUT entero si trae una `timeZone` distinta de la suya, sin cambiar nada: 0 = la acepta;
+    # 200 o 400 = `<ResponseStatus>` `badParameters` con ese estado HTTP; 403 = `notSupport`
+    reject_zone_http: int = 0
     ntp_server: str = "pool.ntp.org"
     extra_users: dict[str, str] = field(default_factory=dict)   # más usuarios (p. ej. «admin» además del de lectura)
     write_users: set[str] | None = None   # quién puede cambiar ajustes; None = todos (403 `lowPrivilege` si no)
@@ -278,7 +285,12 @@ class HikvisionMock:
         return Response(SNAPSHOT, media_type="image/jpeg")
 
     def _local(self, instant: datetime) -> datetime:
-        """Zona del equipo: la del PC (misma tienda) salvo que la prueba fije otra con `tz_hours`."""
+        """Zona del equipo: la del PC (misma tienda) salvo que la prueba fije otra con `tz_hours` o se haya escrito
+        una con su horario de verano (`tz_text`)."""
+        zone = posix_zone(self.tz_text) if self.tz_text else None
+        if zone is not None:
+            off = zone.offset_at_utc(instant)
+            return instant.astimezone(timezone(off if off is not None else zone.std))
         if self.tz_hours is not None:
             return instant.astimezone(timezone(timedelta(hours=self.tz_hours)))
         try:
@@ -289,19 +301,25 @@ class HikvisionMock:
     async def time(self, request: Request) -> Response:
         if request.method == "PUT":
             return await self._set_time(request)
-        now = datetime.now(timezone.utc) + timedelta(seconds=self.clock_offset_s)
-        local = self._local(now)
-        off = local.utcoffset() or timedelta(0)
-        minutes = int(off.total_seconds() // 60)
-        posix = f"CST{'-' if minutes >= 0 else '+'}{abs(minutes) // 60}:{abs(minutes) % 60:02d}:00"  # POSIX: signo al revés
+        local = self._local(_clock.utc_now() + timedelta(seconds=self.clock_offset_s))
         body = (f'<?xml version="1.0" encoding="UTF-8"?>\n<Time version="2.0" xmlns="{NS}">\n'
                 f"<timeMode>{self.time_mode}</timeMode>\n<localTime>{local.isoformat(timespec='seconds')}</localTime>\n"
-                f"<timeZone>{posix}</timeZone>\n</Time>\n")
+                f"<timeZone>{self._zone_text(local)}</timeZone>\n</Time>\n")
         return Response(body, media_type=XML)
+
+    def _zone_text(self, local: datetime) -> str:
+        """`<timeZone>` que da el equipo: la escrita tal cual o, si no, la de su desfase (POSIX: signo al revés)."""
+        if self.tz_text:
+            return self.tz_text
+        minutes = int((local.utcoffset() or timedelta(0)).total_seconds() // 60)
+        return f"CST{'-' if minutes >= 0 else '+'}{abs(minutes) // 60}:{abs(minutes) % 60:02d}:00"
 
     async def _set_time(self, request: Request) -> Response:
         """PUT /ISAPI/System/time: el reloj pasa a la `localTime` recibida (con su desfase o, sin él, en la zona
-        `timeZone` del cuerpo); `timeMode` y `timeZone` quedan como digan. Sin `localTime` válida → 400."""
+        `timeZone` del cuerpo); `timeMode` y `timeZone` quedan como digan (la zona, tal cual, con su horario de
+        verano). Con `ignore_zone`, como un firmware que no cambia la zona: se queda con la suya y una hora sin desfase
+        la entiende en ella. Con `reject_zone_http`, una `timeZone` distinta de la suya hace que rechace el PUT entero
+        (ni hora ni zona). Sin `localTime` válida → 400."""
         path = request.url.path
         body = (await request.body()).decode("utf-8", errors="replace")
         self.time_puts.append(body)
@@ -317,21 +335,34 @@ class HikvisionMock:
         lt = re.search(r"<localTime>([^<]+)</localTime>", body)
         tz = re.search(r"<timeZone>([^<]*)</timeZone>", body)
         mode = re.search(r"<timeMode>([^<]*)</timeMode>", body)
-        zone = posix_zone(tz.group(1)) if tz else None
+        current = self._zone_text(self._local(_clock.utc_now() + timedelta(seconds=self.clock_offset_s)))
+        if self.reject_zone_http and tz is not None and tz.group(1).strip() != current:
+            if self.reject_zone_http == 403:
+                return Response(_status(4, "notSupport", "Invalid Operation", path), 403, media_type=XML)
+            return Response(_status(6, "badParameters", "Invalid XML Content", path), self.reject_zone_http,
+                            media_type=XML)
+        if self.ignore_zone:
+            # el firmware se queda con su zona: la hora sin desfase la entiende en ESA zona
+            zone = posix_zone(self.tz_text) if self.tz_text else None
+            fixed = self._local(_clock.utc_now()).utcoffset()
+        else:
+            zone = posix_zone(tz.group(1)) if tz else None
+            fixed = None
         try:
             local = datetime.fromisoformat(lt.group(1).strip()) if lt else None
         except ValueError:
             local = None
         if local is not None and local.tzinfo is None:
-            off = zone.offset_at_local(local) if zone is not None else None
+            off = zone.offset_at_local(local) if zone is not None else fixed
             local = local.replace(tzinfo=timezone(off)) if off is not None else None
         if local is None:
             return Response(_status(6, "badXmlContent", "Invalid XML Content", path), 400, media_type=XML)
-        self.clock_offset_s = (local - datetime.now(timezone.utc)).total_seconds()
+        self.clock_offset_s = (local - _clock.utc_now()).total_seconds()
         if mode:
             self.time_mode = mode.group(1)
-        if zone is not None:
+        if zone is not None and tz is not None and not self.ignore_zone:
             self.tz_hours = zone.std.total_seconds() / 3600
+            self.tz_text = tz.group(1).strip()          # se guarda tal cual, con su horario de verano
         return Response(_status(1, "ok", "OK", path), media_type=XML)
 
     async def ntp_servers(self, request: Request) -> Response:

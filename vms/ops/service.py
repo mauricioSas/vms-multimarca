@@ -34,6 +34,7 @@ from typing import Any, Literal
 from vms import __version__
 from vms.core.audit import audit
 from vms.core.errors import ConflictError, DeviceAuthFailed, EngineUnavailable, NotFoundError, VmsError
+from vms.core import tzposix
 from vms.core.interfaces import DeviceClockClient, DeviceClockWriter, DeviceTime
 from vms.core.models import Camera, Device
 from vms.core.rtsp import redact
@@ -52,7 +53,7 @@ from .health.snapshot import AuthBackoff, grab
 from .health.tracker import HealthTracker, Transition
 from .host import EVENT_BOOKMARK, EVENT_EVIDENCE, EVENT_HEALTH, EVENT_NOTICE, OpsHost
 from .models import (CameraHealth, ClockCheck, ClockSetResult, HealthCause, HealthMetrics, DiagnosisResult, Severity,
-                     EvidenceExport, EvidenceExportRequest, HealthCheck, HealthReport, RetentionForecast,
+                     EvidenceExport, EvidenceExportRequest, HealthCheck, HealthReport, PcZoneInfo, RetentionForecast,
                      SecurityAuditReport, TimelineEvent)
 from .notify import Alert, Notifier
 from .onboarding import OnboardingStore
@@ -502,18 +503,42 @@ class OpsService:
                 except Exception:  # noqa: BLE001
                     log.debug("Error cerrando el cliente", exc_info=True)
 
-    async def clock_set(self, device_id: str, user: str, ip: str, *, admin_username: str = "",
-                        admin_password: str = "") -> ClockSetResult:
-        """«Poner en hora con este PC» (CONTRATO §18.3): UNA escritura de la hora de este PC en el reloj del equipo,
-        sin cambiar su zona horaria, comprobada leyéndola de nuevo. Solo cuando lo pide un administrador; queda en
-        audit.log (`camera_clock_set`) con el resultado, nunca con contraseñas.
+    def pc_zone_info(self) -> PcZoneInfo:
+        """Zona horaria de este PC para el diálogo de «Poner en hora con este PC» (CONTRATO §18.3). Nunca lanza: si
+        no se puede escribir en los equipos, `error_es` dice por qué y qué hacer."""
+        now = datetime.now(timezone.utc)
+        offset = clockmod.pc_offset_s(now)
+        try:
+            zone = tzposix.pc_zone(now)
+        except tzposix.PcZoneError as exc:
+            return PcZoneInfo(utc_offset_s=offset, error_es=(
+                f"La zona horaria de este PC no se puede escribir en los equipos: {exc.reason_es}. Qué hacer: cambia "
+                "la zona horaria en la web de cada equipo (apartado de fecha y hora) a la de la tienda."))
+        except Exception:  # noqa: BLE001 - el diálogo sigue sirviendo para poner la hora
+            log.exception("Error leyendo la zona horaria de este PC")
+            return PcZoneInfo(utc_offset_s=offset, error_es=(
+                "No se ha podido saber la zona horaria de este PC. Qué hacer: cambia la zona horaria en la web de "
+                "cada equipo (apartado de fecha y hora) a la de la tienda."))
+        return PcZoneInfo(utc_offset_s=offset, label_es=clockmod.zone_label_es(zone.rule), posix=zone.posix)
 
-        No es «Corregir códec»: no hay nada que deshacer (solo cambia la hora, y solo si el equipo la tiene puesta a
-        mano; si la pone otro sistema —NTP, HikCentral/iVMS, el grabador— se niega sin escribir). Credenciales
-        temporales de administrador opcionales: se usan una vez y no se guardan. Un usuario de solo lectura
-        (lo recomendado) da `device_write_denied` y NO cuenta como contraseña mala (no bloquea las lecturas).
-        Si el equipo acepta la hora pero falla la lectura de comprobación, no es un error: `ok=False` con «se ha
-        escrito, pero no se ha podido comprobar» (`written_unverified` en audit.log)."""
+    async def clock_set(self, device_id: str, user: str, ip: str, *, admin_username: str = "",
+                        admin_password: str = "", use_pc_zone: bool = False) -> ClockSetResult:
+        """«Poner en hora con este PC» (CONTRATO §18.3): UNA escritura de la hora de este PC en el reloj del equipo,
+        comprobada leyéndola de nuevo. Solo cuando lo pide un administrador; queda en audit.log (`camera_clock_set`)
+        con el resultado, nunca con contraseñas.
+
+        Zona horaria: sin `use_pc_zone` no se toca. Con `use_pc_zone` («Usar también la zona horaria de este PC»), la
+        zona de este PC (`tzposix.pc_zone`) se escribe en la MISMA escritura que la hora y se comprueba al leer de
+        nuevo; audit.log anota si cambió (`zone_before` → `zone_after`). Si la zona de este PC no se puede expresar
+        (o el equipo no la admite), se niega sin escribir nada (`clock_zone_unsupported`); si el equipo la acepta
+        pero sigue con otra, `ok=False` con qué hacer (`zone_not_applied`).
+
+        No es «Corregir códec»: no hay nada que deshacer (solo cambia la hora y, si se pide, la zona, y solo si el
+        equipo tiene la hora puesta a mano; si la pone otro sistema —NTP, HikCentral/iVMS, el grabador— se niega sin
+        escribir). Credenciales temporales de administrador opcionales: se usan una vez y no se guardan. Un usuario de
+        solo lectura (lo recomendado) da `device_write_denied` y NO cuenta como contraseña mala (no bloquea las
+        lecturas). Si el equipo acepta la hora pero falla la lectura de comprobación, no es un error: `ok=False` con
+        «se ha escrito, pero no se ha podido comprobar» (`written_unverified` en audit.log)."""
         cfg = self.state.config()
         dev = cfg.device(device_id)
         if dev is None:
@@ -523,12 +548,21 @@ class OpsService:
         cam_id = cams[0].id if len(cams) == 1 else None
         noun = _noun(dev)
         de, pon = clockmod.de_noun(noun), clockmod.pon_en_hora(noun)     # «ponla» (la cámara) / «ponlo» (el equipo)
+        cap = clockmod.cap_first(noun)
         temp = bool(admin_username and admin_password)
         prev = self.store.latest_clock_checks().get(dev.id)
+        box = clockmod.ZONE_BOX
 
-        def done(result: str, skew_after: float | None = None) -> None:
+        def done(result: str, skew_after: float | None = None, reading: DeviceTime | None = None,
+                 zone_changed: bool = False, previous_zone: str = "") -> None:
+            # la zona (no es un secreto) solo si se leyó del equipo: la que tenía antes → la que tiene después (sin
+            # lectura de después, solo la de antes si el driver la dio)
+            before = (reading.previous_zone or "")[:64] if reading is not None else previous_zone[:64]
+            after = reading.zone[:64] if reading is not None else ""
             audit("camera_clock_set", user=user, ip=ip, device_id=dev.id, device=dev.name, result=result,
-                  skew_before_s=prev.skew_s if prev else None, skew_after_s=skew_after, admin_credentials_used=temp)
+                  skew_before_s=prev.skew_s if prev else None, skew_after_s=skew_after, admin_credentials_used=temp,
+                  use_pc_zone=use_pc_zone, zone_changed=zone_changed, zone_before=before or None,
+                  zone_after=after or None)
 
         def refused(err: VmsError) -> VmsError:
             done(err.code)          # también las negativas sin hablar con el equipo quedan en audit.log
@@ -538,6 +572,17 @@ class OpsService:
             raise refused(VmsError(f"Los equipos «{drivers.driver_name(dev.vendor)}» no permiten poner la hora desde "
                                    f"el programa. Qué hacer: pon en hora {noun} desde su web (apartado de fecha y "
                                    "hora).", code="clock_set_unsupported", status=422))
+        pc_zone: tzposix.PcZone | None = None
+        if use_pc_zone:
+            try:
+                pc_zone = await asyncio.to_thread(tzposix.pc_zone)
+            except tzposix.PcZoneError as exc:
+                raise refused(VmsError(
+                    f"La zona horaria de este PC no se puede escribir en {noun}: {exc.reason_es}. No se ha cambiado "
+                    f"nada. Qué hacer: vuelve a pulsar «Poner en hora con este PC» sin marcar la casilla {box} y "
+                    f"cambia la zona horaria en la web {de} (apartado de fecha y hora).",
+                    code="clock_zone_unsupported", status=422)) from exc
+        zone_label = clockmod.zone_label_es(pc_zone.rule) if pc_zone is not None else ""
         password = self.state.creds.get_device_password(dev.id)
         if not temp and self.auth_backoff.blocked(dev.id, password):
             raise refused(VmsError(f"{clockmod.cap_first(noun)} rechazó hace poco la contraseña guardada y no se "
@@ -556,24 +601,33 @@ class OpsService:
             client: Any = None
             dt: DeviceTime | None = None
             unverified: VmsError | None = None
+            zone_refused = False         # el equipo aceptó la escritura, pero al leerlo de nuevo sigue con otra zona
             try:
                 client = self.state.client_factory(dev, password)
                 writer = client if isinstance(client, DeviceClockWriter) else None
                 if writer is None:
                     raise VmsError(f"Esta versión aún no sabe poner en hora {noun}. Qué hacer: {pon} desde su web "
                                    "(apartado de fecha y hora).", code="clock_set_unsupported", status=422)
-                dt = await (writer.set_device_time(admin_username, admin_password) if temp
-                            else writer.set_device_time())
+                if pc_zone is not None:
+                    dt = await writer.set_device_time(admin_username if temp else "", admin_password if temp else "",
+                                                      zone=pc_zone.posix)
+                else:
+                    dt = await (writer.set_device_time(admin_username, admin_password) if temp
+                                else writer.set_device_time())
             except VmsError as exc:
-                if exc.code != "clock_set_unverified":
+                reading = getattr(exc, "reading", None)
+                if exc.code == "clock_zone_not_applied" and isinstance(reading, DeviceTime):
+                    dt, zone_refused = reading, True      # la hora se escribió: se informa con la lectura
+                elif exc.code != "clock_set_unverified":
                     if exc.code in ("device_auth_failed", "device_locked") and not temp:
                         self.auth_backoff.block(dev.id, password)   # la contraseña guardada: como en la lectura
                     if exc.code == "device_write_denied" and not temp and exc.details.get("auth_rejection"):
                         self._clock_write_denied[dev.id] = (_fingerprint(password),
                                                             time.monotonic() + CLOCK_WRITE_DENIED_S)
                     done(exc.code)
-                    raise self._clock_set_error(exc, noun, temp) from exc
-                unverified = exc         # la hora se escribió: falló solo la lectura de comprobación
+                    raise self._clock_set_error(exc, noun, temp, zone_label) from exc
+                else:
+                    unverified = exc     # la hora se escribió: falló solo la lectura de comprobación
             except Exception as exc:  # noqa: BLE001 - se explica en vez de dar «Error interno»
                 log.exception("Error poniendo en hora %s", dev.id)
                 done("error")
@@ -592,10 +646,11 @@ class OpsService:
             # hora sí estaba escrita. No se guarda medida: la última sigue hasta «Comprobar ahora» o la siguiente hora
             assert unverified is not None
             reason = redact(str(unverified.details.get("reason") or ""))[:160]
-            msg = (f"Se ha escrito la hora de este PC en {noun}, pero después no se ha podido leer para comprobarla"
+            what = "la hora y la zona horaria" if pc_zone is not None else "la hora"
+            msg = (f"Se ha escrito {what} de este PC en {noun}, pero después no se ha podido leer para comprobarla"
                    f"{f' ({reason})' if reason else ''}. Qué hacer: espera un minuto y pulsa «Comprobar ahora» en Hora "
                    "de los equipos; si sigue mal, vuelve a pulsar «Poner en hora con este PC».")
-            done("written_unverified")
+            done("written_unverified", previous_zone=str(unverified.details.get("previous_zone") or ""))
             for cam in cams:
                 self.store.add_timeline_event(TimelineEvent(
                     camera_id=cam.id, layer="clock", start=now, severity="warning",
@@ -605,26 +660,47 @@ class OpsService:
                                   admin_credentials_used=temp)
         chk = clockmod.device_check(dev.id, cam_id, dt, hs.clock_warn_s, hs.clock_critical_s, noun=noun)
         await asyncio.to_thread(self.store.add_clock_check, chk)
-        ok = chk.skew_s is not None and abs(chk.skew_s) < hs.clock_warn_s
-        if ok:
-            msg = (f"{clockmod.cap_first(noun)} ya está en hora: coincide con este PC (diferencia: "
+        time_ok = chk.skew_s is not None and abs(chk.skew_s) < hs.clock_warn_s
+        ok = time_ok and not zone_refused
+        before_rule = tzposix.posix_zone(dt.previous_zone or "")
+        zone_changed = pc_zone is not None and not zone_refused and before_rule != pc_zone.rule
+        if zone_refused:
+            got = clockmod.fmt_offset(chk.utc_offset_s) if chk.utc_offset_s is not None else ""
+            msg = (f"{cap} ha aceptado el cambio, pero al leerla de nuevo no usa la zona horaria de este PC "
+                   f"({zone_label}){f': sigue con {got}' if got else ''}. "
+                   + ("La hora sí coincide con la de este PC. " if time_ok else
+                      f"Su hora va {clockmod.fmt_skew(chk.skew_s)} respecto a este PC. ")
+                   + f"Qué hacer: cambia la zona horaria en la web {de} (apartado de fecha y hora) a la de la tienda y "
+                   f"vuelve a pulsar «Poner en hora con este PC» sin marcar la casilla {box}.")
+        elif time_ok:
+            msg = (f"{cap} ya está en hora: coincide con este PC (diferencia: "
                    f"{clockmod.fmt_skew(chk.skew_s).lstrip('+−')}).")
             zone = clockmod.zone_mismatch(dt, noun=noun)
-            if zone is not None:
-                msg += (f" Ojo: {zone[:1].lower()}{zone[1:]} Qué hacer: cambia la zona horaria en la web {de} "
-                        "(apartado de fecha y hora) a la de la tienda; este botón no la cambia.")
+            if pc_zone is not None:
+                # «Ya usa» (lo dice del equipo): «Usa…» se leía como una orden a quien lee
+                msg += f" Ya usa la zona horaria de este PC ({zone_label})."
+            elif zone is not None:
+                msg += (f" Ojo: {zone[:1].lower()}{zone[1:]} Qué hacer: vuelve a pulsar «Poner en hora con este PC» y "
+                        f"deja marcada la casilla {box}; si no se puede, cambia la zona horaria en la web {de} "
+                        "(apartado de fecha y hora) a la de la tienda.")
         else:
-            msg = (f"{clockmod.cap_first(noun)} ha aceptado el cambio, pero al leerla de nuevo sigue con otra hora "
+            msg = (f"{cap} ha aceptado el cambio, pero al leerla de nuevo sigue con otra hora "
                    f"({clockmod.fmt_skew(chk.skew_s)}). Qué hacer: pulsa otra vez «Poner en hora con este PC»; si se "
                    f"repite, {pon} desde la web {de} (apartado de fecha y hora).")
-        done("ok" if ok else "not_verified", chk.skew_s)
+        done("zone_not_applied" if zone_refused else "ok" if ok else "not_verified", chk.skew_s, dt, zone_changed)
+        if zone_refused:
+            title = f"Hora puesta por {user}, pero {noun} no cambió la zona horaria"
+        elif ok:
+            title = (f"Hora y zona horaria puestas con las de este PC por {user}" if pc_zone is not None else
+                     f"Hora puesta con la de este PC por {user}")
+        else:
+            title = f"Puesta en hora sin confirmar ({clockmod.fmt_skew(chk.skew_s)})"
         for cam in cams:
             self.store.add_timeline_event(TimelineEvent(
-                camera_id=cam.id, layer="clock", start=now, severity="info" if ok else "warning",
-                title_es=(f"Hora puesta con la de este PC por {user}" if ok else
-                          f"Puesta en hora sin confirmar ({clockmod.fmt_skew(chk.skew_s)})")[:200]))
-        log.info("Puesta en hora de %s por «%s»: %s", dev.id, user, "correcta" if ok else "sin confirmar")
-        return ClockSetResult(ok=ok, message_es=msg, check=chk, admin_credentials_used=temp)
+                camera_id=cam.id, layer="clock", start=now, severity="info" if ok else "warning", title_es=title[:200]))
+        log.info("Puesta en hora de %s por «%s»: %s%s", dev.id, user, "correcta" if ok else "sin confirmar",
+                 " (zona cambiada)" if zone_changed else "")
+        return ClockSetResult(ok=ok, message_es=msg, check=chk, admin_credentials_used=temp, zone_changed=zone_changed)
 
     def _stored_cannot_write(self, device_id: str, password: str) -> bool:
         """¿El usuario guardado, con ESTA contraseña, ya recibió hace poco un «no» a la escritura que el equipo pudo
@@ -639,12 +715,18 @@ class OpsService:
         return True
 
     @staticmethod
-    def _clock_set_error(exc: VmsError, noun: str, temp: bool) -> VmsError:
+    def _clock_set_error(exc: VmsError, noun: str, temp: bool, zone_label: str = "") -> VmsError:
         """Error de «Poner en hora» en lenguaje de tienda, con qué hacer (sin contraseñas)."""
         cap, de, pon = clockmod.cap_first(noun), clockmod.de_noun(noun), clockmod.pon_en_hora(noun)
         a_o = "a" if noun.startswith("la ") else "o"          # «encendida» / «encendido»
         web = f"desde la web {de} (apartado de fecha y hora)"
         code = exc.code
+        if code == "clock_zone_unsupported":
+            reason = redact(str(exc.details.get("reason") or ""))[:120]
+            return VmsError(f"{cap} no admite la zona horaria de este PC{f' ({zone_label})' if zone_label else ''}"
+                            f"{f': {reason}' if reason else ''}. No se ha cambiado nada, ni la hora ni la zona. Qué "
+                            f"hacer: vuelve a pulsar «Poner en hora con este PC» sin marcar la casilla "
+                            f"{clockmod.ZONE_BOX} y cambia la zona horaria {web}.", code=code, status=422)
         if code == "device_clock_managed":
             mode = str(exc.details.get("time_mode") or "")
             server = str(exc.details.get("ntp_server") or "")

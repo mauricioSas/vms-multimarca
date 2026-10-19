@@ -417,11 +417,13 @@
       "intro": [
         "Compara la hora de cada cámara o grabador con la de este PC. Las grabaciones llevan siempre la hora de este PC; la del equipo es la que sale escrita en su imagen, y si no coincide el vídeo puede no valer como prueba.",
         "Más de 2 segundos de diferencia es un aviso; más de 30 segundos, grave. Una fecha como 01-01-1970 quiere decir que el equipo no tiene la hora puesta (suele pasar tras quedarse sin corriente). También se avisa si el equipo tiene la hora puesta a mano en vez de sincronizarla (NTP), y cuando una cámara vuelve a dar vídeo se mira su hora en seguida.",
+        "Muchas cámaras vienen de fábrica con la zona horaria de China (UTC+8). Aunque su reloj esté en hora, la hora que escriben en la imagen sale entonces 6 o 7 horas adelantada respecto a la España peninsular (7 u 8 en Canarias). También se avisa de eso.",
         "La hora del propio PC se compara una vez por hora con su servidor de hora (el mismo que ya usa Windows). Si la tienda no debe consultar servidores de Internet, un administrador puede desactivarlo con el ajuste «pc_sntp_enabled» de «/api/clock/settings»."
       ],
       "buttons": [
         {"label": "Comprobar ahora", "text": "Mide de nuevo la hora de todos los equipos (se hace sola cada hora)."},
-        {"label": "Poner en hora con este PC", "text": "Escribe una vez la hora de este PC en el equipo y la vuelve a leer para comprobarla. No cambia su zona horaria. Solo sale a los administradores, en los equipos con aviso que tienen la hora puesta a mano: si la pone otro programa (HikCentral, iVMS-4200, un grabador o un servidor de hora) no la toca. Si el usuario guardado es de solo lectura, te pide el administrador del equipo, que no se guarda."}
+        {"label": "Poner en hora con este PC", "text": "Escribe una vez la hora de este PC en el equipo y la vuelve a leer para comprobarla. Solo sale a los administradores, en los equipos con aviso que tienen la hora puesta a mano: si la pone otro programa (HikCentral, iVMS-4200, un grabador o un servidor de hora) no la toca. Si el usuario guardado es de solo lectura, te pide el administrador del equipo, que no se guarda."},
+        {"label": "Usar también la zona horaria de este PC", "text": "Casilla del diálogo de «Poner en hora con este PC». El diálogo dice qué zona horaria usa el equipo y cuál este PC; si no coinciden, la casilla sale marcada y se cambian la hora y la zona a la vez, y después se comprueban las dos. Si la desmarcas, la zona del equipo no se toca. Si la zona de este PC no se puede escribir en el equipo, o el equipo no la acepta, no se cambia nada (ni la hora ni la zona): vuelve a pulsar «Poner en hora con este PC» con la casilla desmarcada y cambia la zona en la web del equipo."}
       ]
     },
     "status.forecast": {

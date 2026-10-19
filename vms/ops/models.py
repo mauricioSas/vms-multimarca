@@ -120,6 +120,9 @@ class ClockCheck(_Ops):
     time_mode: Literal["ntp", "manual", "unknown"] = "unknown"
     status: Literal["ok", "warning", "critical", "unknown"] = "unknown"
     message_es: str = ""
+    # v2 (aditivo, zona horaria): zona del equipo en segundos respecto a UTC en el momento de la medida (UTC+8 =
+    # 28800), con su horario de verano; None = no se sabe. La usa el diálogo de «Poner en hora con este PC».
+    utc_offset_s: int | None = None
 
 
 class ClockSetResult(_Ops):
@@ -129,6 +132,16 @@ class ClockSetResult(_Ops):
     message_es: str
     check: ClockCheck                        # la lectura de comprobación (también queda guardada)
     admin_credentials_used: bool = False     # se usaron credenciales de administrador temporales (no se guardan)
+    zone_changed: bool = False               # v2: se escribió (y se comprobó) la zona horaria de este PC
+
+
+class PcZoneInfo(_Ops):
+    """Zona horaria de este PC para el diálogo de «Poner en hora con este PC» (`GET /api/clock`, CONTRATO §18.3)."""
+
+    utc_offset_s: int                        # desfase de este PC ahora (UTC+2 = 7200)
+    label_es: str = ""                       # «UTC+1 en invierno y UTC+2 en verano»; «» si no se puede escribir
+    posix: str = ""                          # la zona que se escribiría («CET-1CEST,M3.5.0,M10.5.0/3»)
+    error_es: str = ""                       # por qué no se puede escribir en los equipos (con «Qué hacer:»)
 
 
 # =========================================================================== §18.4 previsión de grabación

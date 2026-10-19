@@ -190,15 +190,64 @@ function fmtSkew(s) {
 }
 
 const SET_LABEL = "Poner en hora con este PC";
+const ZONE_BOX = "Usar también la zona horaria de este PC";
+
+/** «UTC+2», «UTC−3», «UTC+5:30» (segundos respecto a UTC). */
+function fmtOffset(s) {
+  const a = Math.abs(s), hh = Math.floor(a / 3600), mm = Math.round((a % 3600) / 60);
+  return `UTC${s >= 0 ? "+" : "−"}${hh}${mm ? `:${String(mm).padStart(2, "0")}` : ""}`;
+}
+
+/** «6 h», «5 h 30 min», «30 min». */
+function fmtGap(s) {
+  const a = Math.abs(s), hh = Math.floor(a / 3600), mm = Math.round((a % 3600) / 60);
+  return hh && mm ? `${hh} h ${mm} min` : hh ? `${hh} h` : `${mm} min`;
+}
+
+/** Zona horaria en el diálogo: la del equipo (última medida, `utc_offset_s`) frente a la de este PC (`pc_zone` de
+ * /api/clock) dicha en claro, y la casilla «Usar también la zona horaria de este PC», marcada solo si no coinciden.
+ * Sin casilla si la zona de este PC no se puede escribir en los equipos (lo dice `pc_zone.error_es`). */
+function zonePart(d, pcZone) {
+  const part = h("div", { class: "ops-clock-zone" });
+  if (!pcZone) return { part, box: null };
+  if (pcZone.error_es) {
+    part.append(h("p", { class: "muted small" }, pcZone.error_es));
+    return { part, box: null };
+  }
+  const dev = d && d.utc_offset_s != null ? Number(d.utc_offset_s) : null;
+  const pc = Number(pcZone.utc_offset_s);
+  const differs = dev != null && Math.abs(dev - pc) >= 60;
+  let text;
+  if (dev == null) {
+    text = "No se sabe qué zona horaria usa el equipo. Si la hora de su imagen no es la de la tienda, marca la casilla.";
+  } else if (differs) {
+    const gap = dev - pc;
+    text = `El equipo usa la zona horaria ${fmtOffset(dev)} y este PC, ${fmtOffset(pc)}: aunque su reloj esté en ` +
+      `hora, la hora que escribe en la imagen va ${fmtGap(gap)} ${gap > 0 ? "adelantada" : "atrasada"} respecto ` +
+      "a la de la tienda.";
+  } else {
+    text = `El equipo ya usa la misma zona horaria que este PC (${fmtOffset(pc)}).`;
+  }
+  const box = h("input", { type: "checkbox", name: "use_pc_zone", checked: differs });
+  part.append(h("p", { class: differs ? "" : "muted small" }, text),
+    h("label", { class: "check" }, box, ` ${ZONE_BOX} (${pcZone.label_es})`));
+  return { part, box };
+}
 
 /** «Poner en hora con este PC»: confirmación en la página (sin confirm()) y, si hace falta, usuario administrador
- * temporal del equipo (se usa una vez y no se guarda). CONTRATO §18.3. */
-function clockSetDialog(dev, body) {
+ * temporal del equipo (se usa una vez y no se guarda). `d` es la última medida del equipo y `pcZone` la zona de este
+ * PC (para la casilla de la zona horaria). CONTRATO §18.3. */
+function clockSetDialog(dev, body, d, pcZone) {
   const m = modal(`${SET_LABEL} · ${dev.name}`);
+  const zone = zonePart(d, pcZone);
   // sin la hora del navegador: si la página se abre desde otro ordenador, no es la del PC que la escribe
+  // sin casilla (la zona de este PC no se puede escribir) no se habla de una casilla que no está en pantalla
+  const zoneSentence = zone.box ? "Su zona horaria solo cambia si marcas la casilla de abajo; ningún otro ajuste cambia."
+    : "Su zona horaria no cambia, ni ningún otro ajuste.";
   m.body.append(
     h("p", {}, "Se escribirá en el reloj del equipo la hora del PC donde está instalado el programa, una sola vez. " +
-      "No cambia su zona horaria ni ningún otro ajuste y queda anotado en el registro de accesos."),
+      `${zoneSentence} Queda anotado en el registro de accesos.`),
+    zone.part,
     h("p", { class: "muted small" }, "Si la hora del equipo la pone otro programa (HikCentral, iVMS-4200, un grabador o " +
       "un servidor de hora), no se cambia y se explica por qué."));
   const u = h("input", { class: "input", autocomplete: "off", placeholder: "admin", "aria-label": "Usuario administrador del equipo" });
@@ -224,6 +273,7 @@ function clockSetDialog(dev, body) {
         return;
       }
       const payload = user ? { username: user, password: p.value } : {};
+      if (zone.box && zone.box.checked) payload.use_pc_zone = true;
       p.value = "";
       await busy(e.currentTarget, async () => {
         try {
@@ -238,6 +288,9 @@ function clockSetDialog(dev, body) {
             creds.open = true;
             u.focus();
           }
+          // el equipo no admite la zona de este PC y no ha cambiado nada; el mensaje dice «vuelve a pulsar sin
+          // marcar la casilla»: se desmarca ya, así el siguiente clic no falla igual
+          if (err instanceof ApiError && err.code === "clock_zone_unsupported" && zone.box) zone.box.checked = false;
         }
       });
     // el mismo nombre que el botón de la fila: los errores dicen «pulsa otra vez «Poner en hora con este PC»»
@@ -272,7 +325,7 @@ async function renderClock(body) {
     // «unknown») el botón siempre se negaría; «ok» o sin lectura: nada que corregir
     if (!dev || !writable.has(dev.vendor) || !["warning", "critical"].includes(d.status) || d.time_mode !== "manual") return "";
     return h("button", { type: "button", class: "btn btn-sm", dataset: { clockSet: dev.id },
-      onclick: () => clockSetDialog(dev, body) }, SET_LABEL);
+      onclick: () => clockSetDialog(dev, body, d, data.pc_zone) }, SET_LABEL);
   };
   body.append(h("div", { class: "card table-wrap" }, h("table", { class: "table", id: "ops-clock-table" },
     h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Equipo"), h("th", { scope: "col" }, "Estado"),

@@ -83,8 +83,9 @@ def test_zone_advice_does_not_name_a_button_the_brand_lacks() -> None:
                                noun="el grabador", pc_serves_time=False).message_es
         assert "zona horaria en la web del grabador" in msg and "Poner en hora" not in msg, msg
         assert msg.count("Qué hacer:") == 1 and voseo_in(msg) == []
+    # con NTP el botón no escribe nada (ni la hora ni la zona): la zona se cambia en la web del equipo
     with_button = clk.assess(0.1, "ntp", 2, 30, zone="La cámara usa otra zona.", can_set=True, noun="la cámara")
-    assert "«Poner en hora con este PC» no la cambia" in with_button.action
+    assert "zona horaria en la web de la cámara" in with_button.action and "Poner en hora" not in with_button.action
 
 
 def test_ntp_device_is_told_to_check_its_server_not_the_button() -> None:

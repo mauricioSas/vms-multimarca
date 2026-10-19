@@ -1007,6 +1007,11 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | integración | §18.11 (sin cambios de forma): el paso `clock` de «¿Por qué no conecta?» solo es fallo con la hora `critical`; `warning` (hora a mano, desfase pequeño o zona distinta) pasa a `ok: true` con `warning: true`. Antes, una cámara en hora tras «Poner en hora con este PC» (queda en manual) salía «Falla», era la causa probable y nunca salía «Todo correcto». Misma revisión: §18.3 por ONVIF, sin `DateTimeType` (modo desconocido) «Poner en hora» responde 409 `device_clock_managed` (`time_mode` «sin informar») sin escribir; §6.1 la longitud de un `SecretStr` da «Texto demasiado largo/corto» en `details.fields` (antes «Demasiados elementos»); §6.8 con avisos de energía el resumen de la web ya no dice «Todo funciona con normalidad» (el servidor no cambia). |
 | 2026-10-08 | pruebas-puertos | §9 (solo pruebas): `FakeEngine` deja de dar los puertos por defecto del motor (8889, 8554 y 9996) y usa puertos libres cerrados (`rtsp_port`, `webrtc_port`, `playback_port`); `settings` e `isolated_settings()` (nuevo; lo usa `tests/web/real_backend.py`) dan libres también el HTTPS y todas las direcciones de MediaMTX; vigilante `ProductPortGuard` y marca `product_ports` (§9.1); `python -m tests.web.stub_backend` usa un puerto libre si no se le da `--port`. Motivo: mientras pasaban las pruebas en el PC del usuario, el MediaMTX del programa instalado recibía peticiones RTSP y WebRTC de cámaras inventadas («path 'cam-xxxxxxxx/sub' is not configured»): el proxy WHEP, la reproducción y la instantánea por OpenCV de las pruebas iban a sus puertos. |
 | 2026-10-08 | digest-rtsp | §5.1: la respuesta Digest (HTTP y RTSP) lleva `algorithm` solo si el reto lo trae; antes iba siempre `algorithm=MD5` y el RTSP de la cámara del usuario (Hikvision, firmware V5.5.0, reto sin `qop` ni `algorithm`) daba 401 con la contraseña buena. `Challenge.algorithm` queda vacío si el equipo no lo manda (nueva propiedad `hash_algorithm`, MD5 en ese caso). `test_device` (**cambio de comportamiento**, sin cambios de forma): si la API **de la marca** (Hikvision, Dahua; nuevo `vms.vendors.brand_api(spec)`, aditivo) acepta la contraseña y RTSP responde 401, `auth_ok` sigue en `true` (antes `false`) y el mensaje no la da por mala, así que la web marca «Usuario y contraseña» como correctos y al guardar sí importa los canales por la API; con ONVIF (driver «onvif» y perfiles Uniview, VIGI, Tapo…) sigue en `false` como antes, porque muchas cámaras contestan por ONVIF con cualquier contraseña; el rechazo de RTSP que no tiene esa garantía lleva ahora «Qué hacer:»; la cabecera dice «Cámara … encontrada». `RtspProbeResult.credentials_rejected` (aditivo). §16.2: `vms.ops.drivers.brand_api(vendor)` (aditivo). §18.11 (sin cambios de forma): `rtsp_describe` distingue el 401 con la contraseña ya aceptada por la API de la marca (no por ONVIF), el usuario bloqueado que dice el RTSP, el 403 sin permiso, el RTSP que solo ofrece Basic y el 401 sin credenciales mandadas, cada uno con su acción; la prueba RTSP del diagnóstico usa Basic si el equipo tiene `allow_basic` (antes nunca). |
+| 2026-10-08 | zona horaria | §16.2/§18.3 (aditivo): `set_device_time(..., *, zone="")` escribe también la zona en la misma operación y la comprueba (`DeviceZoneUnsupported` → 422 `clock_zone_unsupported` sin escribir nada; `DeviceZoneNotApplied` → 200 con `ok: false` y `zone_not_applied`); cuerpo `use_pc_zone` en `POST /api/clock/devices/{device_id}/set` (por defecto `false`: sin él nada cambia), `ClockSetResult.zone_changed`, `DeviceTime.zone`/`previous_zone`, `ClockCheck.utc_offset_s` (columna nueva en `clock_checks`) y `pc_zone` en `GET /api/clock` y `POST /api/clock/check` (solo administradores); `audit.log` anota `use_pc_zone`, `zone_changed`, `zone_before` y `zone_after`. Zona de este PC en `vms/core/tzposix.py`, que ahora tiene el analizador POSIX (`vms.vendors.clock` lo reexporta). **Cambio de textos:** con la zona distinta y la hora puesta a mano se aconseja la casilla «Usar también la zona horaria de este PC»; con NTP, la web del equipo (ya no «este botón no la cambia»). Motivo: la cámara del usuario tiene la zona de fábrica `CST-8:00:00` (China) y el PC la de Madrid: poner solo la hora dejaba la de la imagen 6 o 7 horas adelantada. |
+| 2026-10-08 | zona horaria | §16.2/§18.3 (revisión, sin cambios de forma): Hikvision, con la zona de este PC, si el equipo rechaza el PUT que la lleva (`<ResponseStatus>` con error como `badParameters`, con un 200 o un 400, un estado HTTP de error o un 403 `notSupport`), lanza `DeviceZoneUnsupported` → 422 `clock_zone_unsupported` («no se ha cambiado nada… vuelve a pulsar sin marcar la casilla»), como ya hacía ONVIF y como decía este contrato. Antes salía 502 `device_protocol_error` (o 501 `device_unsupported`) con «ponla en hora desde la web», sin mencionar la casilla, que sale marcada por defecto con la zona de China: cada clic fallaba igual. |
+| 2026-10-08 | zona horaria | §18.3 (revisión, solo textos y web): tras un 422 `clock_zone_unsupported` el diálogo desmarca la casilla; sin casilla (`pc_zone.error_es`) ya no dice «solo cambia si marcas la casilla de abajo». **Cambio de texto:** el aviso de después dice «Ya usa la zona horaria de este PC (…)» (antes «Usa…», que se leía como una orden a quien lee). |
+| 2026-10-08 | zona horaria | §18.3 (revisión, sin cambios de forma): el aviso de zona distinta de la fila compara la zona del equipo en el instante de la medida (la regla de `zone`, como `ClockCheck.utc_offset_s` y el diálogo) con la del PC en ese instante. Antes usaba el desfase de la propia hora del equipo: con la zona de Madrid y la fecha de 1970, en verano, la fila decía «UTC+1, distinta de la de este PC (UTC+2)» y el diálogo «ya usa la misma zona». |
+| 2026-10-08 | zona horaria | §16.2/§18.3 (aditivo): `DeviceTimeUnverified.details["previous_zone"]` (la zona que tenía el equipo antes de escribir, si se sabe) y `audit.log` la anota en `zone_before` con `written_unverified`. Antes quedaba en `null` aunque, con la casilla de la zona, la zona pudo cambiar. |
 
 ---
 
@@ -1375,7 +1380,8 @@ firmas (§5.1) no cambian.
 `api_probe`, `api_channels`, `api_snapshot`, `api_codec_fix`, `onvif`, `onvif_media2`, `discovery_wsd`,
 `discovery_sadp`, `discovery_dhip`, **`time_read`** (implementa `DeviceClockClient.device_time() ->
 DeviceTime`; lo usa B6), **`time_write`** (implementa `DeviceClockWriter.set_device_time(admin_username="",
-admin_password="") -> DeviceTime`, «Poner en hora con este PC», §18.3; Hikvision por ISAPI y todo lo que usa
+admin_password="", *, zone="") -> DeviceTime`, «Poner en hora con este PC», §18.3; con `zone` (POSIX) escribe
+también la zona horaria en la misma operación; Hikvision por ISAPI y todo lo que usa
 `OnvifClient`; Dahua todavía no) y **`security_read`** (implementa `DeviceSecurityClient.security_settings(admin_username,
 admin_password) -> DeviceSecuritySettings`; lo usa B6 con credenciales temporales que no se guardan ni se
 registran); `rtsps` y `mjpeg_http` (v2.1); `events` y `ptz` (fuera de la v2).
@@ -1503,8 +1509,28 @@ el 01-01-1970» diga la fecha de su imagen y no la UTC). Si se conoce y no coinc
 adivina (lectura fallida, «Desconocido»). Si ONVIF lee la hora sin autenticar pero rechaza la contraseña en
 `GetNTP`, devuelve la hora con `credentials_rejected` y B6 deja de usar esa contraseña 30 min (como con un
 `DeviceAuthFailed`) para no bloquear el usuario del equipo.
+**Zona del equipo (aditivo):** `DeviceTime.zone` es la zona tal como la da el equipo (Hikvision `timeZone`, ONVIF
+`TZ`; «» si no la da, máximo 64 caracteres) y `ClockCheck.utc_offset_s` la zona del equipo en el momento de la
+medida (con su horario de verano, por la regla de `zone` si se entiende; si no, `DeviceTime.utc_offset_s`; `null` si
+no se sabe). Se guarda con la medida (columna nueva de `clock_checks`, añadida al abrir una base anterior). El aviso
+de zona distinta (solo si se conoce `DeviceTime.utc_offset_s`) compara esa misma zona con la del PC en el instante de
+la medida, como el diálogo; si la regla de `zone` no se entiende, `DeviceTime.utc_offset_s` con la del PC a la hora
+del equipo.
 Cada medida se guarda (§18.17) y la exportación incluye la última en el manifiesto.
-Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck]}`; `POST /api/clock/check` (A).
+Rutas: `GET /api/clock` (O) → `{"pc": ClockCheck, "devices": [ClockCheck], "pc_zone": PcZoneInfo | null}`;
+`POST /api/clock/check` (A), con la misma forma. `pc_zone` solo va para administradores (es para el diálogo de
+«Poner en hora con este PC»): `PcZoneInfo` `{"utc_offset_s", "label_es", "posix", "error_es"}` = desfase de este PC
+ahora, la zona en claro («UTC+1 en invierno y UTC+2 en verano», «UTC+8, sin horario de verano»), la cadena POSIX que
+se escribiría («CET-1CEST,M3.5.0,M10.5.0/3») y, si no se puede escribir en los equipos, el motivo con «Qué hacer:»
+(entonces `label_es` y `posix` van vacíos).
+
+**Zona horaria de este PC** (`vms/core/tzposix.py`, `pc_zone()`): en Windows, la que usa el sistema
+(`GetDynamicTimeZoneInformation`: desfase y reglas del cambio de hora, solo lectura) con la cadena POSIX de tzdata
+que tiene exactamente esas reglas (si no hay ninguna, con nombres numéricos «<+01>-1<+02>,…»); fuera de Windows, el
+pie POSIX del TZif de `TZ` o `/etc/localtime`. Antes de darla por buena se comprueba hora a hora durante el próximo
+año que da el mismo desfase que el reloj de este PC; si no (cambio de hora por fecha fija, reglas que no se
+entienden), `PcZoneError` con el motivo y no se escribe nada. Se calcula una vez al día (o al cambiar la zona del
+sistema).
 
 **Las grabaciones llevan la hora de este PC**, no la de la cámara: `mtx_config.path_defaults` fija
 `useAbsoluteTimestamp: false` (el valor por defecto de MediaMTX, fijado para que no cambie sin que se note;
@@ -1517,22 +1543,46 @@ conecta?» lleva la acción sin ese prefijo (la interfaz ya lo pone). Una fecha 
 01-01-2000…) es «no tiene la hora puesta» (crítico). Desfases grandes en días o años (`fmt_skew`; también en el
 informe y en la web). Una sola acción: «Poner en hora con este PC» si el driver tiene `time_write` (dice que hace
 falta ser administrador del programa y, si el botón no sale, pulsar antes «Comprobar ahora»); si no, la web del
-equipo; con NTP, revisar su servidor; con la zona distinta, cambiarla en la web del equipo. «NTP con la IP de
+equipo; con NTP, revisar su servidor; con la zona distinta, la casilla «Usar también la zona horaria de este PC» de
+ese botón si la hora está puesta a mano y la marca tiene `time_write` (si no, cambiarla en la web del equipo). «NTP con la IP de
 este PC» solo se aconseja si este PC sirve la hora (`pc_time_server_enabled()`: W32Time
 `TimeProviders\NtpServer\Enabled` = 1). La consulta SNTP del PC descarta un servidor con LI = 3 o estrato 0
 (`UnsyncedServer`); ese caso y «No responde el servidor de hora» también dicen qué hacer.
 
 **«Poner en hora con este PC»** — `POST /api/clock/devices/{device_id}/set` (A), cuerpo opcional
-`{"username", "password"}` (administrador del equipo TEMPORAL: se usa una vez, solo Digest, no se guarda ni se
-registra) → `ClockSetResult` `{"ok", "message_es", "check": ClockCheck, "admin_credentials_used"}`. Una sola
-escritura que pide la persona; **nunca automática**. Escribe la hora de este PC **sin cambiar la zona del equipo**
-y la lee de nuevo: `ok` = |desfase| < `clock_warn_s`. Si el equipo acepta la hora pero falla la lectura de
+`{"username", "password", "use_pc_zone"}` (administrador del equipo TEMPORAL: se usa una vez, solo Digest, no se
+guarda ni se registra; `use_pc_zone`, por defecto `false`, es la casilla «Usar también la zona horaria de este PC»)
+→ `ClockSetResult` `{"ok", "message_es", "check": ClockCheck, "admin_credentials_used", "zone_changed"}`. Una sola
+escritura que pide la persona; **nunca automática**. Escribe la hora de este PC y la lee de nuevo: `ok` = |desfase|
+< `clock_warn_s` (y, con la zona, que el equipo la tenga). Sin `use_pc_zone` **no cambia la zona del equipo** (si
+no coincide con la de este PC, el mensaje dice que se vuelva a pulsar con la casilla marcada). Si el equipo acepta
+la hora pero falla la lectura de
 comprobación (el driver lanza `DeviceTimeUnverified`, código `clock_set_unverified`), no es un error: 200 con `ok:
 false`, «se ha escrito, pero no se ha podido comprobar» y qué hacer, `check` sin medida (`unknown`, no se guarda) y
-`written_unverified` en `audit.log`. Hikvision: GET `/ISAPI/System/time`, solo cambia `<localTime>`
-(en la zona del propio equipo y con su mismo formato, con desfase o sin él) y PUT del mismo XML; ONVIF:
-`SetSystemDateAndTime` Manual con la misma `TZ` y horario de verano (si el equipo no acepta su propia zona, se
-repite sin zona). Solo con la hora puesta a mano: con NTP, SDK/`platform` (HikCentral, iVMS-4200), `timecorrect`
+`written_unverified` en `audit.log`. Hikvision: GET `/ISAPI/System/time`, cambia `<localTime>` (con el mismo
+formato que dio el equipo, con desfase o sin él) y PUT del mismo XML; sin zona, la hora va en la zona del propio
+equipo y `<timeZone>` no se toca. ONVIF: `SetSystemDateAndTime` Manual con la misma `TZ` y horario de verano (si el
+equipo no acepta su propia zona, se repite sin zona).
+
+**Con `use_pc_zone`** se escribe la zona de este PC (`pc_zone()`, arriba) junto con la hora, en la MISMA escritura,
+y se comprueba al leer de nuevo. Hikvision: `<timeZone>` en su formato (`hik_zone`: nombre «CST», offset POSIX con
+el signo al revés que ISO, «DST» + lo que se adelanta y las reglas con hora entera; Madrid =
+`CST-1:00:00DST01:00:00,M3.5.0/02:00:00,M10.5.0/03:00:00`, China = `CST-8:00:00`) y `<localTime>` ya en la zona
+nueva, en el mismo PUT. Solo de UTC−12 a UTC+14, adelantos de hasta 2 h y cambios entre las 00:00 y las 23:59, y
+solo si el texto se lee de vuelta como la misma zona; si no, `DeviceZoneUnsupported` sin escribir nada. Si el equipo
+rechaza ese PUT (`<ResponseStatus>` con error, p. ej. `badParameters` con un 200 o un 400, un estado HTTP de error o
+un 403 `notSupport`), también `DeviceZoneUnsupported`: el PUT entero no se aplicó y no se repite sin la zona. ONVIF: la
+cadena POSIX en `TZ` con `DaylightSavings` true si tiene horario de verano; si el equipo la rechaza, no se repite
+sin ella (`DeviceZoneUnsupported`, nada cambiado). Comprobación (los dos): la zona leída de nuevo tiene las mismas
+reglas (no se compara el texto) y la hora local del equipo va con el desfase de esa zona; si no,
+`DeviceZoneNotApplied` con la lectura y B6 responde 200 con `ok: false`, `zone_not_applied` en audit.log y qué hacer
+(cambiarla en la web del equipo y volver a pulsar sin la casilla). Si la zona de este PC no se puede expresar
+(`PcZoneError`) o el equipo no la admite: **422 `clock_zone_unsupported`** sin escribir nada, con qué hacer.
+La web abre el diálogo con la zona del equipo (`check.utc_offset_s` de su fila) frente a la de este PC
+(`pc_zone`) dicha en claro («El equipo usa la zona horaria UTC+8 y este PC, UTC+2: … va 6 h adelantada…») y la
+casilla, marcada solo si no coinciden; sin casilla si `pc_zone.error_es`. Tras un 422 `clock_zone_unsupported` la
+web desmarca la casilla, para que el siguiente clic ponga solo la hora.
+Solo con la hora puesta a mano: con NTP, SDK/`platform` (HikCentral, iVMS-4200), `timecorrect`
 (el grabador), `satellite` u ONVIF la pone otro sistema y responde **409 `device_clock_managed`** sin escribir.
 Errores (todos con «Qué hacer:»): **403 `device_write_denied`** (el usuario guardado es de solo lectura: ISAPI 403
 `lowPrivilege` —en el GET o en el PUT, o en un 200 con `<ResponseStatus>` `lowPrivilege`— o un 401 en el PUT justo
@@ -1548,8 +1598,11 @@ probar con el usuario guardado), 501 `device_unsupported` (el equipo no deja cam
 (también sin probar si la contraseña guardada está en la pausa de 30 min) / `device_locked` / `device_unreachable` /
 `device_basic_not_allowed` / `device_protocol_error` u otro error del equipo / `clock_set_failed` (fallo
 inesperado). Queda en `audit.log` como `camera_clock_set` (`result`, `skew_before_s`, `skew_after_s`,
-`admin_credentials_used`; nunca contraseñas ni el usuario administrador), también las negativas sin hablar con el
-equipo (`clock_set_unsupported`, `device_auth_failed` por la pausa, `device_write_denied` recordado, `conflict`), y
+`admin_credentials_used`, `use_pc_zone`, `zone_changed`, `zone_before` y `zone_after` —la zona que dio el equipo
+antes y después, o `null` si no se sabe; con `written_unverified`, solo la de antes, que el driver da en
+`DeviceTimeUnverified.details["previous_zone"]`—; nunca contraseñas ni el usuario administrador), también las
+negativas sin hablar con el equipo (`clock_set_unsupported`, `clock_zone_unsupported` por la zona de este PC,
+`device_auth_failed` por la pausa, `device_write_denied` recordado, `conflict`), y
 en la línea de tiempo (capa
 `clock`). En la web el botón solo sale a los administradores, en filas con aviso y la hora puesta a mano
 (`time_mode` `manual`): con NTP u otro sistema el servidor siempre lo rechazaría. Su diálogo no manda nada si solo

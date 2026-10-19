@@ -248,24 +248,29 @@ async def get_clock(p: Principal = Depends(require_operator), state: AppState = 
     visible = visible_camera_ids(state, p, (c.id for c in cfg.cameras), "live")
     devices = [chk for did, chk in latest.items() if did is not None and cfg.device(did) is not None
                and (p.role == "admin" or any(c.id in visible for c in cfg.cameras_of(did)))]
-    return json_response({"pc": latest.get(None), "devices": devices})
+    # la zona de este PC solo hace falta en el diálogo de «Poner en hora con este PC» (administradores)
+    pc_zone = await asyncio.to_thread(ops.pc_zone_info) if p.role == "admin" else None
+    return json_response({"pc": latest.get(None), "devices": devices, "pc_zone": pc_zone})
 
 
 @router.post("/clock/check")
 async def clock_check(_: Principal = Depends(require_admin), ops: "OpsService" = Depends(get_ops)) -> Response:
     pc, devices = await ops.clock_check_all()
-    return json_response({"pc": pc, "devices": devices})
+    return json_response({"pc": pc, "devices": devices, "pc_zone": await asyncio.to_thread(ops.pc_zone_info)})
 
 
 class ClockSetBody(BaseModel):
     """Credenciales de administrador del equipo, TEMPORALES y opcionales (sin ellas, el usuario guardado). Se usan
-    una vez y no se guardan ni se registran (como en la auditoría de seguridad, CONTRATO §18.12)."""
+    una vez y no se guardan ni se registran (como en la auditoría de seguridad, CONTRATO §18.12).
+
+    `use_pc_zone`: la casilla «Usar también la zona horaria de este PC» (por defecto no se toca la zona)."""
 
     username: str = Field("", max_length=64)
     password: SecretStr = Field(default=SecretStr(""), max_length=256)
+    use_pc_zone: bool = False
 
     def __repr__(self) -> str:   # nunca la contraseña en trazas
-        return f"ClockSetBody(username={self.username!r})"
+        return f"ClockSetBody(username={self.username!r}, use_pc_zone={self.use_pc_zone!r})"
 
 
 @router.post("/clock/devices/{device_id}/set")
@@ -280,7 +285,7 @@ async def clock_set(device_id: str, request: Request, body: ClockSetBody = Body(
         raise ValidationFailed("Falta el usuario o la contraseña de administrador del equipo. Qué hacer: escribe los "
                                "dos, o deja los dos vacíos para usar el usuario guardado.")
     result = await ops.clock_set(device_id, p.username, client_ip(request), admin_username=username,
-                                 admin_password=password)
+                                 admin_password=password, use_pc_zone=body.use_pc_zone)
     return json_response(result)
 
 

@@ -8,7 +8,8 @@ Endpoints usados (todos de lectura salvo «Corregir códec»):
   GET /ISAPI/Streaming/channels/<N>0<1|2>/picture       snapshot JPEG (solo en memoria)
   GET/PUT /ISAPI/Streaming/channels/<N>02               «Corregir códec» (copia previa y deshacer)
   GET /ISAPI/System/time, /ISAPI/System/time/ntpServers hora y modo (TIME_READ)
-  GET/PUT /ISAPI/System/time                            «Poner en hora con este PC» (TIME_WRITE, solo `localTime`)
+  GET/PUT /ISAPI/System/time                            «Poner en hora con este PC» (TIME_WRITE: `localTime` y, si se
+                                                        pide, `timeZone` en el mismo PUT)
   GET /ISAPI/System/Network/{telnetd,ssh,UPnP,EZVIZ}, /ISAPI/Security/adminAccesses   (SECURITY_READ)
 
 Numeración: el canal N corresponde a los flujos N01 (principal) y N02 (subflujo), igual que las rutas RTSP
@@ -21,7 +22,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Literal
 
 import httpx
@@ -30,11 +31,14 @@ from vms.core.errors import DeviceAuthFailed, DeviceError, DeviceProtocolError, 
 from vms.core.interfaces import ChannelInfo, DeviceInfo, DeviceSecuritySettings, DeviceTime
 from vms.core.models import DeviceBase, Vendor
 
+from vms.core.tzposix import PosixZone, fmt_hms
+
 from ._http import VendorHttp
-from .clock import Stopwatch, parse_naive_or_aware, posix_zone, round_offset
+from . import clock as _clock
+from .clock import Stopwatch, parse_naive_or_aware, posix_zone, round_offset, zone_matches
 from .codec import StreamConfigBackup, normalize_codec
 from .errors import (BasicNotAllowed, DeviceClockManaged, DeviceLocked, DevicePermissionDenied, DeviceTimeUnverified,
-                     DeviceWriteDenied)
+                     DeviceWriteDenied, DeviceZoneNotApplied, DeviceZoneUnsupported)
 
 log = logging.getLogger("vms.vendors.hikvision")
 
@@ -68,6 +72,35 @@ def _text(el: ET.Element | None, path: str, default: str = "") -> str:
 
 def _int(value: str) -> int | None:
     return int(value) if value.strip().lstrip("-").isdigit() else None
+
+
+def hik_zone(zone: PosixZone) -> str | None:
+    """Zona POSIX → el formato de `<timeZone>` de Hikvision, o None si ese formato no puede expresarla.
+
+    Hikvision usa siempre el nombre «CST», el offset POSIX (signo al revés que en ISO) con «H:MM:SS» y, con horario
+    de verano, «DST» + lo que se ADELANTA («DST01:00:00») y las dos reglas con la hora entera: Madrid es
+    «CST-1:00:00DST01:00:00,M3.5.0/02:00:00,M10.5.0/03:00:00» (es lo que lee `posix_zone`). Solo se escribe lo que
+    ese formato expresa sin dudas: de UTC−12 a UTC+14, adelantos de hasta 2 h y cambios a una hora del día (de 00:00
+    a 23:59). Fuera de eso (p. ej. un cambio «a las 24:00» o «a las −1:00» de tzdata) no se adivina cómo lo guardaría
+    el equipo; tampoco si el texto se leería de vuelta como otra zona."""
+    std = zone.std
+    if std.total_seconds() % 60 or not timedelta(hours=-12) <= std <= timedelta(hours=14):
+        return None
+    sign = "+" if std <= timedelta(0) else "-"                     # POSIX: al revés que en ISO (UTC+0 = «+0»)
+    text = f"CST{sign}{fmt_hms(abs(std))}"
+    if zone.dst is not None:
+        if zone.start is None or zone.end is None:
+            return None
+        ahead = zone.dst - zone.std
+        if not timedelta(0) < ahead <= timedelta(hours=2) or ahead.total_seconds() % 60:
+            return None
+        for rule in (zone.start, zone.end):
+            if not timedelta(0) <= rule.at < timedelta(hours=24) or rule.at.total_seconds() % 60:
+                return None
+        text += (f"DST{fmt_hms(ahead, hours_width=2)},M{zone.start.month}.{zone.start.week}.{zone.start.weekday}/"
+                 f"{fmt_hms(zone.start.at, hours_width=2)},M{zone.end.month}.{zone.end.week}.{zone.end.weekday}/"
+                 f"{fmt_hms(zone.end.at, hours_width=2)}")
+    return text if posix_zone(text) == zone else None   # se lee igual que la zona pedida, o no se escribe
 
 
 def build_date(text: str) -> str:
@@ -330,7 +363,7 @@ class HikvisionClient:
             "manual" if mode_raw == "manual" else "unknown"
         ntp = await self._ntp_server(http) if mode == "ntp" else ""
         return DeviceTime(device_time=dt, measured_at=sw.midpoint, round_trip_ms=round(sw.round_trip_ms, 1),
-                          time_mode=mode, ntp_server=ntp, source="isapi",
+                          time_mode=mode, ntp_server=ntp, source="isapi", zone=_text(root, "timeZone")[:64],
                           utc_offset_s=round_offset(utc_offset) if utc_offset is not None else None)
 
     async def _ntp_server(self, http: VendorHttp) -> str:
@@ -344,11 +377,20 @@ class HikvisionClient:
         return ""
 
     # ------------------------------------------------------------------ TIME_WRITE
-    async def set_device_time(self, admin_username: str = "", admin_password: str = "") -> DeviceTime:
-        """«Poner en hora con este PC» (CONTRATO §18.3): GET /ISAPI/System/time, se cambia SOLO `<localTime>` (la
-        hora de este PC en la zona del propio equipo, con el mismo formato que dio el equipo: con desfase o sin él)
-        y PUT del mismo XML, así se conservan el espacio de nombres y los nodos de cada firmware. `timeMode` y
-        `timeZone` no se tocan. Después se lee de nuevo la hora para comprobarla.
+    async def set_device_time(self, admin_username: str = "", admin_password: str = "", *,
+                              zone: str = "") -> DeviceTime:
+        """«Poner en hora con este PC» (CONTRATO §18.3): GET /ISAPI/System/time, se cambia `<localTime>` (la hora de
+        este PC, con el mismo formato que dio el equipo: con desfase o sin él) y PUT del mismo XML, así se conservan
+        el espacio de nombres y los nodos de cada firmware. `timeMode` no se toca. Después se lee de nuevo la hora
+        para comprobarla.
+
+        Zona: sin `zone`, `<timeZone>` no se toca y la hora va en la zona del propio equipo. Con `zone` (POSIX, la de
+        este PC) se cambia también `<timeZone>` (formato de Hikvision, `hik_zone`) en el MISMO PUT y la hora va ya
+        en la zona nueva: así el equipo la entiende igual tanto si mira el desfase de `localTime` como si no. Si esa
+        zona no se puede expresar en su formato, `DeviceZoneUnsupported` sin escribir nada; también si el equipo
+        rechaza ese PUT (`<ResponseStatus>` con error, p. ej. `badParameters`, o un estado HTTP de error): no se
+        aplicó nada. Si al leer de nuevo el equipo tiene otra zona (o otro desfase), `DeviceZoneNotApplied` con la
+        lectura.
 
         Solo con la hora puesta a mano (`manual`): con NTP, SDK (HikCentral, iVMS-4200), `platform`, `timecorrect`
         (la pone el grabador), `satellite` u ONVIF la pone otro sistema y se lanza `DeviceClockManaged` sin
@@ -376,9 +418,16 @@ class HikvisionClient:
             if current is None:
                 raise DeviceProtocolError(f"{self.http.label} no devolvió su hora")
             zone_text = _text(root, "timeZone")
-            zone = posix_zone(zone_text)
-            now = datetime.now(timezone.utc)
-            offset = zone.offset_at_utc(now) if zone is not None else None
+            target: PosixZone | None = None
+            target_text = ""
+            if zone:
+                target = posix_zone(zone)
+                target_text = (hik_zone(target) if target is not None else None) or ""
+                if target is None or not target_text:
+                    raise DeviceZoneUnsupported(self.http.label, zone, "el formato de Hikvision no admite esas reglas")
+            device_zone = target if target is not None else posix_zone(zone_text)
+            now = _clock.utc_now()
+            offset = device_zone.offset_at_utc(now) if device_zone is not None else None
             if offset is None:
                 offset = current.utcoffset()   # zona sin entender: el desfase que trae su propia hora
             if offset is None:
@@ -391,6 +440,11 @@ class HikvisionClient:
             new_xml, n = re.subn(r"(<localTime>)[^<]*(</localTime>)", rf"\g<1>{value}\g<2>", raw, count=1)
             if not n:
                 raise DeviceProtocolError(f"{self.http.label} no informa de su hora (localTime)")
+            if target_text:
+                # en el mismo PUT que la hora: una escritura, y la hora ya va en la zona nueva
+                new_xml, n = re.subn(r"(<timeZone>)[^<]*(</timeZone>)", rf"\g<1>{target_text}\g<2>", new_xml, count=1)
+                if not n:
+                    new_xml = re.sub(r"(</localTime>)", rf"\g<1><timeZone>{target_text}</timeZone>", new_xml, count=1)
             authed = http.credentialed_requests > 0     # el GET de la hora acaba de valer CON estas credenciales
             try:
                 await self._put_checked("/ISAPI/System/time", new_xml, http=http)
@@ -411,12 +465,28 @@ class HikvisionClient:
                         "status": 401, "auth_rejection": True,
                         "remaining_attempts": exc.details.get("remaining_attempts")}) from exc
                 raise
-            log.info("Hora de %s puesta con la de este PC (zona del equipo %s sin cambios)", self.http.label,
-                     zone_text[:40] or "-")
+            except (DeviceProtocolError, DeviceUnsupported) as exc:
+                if not target_text or not (exc.details.get("status") or exc.details.get("status_code")):
+                    raise
+                # rechazó el PUT que lleva la zona nueva (`<ResponseStatus>` `badParameters` con un 200 o un 400,
+                # `notSupport`…): el PUT entero no se aplicó, ni la hora ni la zona. Como en ONVIF, no se repite sin
+                # la zona por su cuenta: se dice que no la admite y la persona vuelve a pulsar sin la casilla (si
+                # no, el 502 genérico no lo decía y la casilla, marcada por defecto, fallaba igual cada vez)
+                raise DeviceZoneUnsupported(self.http.label, zone, exc.message) from exc
+            if target_text:
+                log.info("Hora y zona de %s puestas con las de este PC (zona %s → %s)", self.http.label,
+                         zone_text[:40] or "-", target_text)
+            else:
+                log.info("Hora de %s puesta con la de este PC (zona del equipo %s sin cambios)", self.http.label,
+                         zone_text[:40] or "-")
             try:
-                return await self._read_time(http)
+                after = await self._read_time(http)
             except DeviceError as exc:      # escrita: lo que falla es solo la comprobación
-                raise DeviceTimeUnverified(self.http.label, exc) from exc
+                raise DeviceTimeUnverified(self.http.label, exc, previous_zone=zone_text) from exc
+            after = after.model_copy(update={"previous_zone": zone_text[:64]})
+            if target is not None and not zone_matches(target, after.zone, after.utc_offset_s, after.device_time):
+                raise DeviceZoneNotApplied(self.http.label, target_text, after)
+            return after
         finally:
             if temp is not None:
                 await temp.aclose()

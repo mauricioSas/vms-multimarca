@@ -17,7 +17,10 @@ equipo está en hora manual (sin NTP): con el tiempo deriva.
 
 El desfase se mide SIEMPRE en UTC, igual en todas las marcas: un equipo con NTP bien y la zona de fábrica
 (p. ej. China, UTC+8) tiene el reloj en hora. Pero la hora que sobreimprime en la imagen va en su zona: si el
-driver la conoce (`DeviceTime.utc_offset_s`) y no coincide con la del PC, es un aviso aparte (`warning`).
+driver la conoce (`DeviceTime.utc_offset_s`) y no coincide con la del PC, es un aviso aparte (`warning`). Con la
+hora puesta a mano y una marca con `time_write`, se arregla con la casilla «Usar también la zona horaria de este PC»
+de «Poner en hora con este PC»; si no, en la web del equipo. `ClockCheck.utc_offset_s` guarda la zona del equipo en
+el momento de la medida para el diálogo de ese botón.
 
 Textos honestos (revisión de la hora de las cámaras):
 - Las grabaciones llevan la hora de ESTE PC (MediaMTX sella cada fotograma al recibirlo:
@@ -42,6 +45,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from vms.core.interfaces import DeviceTime
+from vms.core.tzposix import PosixZone, posix_zone
 
 from ..models import ClockCheck
 
@@ -52,6 +56,7 @@ NEVER_SET_YEAR = 2015           # un reloj por debajo de este año no se ha pues
 Status = Literal["ok", "warning", "critical", "unknown"]
 
 SET_BUTTON = "«Poner en hora con este PC»"
+ZONE_BOX = "«Usar también la zona horaria de este PC»"     # la casilla del diálogo de SET_BUTTON
 # el botón es solo para administradores y sale en la fila cuando hay una medida con aviso (de ahí «Comprobar ahora»)
 SET_ACTION = (f"En Estado del sistema > Hora de los equipos, pulsa {SET_BUTTON} (hace falta ser administrador del "
               "programa; si el botón no aparece, pulsa antes «Comprobar ahora»).")
@@ -155,6 +160,7 @@ def assess(skew_s: float | None, time_mode: str, warn_s: float, critical_s: floa
     ntp_hint = (" Para que no se vuelva a desajustar, también puedes activar NTP en el equipo con la IP de este PC: "
                 "este PC sirve la hora.") if pc_serves_time else ""
     action = ""
+    press_now = status != "ok" and time_mode == "manual" and can_set    # la acción ya es pulsar el botón
     if status != "ok":
         if time_mode == "ntp":
             server = f" ({ntp_server})" if ntp_server else ""
@@ -172,12 +178,22 @@ def assess(skew_s: float | None, time_mode: str, warn_s: float, critical_s: floa
         action = ("Revisa su hora de vez en cuando en Estado del sistema > Hora de los equipos y, si se desajusta, " +
                   (f"pulsa {SET_BUTTON}." if can_set else f"{web}.") + ntp_hint)
     if zone is not None:
-        status = "warning" if status == "ok" else status
         cause += f" Además, {zone[:1].lower()}{zone[1:]}"
-        # el botón solo se nombra si esta marca lo tiene
-        zone_action = (f"cambia la zona horaria en la web {de_noun(noun)} (apartado de fecha y hora) a la de la "
-                       "tienda" + (f"; {SET_BUTTON} no la cambia." if can_set else "."))
-        action = f"{action} Después, {zone_action}" if action else cap_first(zone_action)
+        if can_set and time_mode == "manual":
+            # el botón también cambia la zona (la casilla del diálogo); solo sale con la hora puesta a mano
+            if press_now:
+                action = action.replace(SET_ACTION, f"{SET_ACTION} En ese diálogo, deja marcada la casilla {ZONE_BOX} "
+                                                    "para corregir también la zona.", 1)
+            else:
+                action = (f"Para corregir la zona, en Estado del sistema > Hora de los equipos pulsa {SET_BUTTON} "
+                          f"(hace falta ser administrador del programa) y deja marcada la casilla {ZONE_BOX}. "
+                          + action)
+        else:
+            # con NTP u otro sistema el botón no escribe nada (y algunas marcas no lo tienen): la web del equipo
+            zone_action = (f"cambia la zona horaria en la web {de_noun(noun)} (apartado de fecha y hora) a la de la "
+                           "tienda.")
+            action = f"{action} Después, {zone_action}" if action else cap_first(zone_action)
+        status = "warning" if status == "ok" else status
     return Assessment(status, cause, action.strip())
 
 
@@ -219,6 +235,33 @@ def _fmt_offset(seconds: int) -> str:
     return f"UTC{sign}{h}" + (f":{rem // 60:02d}" if rem else "")
 
 
+fmt_offset = _fmt_offset   # «UTC+2», «UTC−3», «UTC+5:30»
+
+
+def zone_label_es(rule: PosixZone) -> str:
+    """Zona en lenguaje de tienda: «UTC+1 en invierno y UTC+2 en verano» o «UTC+8, sin horario de verano»."""
+    std = _fmt_offset(int(rule.std.total_seconds()))
+    if rule.dst is None:
+        return f"{std}, sin horario de verano"
+    return f"{std} en invierno y {_fmt_offset(int(rule.dst.total_seconds()))} en verano"
+
+
+def _device_zone(dt: DeviceTime) -> tuple[int | None, bool]:
+    """(zona del equipo en segundos, ¿sale de la regla de su zona en el instante de la medida?)."""
+    rule = posix_zone(dt.zone) if dt.zone else None
+    off = rule.offset_at_utc(dt.measured_at) if rule is not None else None
+    if off is not None:
+        return int(round(off.total_seconds() / 900.0) * 900), True
+    return dt.utc_offset_s, False
+
+
+def device_zone_offset_s(dt: DeviceTime) -> int | None:
+    """Zona del equipo AHORA (en el instante de la medida, con su horario de verano), en segundos; None si no se
+    sabe. Con la regla de su zona (`DeviceTime.zone`) si se entiende: un equipo con la fecha de 1970 y la zona de
+    Madrid usa UTC+2 en verano, aunque su propia hora caiga en invierno. Si no, el desfase de su hora local."""
+    return _device_zone(dt)[0]
+
+
 def _pc_offset_s(instant: datetime) -> int:
     """Zona del PC en ese instante. Con un equipo sin hora (1970…) Windows no sabe pasarlo a hora local
     (`localtime` falla antes de 1970): se usa la zona actual del PC."""
@@ -229,16 +272,30 @@ def _pc_offset_s(instant: datetime) -> int:
     return int(off.total_seconds()) if off is not None else 0
 
 
+def pc_offset_s(instant: datetime) -> int:
+    """Zona de este PC en ese instante, en segundos (UTC+2 = 7200)."""
+    return _pc_offset_s(instant)
+
+
 def zone_mismatch(dt: DeviceTime, pc_offset_s: int | None = None, noun: str = "el equipo") -> str | None:
     """Frase si la zona del equipo (la de la hora que sale en la imagen) no es la del PC; None si coincide o
-    no se sabe. `pc_offset_s`: zona del PC en ese instante (por defecto, la del sistema)."""
+    no se sabe. `pc_offset_s`: zona del PC en ese instante (por defecto, la del sistema).
+
+    Solo si el driver da el desfase de la hora local (`utc_offset_s`; ONVIF no lo da: sin aviso de zona). Si la
+    regla de su zona se entiende, se comparan las dos zonas en el instante de la medida, igual que el diálogo de
+    «Poner en hora» (`device_zone_offset_s` frente a `pc_zone`). Antes se miraba el desfase de su propia hora: un
+    equipo con la zona de Madrid y la fecha de 1970 salía en la fila como «UTC+1, distinta de la de este PC (UTC+2)»
+    en verano, y el diálogo decía «ya usa la misma zona». Si no se entiende, su desfase y el del PC a su hora."""
     if dt.utc_offset_s is None:
         return None
-    if pc_offset_s is None:
-        pc_offset_s = _pc_offset_s(dt.device_time)
-    if abs(dt.utc_offset_s - pc_offset_s) < 60:
+    dev_offset, by_rule = _device_zone(dt)
+    if dev_offset is None:
         return None
-    return (f"{cap_first(noun)} usa una zona horaria ({_fmt_offset(dt.utc_offset_s)}) distinta de la de este PC "
+    if pc_offset_s is None:
+        pc_offset_s = _pc_offset_s(dt.measured_at if by_rule else dt.device_time)
+    if abs(dev_offset - pc_offset_s) < 60:
+        return None
+    return (f"{cap_first(noun)} usa una zona horaria ({_fmt_offset(dev_offset)}) distinta de la de este PC "
             f"({_fmt_offset(pc_offset_s)}): la hora que sale en la imagen no es la de la tienda.")
 
 
@@ -256,7 +313,7 @@ def device_check(device_id: str, camera_id: str | None, dt: DeviceTime, warn_s: 
     a = assess_device(dt, warn_s, critical_s, pc_offset_s, can_set=can_set, noun=noun, pc_serves_time=pc_serves_time)
     return ClockCheck(camera_id=camera_id, device_id=device_id, at=dt.measured_at, skew_s=round(dt.skew_s, 3),
                       round_trip_ms=round(dt.round_trip_ms, 1), time_mode=dt.time_mode, status=a.status,
-                      message_es=a.message)
+                      message_es=a.message, utc_offset_s=device_zone_offset_s(dt))
 
 
 def failed_check(device_id: str, camera_id: str | None, message: str) -> ClockCheck:

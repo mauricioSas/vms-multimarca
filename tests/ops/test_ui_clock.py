@@ -85,6 +85,154 @@ def test_set_clock_from_the_status_page(browser: Any, tmp_path: Path) -> None:
         srv.stop()
 
 
+def test_dialog_offers_the_pc_zone_when_it_differs(browser: Any, tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """La cámara del usuario tiene la zona de fábrica de China (UTC+8) y el PC la de Madrid: el diálogo lo dice en
+    claro y trae marcada «Usar también la zona horaria de este PC»; lo que manda la web lleva `use_pc_zone`. Con la
+    misma zona, la casilla sale sin marcar y no se manda."""
+    from zoneinfo import ZoneInfo
+
+    from vms.core import tzposix
+    from vms.ops.health import clock as clockmod
+    madrid = ZoneInfo("Europe/Madrid")
+    zone = tzposix.zone_from_iana("Europe/Madrid")
+    monkeypatch.setattr(tzposix, "pc_zone", lambda now=None: zone)
+    monkeypatch.setattr(clockmod, "_pc_offset_s", lambda instant: 7200)       # el PC, en horario de verano
+    backend = RealBackend(tmp_path / "datos", FakeEngine())
+    srv = ServerThread(backend.app).start()
+    try:
+        c = _api(srv)
+        c.put("/api/onboarding/state", json={"wizard_completed": True})
+        dev = c.post("/api/devices", json={"name": "Cámara caja", "vendor": "hikvision", "kind": "camera",
+                                           "host": "192.0.2.10", "username": "admin", "password": READ_PW,
+                                           "import_channels": [1]}).json()
+        real = datetime(1970, 1, 1, 0, 7, 29, tzinfo=timezone(timedelta(hours=8)))
+        mock = HikvisionMock(kind="camera", username="admin", password=READ_PW, time_mode="manual", tz_hours=8,
+                             clock_offset_s=(real - datetime.now(timezone.utc)).total_seconds())
+        backend.app.state.vms.client_factory = lambda d, p: client_for(d, p, transport=httpx.ASGITransport(app=mock.app))
+        assert c.post("/api/clock/check").status_code == 200
+
+        page = _page(browser, srv)
+        errs = Errors(page)
+        sent: list[Any] = []
+        page.on("request", lambda req: sent.append(req.post_data_json) if req.url.endswith(f"/{dev['id']}/set") else None)
+        _login(page, ADMIN, "/status")
+        page.click(f"button[data-clock-set='{dev['id']}']")
+        text = page.inner_text(".ops-modal")
+        assert "El equipo usa la zona horaria UTC+8 y este PC, UTC+2" in text and "6 h adelantada" in text, text
+        assert "Usar también la zona horaria de este PC (UTC+1 en invierno y UTC+2 en verano)" in text
+        box = page.locator(".ops-modal input[name='use_pc_zone']")
+        assert box.is_checked(), "marcada porque las zonas no coinciden"
+        page.click(".ops-modal button.btn-primary")
+        page.wait_for_selector(".ops-clock-result .banner")
+        assert "Ya usa la zona horaria de este PC" in page.inner_text(".ops-clock-result")
+        assert sent == [{"use_pc_zone": True}]
+        assert "<timeZone>CST-1:00:00DST01:00:00,M3.5.0/02:00:00,M10.5.0/03:00:00</timeZone>" in mock.time_puts[0]
+
+        # ya con la zona de Madrid (y la hora otra vez desajustada): la casilla sale sin marcar y no se manda
+        mock.clock_offset_s = -600.0
+        page.click(".ops-modal button:has-text('Cerrar')")
+        assert c.post("/api/clock/check").json()["devices"][0]["utc_offset_s"] == \
+            int(datetime.now(madrid).utcoffset().total_seconds())   # type: ignore[union-attr]
+        monkeypatch.setattr(clockmod, "_pc_offset_s",
+                            lambda instant: int(instant.astimezone(madrid).utcoffset().total_seconds()))  # type: ignore[union-attr]
+        page.reload()
+        page.click(f"button[data-clock-set='{dev['id']}']")
+        assert "ya usa la misma zona horaria que este PC" in page.inner_text(".ops-modal")
+        assert not page.locator(".ops-modal input[name='use_pc_zone']").is_checked()
+        page.click(".ops-modal button.btn-primary")
+        page.wait_for_selector(".ops-clock-result .banner")
+        assert sent[-1] is None or "use_pc_zone" not in sent[-1], sent
+        assert len(mock.time_puts) == 2 and "<timeZone>CST-1:00:00DST01:00:00" in mock.time_puts[1]
+        assert errs.unexpected() == []
+    finally:
+        while CONTEXTS:
+            CONTEXTS.pop().close()
+        srv.stop()
+
+
+def _china_camera_page(browser: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pc_zone: Any,
+                       **mock_kw: Any) -> tuple[Any, Any, Any, dict[str, Any]]:
+    """Backend real con la cámara del usuario (zona de China, 01-01-1970, hora a mano) y el PC en Madrid en verano;
+    `pc_zone` sustituye a `tzposix.pc_zone`. Devuelve el servidor, el simulador, la página y el equipo."""
+    from vms.core import tzposix
+    from vms.ops.health import clock as clockmod
+    monkeypatch.setattr(tzposix, "pc_zone", pc_zone)
+    monkeypatch.setattr(clockmod, "_pc_offset_s", lambda instant: 7200)       # el PC, en horario de verano
+    backend = RealBackend(tmp_path / "datos", FakeEngine())
+    srv = ServerThread(backend.app).start()
+    c = _api(srv)
+    c.put("/api/onboarding/state", json={"wizard_completed": True})
+    dev = c.post("/api/devices", json={"name": "Cámara caja", "vendor": "hikvision", "kind": "camera",
+                                       "host": "192.0.2.10", "username": "admin", "password": READ_PW,
+                                       "import_channels": [1]}).json()
+    real = datetime(1970, 1, 1, 0, 7, 29, tzinfo=timezone(timedelta(hours=8)))
+    mock = HikvisionMock(kind="camera", username="admin", password=READ_PW, time_mode="manual", tz_hours=8,
+                         clock_offset_s=(real - datetime.now(timezone.utc)).total_seconds(), **mock_kw)
+    backend.app.state.vms.client_factory = lambda d, p: client_for(d, p, transport=httpx.ASGITransport(app=mock.app))
+    assert c.post("/api/clock/check").status_code == 200
+    return srv, mock, _page(browser, srv), dev
+
+
+def test_zone_refused_by_the_camera_unticks_the_box(browser: Any, tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """Revisión: un firmware que rechaza el PUT con la zona nueva (`badParameters`) daba 502 «ponla en hora desde la
+    web» y la casilla, marcada por defecto con la zona de China, seguía marcada: cada clic fallaba igual. Ahora el
+    mensaje dice que no se ha cambiado nada y que se pulse sin la casilla, la casilla se desmarca sola y el siguiente
+    clic pone la hora sin tocar la zona."""
+    from vms.core import tzposix
+    zone = tzposix.zone_from_iana("Europe/Madrid")
+    srv, mock, page, dev = _china_camera_page(browser, tmp_path, monkeypatch, lambda now=None: zone,
+                                              reject_zone_http=200)
+    try:
+        errs = Errors(page)
+        sent: list[Any] = []
+        page.on("request", lambda req: sent.append(req.post_data_json) if req.url.endswith(f"/{dev['id']}/set") else None)
+        _login(page, ADMIN, "/status")
+        page.click(f"button[data-clock-set='{dev['id']}']")
+        box = page.locator(".ops-modal input[name='use_pc_zone']")
+        assert box.is_checked(), "marcada porque las zonas no coinciden"
+        page.click(".ops-modal button.btn-primary")
+        page.wait_for_selector(".ops-clock-result .form-error")
+        text = page.inner_text(".ops-clock-result")
+        assert "No se ha cambiado nada" in text and "sin marcar la casilla «Usar también la zona horaria de este " \
+            "PC»" in text, text
+        assert not box.is_checked(), "se desmarca para el siguiente clic"
+        page.click(".ops-modal button.btn-primary")
+        page.wait_for_selector(".ops-clock-result .banner")
+        assert "ya está en hora" in page.inner_text(".ops-clock-result")
+        assert sent[0] == {"use_pc_zone": True} and (sent[1] is None or "use_pc_zone" not in sent[1]), sent
+        assert len(mock.time_puts) == 2 and "<timeZone>CST-8:00:00</timeZone>" in mock.time_puts[1]
+        assert [e for e in errs.unexpected() if "422" not in e] == []
+    finally:
+        while CONTEXTS:
+            CONTEXTS.pop().close()
+        srv.stop()
+
+
+def test_dialog_without_the_box_does_not_mention_it(browser: Any, tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """Revisión: si la zona de este PC no se puede escribir, el diálogo no trae la casilla, pero decía «solo cambia si
+    marcas la casilla de abajo»."""
+    from vms.core import tzposix
+
+    def no_zone(now: Any = None) -> Any:
+        raise tzposix.PcZoneError("Windows da el cambio de hora de este PC con una fecha fija")
+    srv, mock, page, dev = _china_camera_page(browser, tmp_path, monkeypatch, no_zone)
+    try:
+        errs = Errors(page)
+        _login(page, ADMIN, "/status")
+        page.click(f"button[data-clock-set='{dev['id']}']")
+        text = page.inner_text(".ops-modal")
+        assert page.locator(".ops-modal input[name='use_pc_zone']").count() == 0 and "fecha fija" in text
+        assert "casilla" not in text and "Su zona horaria no cambia, ni ningún otro ajuste." in text, text
+        assert errs.unexpected() == []
+    finally:
+        while CONTEXTS:
+            CONTEXTS.pop().close()
+        srv.stop()
+
+
 def test_no_button_when_another_program_sets_the_clock(browser: Any, tmp_path: Path) -> None:
     """Revisión: con la hora puesta por HikCentral/iVMS (modo SDK, que se lee como «unknown») el botón salía y el
     servidor siempre lo rechazaba con 409. Ahora solo sale con la hora puesta a mano."""

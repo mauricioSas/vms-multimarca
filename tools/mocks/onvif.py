@@ -105,6 +105,7 @@ class OnvifMock:
     daylight_savings: bool = False
     can_write: bool = True                  # False: el usuario lee pero SetSystemDateAndTime da NotAuthorized
     reject_tz: bool = False                 # SetSystemDateAndTime con zona → InvalidTimeZone
+    ignore_tz: bool = False                 # acepta SetSystemDateAndTime con zona, pero se queda con la suya
     set_bodies: list[str] = field(default_factory=list)
     http_auth: AuthMode = "none"            # Digest/Basic HTTP además del UsernameToken (401 + reto si falla)
     ws_token: bool = True                   # False: ignora el UsernameToken (solo Digest HTTP)
@@ -267,7 +268,7 @@ class OnvifMock:
     def _set_date_time(self, xml: str, *, via_http: bool = False) -> Response:
         """SetSystemDateAndTime (ya autenticado): sin permiso de escritura → NotAuthorized (como un usuario sin la
         clase WRITE_SYSTEM), o 401 con reto si llegó con Digest HTTP; `reject_tz` → InvalidTimeZone si trae zona; si
-        no, el reloj pasa a la hora UTC."""
+        no, el reloj pasa a la hora UTC y la zona a la `TZ` recibida (salvo con `ignore_tz`)."""
         self.set_bodies.append(xml)
         if not self.can_write:
             return self.http.challenge() if via_http else self._not_authorized()
@@ -285,7 +286,7 @@ class OnvifMock:
             return Response(_fault("ter:InvalidArgVal", "Invalid date or time"), status_code=400, media_type=SOAP_CT)
         self.clock_offset_s = (utc - datetime.now(timezone.utc)).total_seconds()
         self.date_time_type = tag("DateTimeType") or self.date_time_type
-        if tag("TZ"):
+        if tag("TZ") and not self.ignore_tz:
             self.tz = tag("TZ")
         return self._reply("<tds:SetSystemDateAndTimeResponse/>")
 

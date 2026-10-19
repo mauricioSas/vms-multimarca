@@ -46,13 +46,43 @@ class DeviceWriteDenied(DeviceError):
 class DeviceTimeUnverified(DeviceError):
     """«Poner en hora»: el equipo ACEPTÓ la hora, pero la lectura de comprobación de después falló (p. ej. dejó de
     responder justo entonces). La hora sí se escribió: quien llama no debe decir que no se pudo poner en hora.
-    `details["cause"]` = código del fallo de la lectura y `details["reason"]` = su texto."""
+    `details["cause"]` = código del fallo de la lectura y `details["reason"]` = su texto; `details["previous_zone"]`,
+    si se sabe, la zona que tenía el equipo antes de escribir (para audit.log: con la zona de este PC, pudo cambiar)."""
 
     code, status = "clock_set_unverified", 502
 
-    def __init__(self, label: str, cause: DeviceError) -> None:
+    def __init__(self, label: str, cause: DeviceError, *, previous_zone: str | None = None) -> None:
+        details: dict[str, Any] = {"cause": cause.code, "reason": cause.message}
+        if previous_zone is not None:
+            details["previous_zone"] = previous_zone[:64]
         super().__init__(f"{label} aceptó la hora, pero no se pudo leer de nuevo para comprobarla: {cause.message}",
-                         details={"cause": cause.code, "reason": cause.message})
+                         details=details)
+
+
+class DeviceZoneUnsupported(DeviceError):
+    """«Usar también la zona horaria de este PC»: el equipo no puede guardar esa zona (su formato no admite esas
+    reglas, p. ej. un cambio de hora a las 24:00 en Hikvision) o la rechaza. No se ha escrito nada: ni la zona ni la
+    hora. `details["zone"]` = la zona pedida; `details["reason"]` = el motivo, si lo hay."""
+
+    code, status = "clock_zone_unsupported", 422
+
+    def __init__(self, label: str, zone: str, reason: str = "") -> None:
+        super().__init__(f"{label} no admite la zona horaria {zone[:64]}" + (f" ({reason[:120]})" if reason else ""),
+                         details={"zone": zone[:64], "reason": reason[:120]})
+
+
+class DeviceZoneNotApplied(DeviceError):
+    """«Usar también la zona horaria de este PC»: el equipo aceptó el cambio, pero al leerlo de nuevo sigue con otra
+    zona. La hora sí se escribió; `reading` es la lectura de comprobación (con `previous_zone`) y `details` dice la
+    zona pedida (`wanted`) y la que tiene (`got`)."""
+
+    code, status = "clock_zone_not_applied", 502
+
+    def __init__(self, label: str, wanted: str, reading: Any) -> None:
+        self.reading = reading
+        got = str(getattr(reading, "zone", "") or "")[:64]
+        super().__init__(f"{label} aceptó la hora, pero sigue con la zona horaria «{got or 'sin informar'}» y no con "
+                         f"«{wanted[:64]}»", details={"wanted": wanted[:64], "got": got})
 
 
 class DeviceClockManaged(DeviceError):
@@ -152,4 +182,5 @@ def text_lock_hint(text: str) -> tuple[bool, int | None]:
 
 
 __all__ = ["BasicNotAllowed", "DeviceClockManaged", "DeviceLocked", "DevicePermissionDenied", "DeviceTimeUnverified",
-           "DeviceWriteDenied", "bad_password_message", "hik_user_check", "text_lock_hint"]
+           "DeviceWriteDenied", "DeviceZoneNotApplied", "DeviceZoneUnsupported", "bad_password_message",
+           "hik_user_check", "text_lock_hint"]

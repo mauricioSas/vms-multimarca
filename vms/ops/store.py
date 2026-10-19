@@ -120,6 +120,14 @@ class OpsStore:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
             self._conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
+            self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Columnas añadidas después de la primera versión (aditivas, con NULL por defecto): una base de una versión
+        anterior las recibe al abrirse, sin perder nada."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(clock_checks)").fetchall()}
+        if "utc_offset_s" not in cols:
+            self._conn.execute("ALTER TABLE clock_checks ADD COLUMN utc_offset_s INTEGER")
 
     def close(self) -> None:
         with self._lock:
@@ -201,9 +209,9 @@ class OpsStore:
     def add_clock_check(self, check: ClockCheck) -> None:
         with self._tx() as c:
             c.execute("INSERT INTO clock_checks (camera_id, device_id, at, skew_s, round_trip_ms, time_mode, status, "
-                      "message_es) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      "message_es, utc_offset_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (check.camera_id, check.device_id, iso(check.at), check.skew_s, check.round_trip_ms,
-                       check.time_mode, check.status, check.message_es))
+                       check.time_mode, check.status, check.message_es, check.utc_offset_s))
 
     def latest_clock_checks(self) -> dict[str | None, ClockCheck]:
         """Última medida por equipo (clave None = el propio PC)."""
@@ -226,7 +234,7 @@ class OpsStore:
     @staticmethod
     def _clock(r: sqlite3.Row) -> ClockCheck:
         return ClockCheck.model_validate({k: r[k] for k in ("camera_id", "device_id", "at", "skew_s", "round_trip_ms",
-                                                            "time_mode", "status", "message_es")})
+                                                            "time_mode", "status", "message_es", "utc_offset_s")})
 
     # ------------------------------------------------------------------ marcadores
     def save_bookmark(self, bm: Bookmark) -> None:
