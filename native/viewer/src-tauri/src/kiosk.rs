@@ -6,16 +6,20 @@
 //! la hace el WebView, así la cookie queda en su almacén). El token no pasa nunca por la línea de órdenes, la
 //! URL, el registro ni las páginas locales.
 //!
-//! Formato del archivo: el token en texto (UTF-8, se ignoran BOM y espacios) o, si B1 lo guarda cifrado, un
-//! blob DPAPI de máquina (se reconoce por su cabecera y se descifra con `CryptUnprotectData`).
+//! Formato del archivo (CONTRATO §13.9): el de todos los secretos del producto, que escriben `vmsctl kiosk
+//! rotate`, el instalador y el backend (`vms_common::secret` y `vms.core.winsec`): una línea
+//! `vms-dpapi-v1:<base64>` con un blob DPAPI de máquina creado con la entropía fija del producto. Se descifra
+//! con `vms_common::secret::dpapi`, que usa esa misma entropía. También vale el token en claro de la v1 (UTF-8;
+//! se ignoran BOM y espacios). Una línea con el prefijo que no se puede descifrar es un error: nunca se manda
+//! tal cual como si fuera el token (el servicio la rechazaría con 401 y el muro no abriría nunca).
 
 use std::io::{self, Read};
 use std::path::Path;
 
+use vms_common::secret::{self, Stored};
+
 const MAX_FILE: u64 = 64 * 1024;
-/// Cabecera de un blob DPAPI: versión 1 + GUID del proveedor {df9d8cd0-1501-11d1-8c7a-00c04fc297eb}.
-const DPAPI_HEADER: [u8; 20] =
-    [1, 0, 0, 0, 0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11, 0x8c, 0x7a, 0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb];
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// Token en memoria: no se imprime con `{:?}` y se borra al soltarlo.
 pub struct Token(String);
@@ -83,24 +87,51 @@ fn map_io(e: io::Error) -> TokenError {
     }
 }
 
+/// Lee la clave de los muros. Solo devuelve `Ok` con un token ya descifrado y con formato válido: es lo que se
+/// manda al servicio. Los mensajes de error nunca llevan el contenido del archivo.
 pub fn read_token(path: &Path) -> Result<Token, TokenError> {
     let mut f = std::fs::File::open(path).map_err(map_io)?;
     let mut raw = Vec::new();
     f.by_ref().take(MAX_FILE + 1).read_to_end(&mut raw).map_err(map_io)?;
     if raw.len() as u64 > MAX_FILE {
+        zero(&mut raw);
         return Err(TokenError::Invalid("archivo demasiado grande".into()));
     }
-    let text_bytes = if raw.starts_with(&DPAPI_HEADER) {
-        let plain = crate::platform::dpapi_unprotect(&raw).map_err(TokenError::Invalid)?;
-        zero(&mut raw);
-        plain
-    } else {
-        raw
-    };
-    let token = parse_token(&text_bytes);
-    let mut text_bytes = text_bytes;
-    zero(&mut text_bytes);
+    let plain = decode(&raw);
+    zero(&mut raw);
+    let mut plain = plain?;
+    let token = parse_token(&plain);
+    zero(&mut plain);
     token
+}
+
+/// Contenido del archivo → token en claro: descifra el formato protegido o devuelve el texto de la v1.
+fn decode(raw: &[u8]) -> Result<Vec<u8>, TokenError> {
+    let body = raw.strip_prefix(UTF8_BOM).unwrap_or(raw);
+    match secret::parse(body) {
+        Stored::Protected(mut blob) => {
+            let plain = unprotect(&blob);
+            zero(&mut blob);
+            plain
+        }
+        // `secret::parse` devuelve como «en claro» una línea con el prefijo pero con base64 roto
+        Stored::Plain(mut p) if p.trim_ascii_start().starts_with(secret::PREFIX.as_bytes()) => {
+            zero(&mut p);
+            Err(TokenError::Invalid("está cifrada, pero el texto cifrado está dañado (no es base64 válido)".into()))
+        }
+        Stored::Plain(p) => Ok(p),
+    }
+}
+
+#[cfg(windows)]
+fn unprotect(blob: &[u8]) -> Result<Vec<u8>, TokenError> {
+    secret::dpapi::unprotect(blob)
+        .map_err(|e| TokenError::Invalid(format!("Windows no pudo descifrarla en este equipo ({e})")))
+}
+
+#[cfg(not(windows))]
+fn unprotect(_blob: &[u8]) -> Result<Vec<u8>, TokenError> {
+    Err(TokenError::Invalid("está cifrada con DPAPI y solo se puede descifrar en el Windows que la creó".into()))
 }
 
 fn zero(v: &mut [u8]) {
@@ -197,13 +228,55 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
+    /// El fallo real del 8/10/2026: `kiosk.token` lo escribe `vmsctl` con el formato protegido
+    /// (`vms-dpapi-v1:<base64>`, DPAPI de máquina con la entropía del producto) y el visor mandaba la línea
+    /// entera como token. El servicio respondía 401 y los muros no abrían nunca. Aquí, DPAPI de verdad.
+    #[cfg(windows)]
     #[test]
-    fn dpapi_blob_is_recognized_but_not_decryptable_outside_windows() {
+    fn reads_the_token_that_vmsctl_writes_with_dpapi() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("kiosk.token");
-        let mut blob = DPAPI_HEADER.to_vec();
-        blob.extend_from_slice(&[0u8; 64]);
+        let token = secret::b64url(&secret::random_bytes(32).unwrap()); // como `vmsctl kiosk rotate`
+        secret::write_secret(&p, token.as_bytes()).unwrap();
+        let on_disk = std::fs::read_to_string(&p).unwrap();
+        assert!(on_disk.starts_with(secret::PREFIX) && !on_disk.contains(&token), "el archivo va cifrado");
+        assert_eq!(read_token(&p).unwrap().expose(), token);
+        // con BOM y saltos de línea de Windows también
+        std::fs::write(&p, format!("\u{feff}{}\r\n", on_disk.trim())).unwrap();
+        assert_eq!(read_token(&p).unwrap().expose(), token);
+    }
+
+    /// Una línea `vms-dpapi-v1:…` que no se puede descifrar (blob de otro equipo, base64 roto) es un error, en
+    /// cualquier sistema: nunca se manda como token ni sale en el mensaje.
+    #[test]
+    fn a_protected_line_is_never_sent_as_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kiosk.token");
+        for contents in [
+            "vms-dpapi-v1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=\n", // base64 válido, blob que no es DPAPI
+            "vms-dpapi-v1:%%%no-es-base64%%%-1234567890\n",
+            "\u{feff}  vms-dpapi-v1:AQIDBAUGBwgJCgsMDQ4PEBESExQ=\r\n",
+        ] {
+            std::fs::write(&p, contents).unwrap();
+            match read_token(&p) {
+                Ok(t) => panic!("se aceptó como token una línea cifrada ({} caracteres)", t.expose().len()),
+                Err(e) => {
+                    assert!(matches!(e, TokenError::Invalid(_)), "{contents:?}: {e:?}");
+                    assert_eq!(e.code(), "token_invalido");
+                    let msg = e.to_string();
+                    assert!(!msg.contains("AQID") && !msg.contains("%%%"), "el mensaje no copia el archivo: {msg}");
+                }
+            }
+        }
+    }
+
+    /// Un blob binario suelto (sin el prefijo) no es texto: no se intenta descifrar ni se manda.
+    #[test]
+    fn a_raw_binary_blob_is_not_a_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kiosk.token");
+        let mut blob = vec![1u8, 0, 0, 0, 0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11];
+        blob.extend_from_slice(&[0xffu8; 64]);
         std::fs::write(&p, blob).unwrap();
         assert!(matches!(read_token(&p), Err(TokenError::Invalid(_))));
     }

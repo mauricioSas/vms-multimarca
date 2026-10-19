@@ -33,7 +33,9 @@ RESPONSES: dict[str, Any] = {
                     "instalacion": "C:\\Program Files\\VMSMultimarca (versión 2.0.0)",
                     "servidor": {"nombre": "local", "url": "http://127.0.0.1:8600", "responde": True,
                                  "estado": "degraded", "version": "2.0.0", "detalle": "Motor de vídeo en marcha"},
-                    "clave_muros": "sin_permiso",
+                    "clave_muros": "sin_permiso", "clave_muros_usable": False,
+                    "clave_muros_texto": "No se puede usar. Tu usuario de Windows no está en el grupo «VMS Operadores». "
+                                         "Qué hacer: pide a un administrador que te añada y vuelve a iniciar sesión.",
                     "actualizaciones": {"installed": "2.0.0", "channel": "stable", "state": "good",
                                         "last_result": "update_ok", "last_check": "2026-11-20T03:10:00Z"},
                     "estado_actualizaciones": "Al día 2.0.0"},
@@ -220,7 +222,10 @@ def test_monitors_assignment(ui_page: Any) -> None:
 def test_diagnostics_and_about_and_updates(ui_page: Any) -> None:
     open_page(ui_page, "diagnostico.html", "?volver=conectando.html%3Fventana%3Dpanel")
     assert "con avisos" in ui_page.inner_text("#srv-estado")
+    # una clave que no se puede usar lo dice con su «Qué hacer:» (antes, «Se puede leer» aunque no sirviera)
     assert "VMS Operadores" in ui_page.inner_text("#clave")
+    assert "Qué hacer:" in ui_page.inner_text("#clave")
+    assert ui_page.get_attribute("#clave", "class") == "error"
     assert ui_page.is_visible("#volver")
     shot(ui_page, "diagnostico")
     no_errors(ui_page)
@@ -234,6 +239,16 @@ def test_diagnostics_and_about_and_updates(ui_page: Any) -> None:
     assert "Disponible 2.1.0" in ui_page.inner_text("#etiqueta")
     assert ui_page.is_disabled("#buscar") and ui_page.is_disabled("#volver")
     shot(ui_page, "actualizaciones")
+    no_errors(ui_page)
+
+
+def test_diagnostics_wall_key_ready(ui_page: Any) -> None:
+    ready = dict(RESPONSES["diagnostico"], clave_muros="lista", clave_muros_usable=True,
+                 clave_muros_texto="Lista para usar: se descifró y es válida (los muros entran sin contraseña).")
+    ui_page.add_init_script(f"window.__ipcResponses.diagnostico = {json.dumps(ready)};")
+    open_page(ui_page, "diagnostico.html")
+    assert ui_page.inner_text("#clave").startswith("Lista para usar")
+    assert ui_page.get_attribute("#clave", "class") == "ok"
     no_errors(ui_page)
 
 

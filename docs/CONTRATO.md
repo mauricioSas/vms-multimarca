@@ -518,7 +518,7 @@ licencia). El vídeo viaja directo al puerto ICE (§4.1).
 
 | Método y ruta | Rol | Respuesta |
 |---|---|---|
-| `GET /api/health` | — | `{status: ok\|degraded\|down, version, uptime_s, engine: {running, api_ok}}` (sin datos sensibles; lo usa el kiosco y el instalador) |
+| `GET /api/health` | — | `{status: ok\|degraded\|down, version, uptime_s, engine: {running, api_ok}}` (sin datos sensibles; lo usa el kiosco y el instalador). `version` (también la de `/api/status`) es la del producto: la de `release.json` de la versión instalada (`versions\<X>\release.json`), o `vms.__version__` sin instalar |
 | `GET /api/status` | O | `{engine: EngineStatus, disk: DiskUsage, cameras: [{camera_id, name, online, recording, readers, bytes_received, last_error}], analytics: <§8.6 + stale>, credential_backend, config_warning, power?}` (`power` solo en Windows, ver abajo) |
 
 `status`: `down` si el motor no corre; `degraded` si hay cámaras sin vídeo, disco por encima
@@ -1038,6 +1038,10 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | zona horaria | §18.3 (revisión, sin cambios de forma): el aviso de zona distinta de la fila compara la zona del equipo en el instante de la medida (la regla de `zone`, como `ClockCheck.utc_offset_s` y el diálogo) con la del PC en ese instante. Antes usaba el desfase de la propia hora del equipo: con la zona de Madrid y la fecha de 1970, en verano, la fila decía «UTC+1, distinta de la de este PC (UTC+2)» y el diálogo «ya usa la misma zona». |
 | 2026-10-08 | zona horaria | §16.2/§18.3 (aditivo): `DeviceTimeUnverified.details["previous_zone"]` (la zona que tenía el equipo antes de escribir, si se sabe) y `audit.log` la anota en `zone_before` con `written_unverified`. Antes quedaba en `null` aunque, con la casilla de la zona, la zona pudo cambiar. |
 | 2026-10-08 | muros | §3.3 nuevo campo `AppConfig.wall_memory` (aditivo, **sin** subir `version`, §13.8) y `place_new_cameras`; §6.3/§6.4 `wall_placements` en las respuestas de las tres altas; §6.11 esas altas publican también `config` con scope `walls`; §18.8 el kiosco ve la cámara nueva en cuanto se da de alta. **Cambio de comportamiento:** una cámara dada de alta (a mano, al crear el equipo o con «Canales») ya no se queda fuera de los muros: vuelve a las celdas que tenía si se borró en los últimos 30 días (misma dirección, marca y canal) y siguen libres, o va al primer hueco libre del monitor 1; nunca pisa una celda ocupada ni toca la cuadrícula ni los monitores 2 a 4 (salvo para devolverla a su sitio). Motivo: en el PC del usuario, la cámara borrada y vuelta a dar de alta grababa y se veía en Reproducción, pero desapareció de «Monitores» y el muro se quedó vacío. |
+| 2026-10-08 | visor | §13.9/§17.1 (sin cambio de formato): el visor lee `kiosk.token` con `vms_common::secret` (prefijo `vms-dpapi-v1:` y la entropía del producto). Antes solo reconocía un blob DPAPI suelto y descifraba sin entropía, así que mandaba la línea cifrada entera como token: el backend respondía 401 y en el PC del usuario los muros no abrían nunca («El servicio no acepta la clave de los muros»). Una línea con el prefijo que no se puede descifrar es ahora «clave no válida» y no se manda; se deja de aceptar el blob binario sin prefijo, que nadie escribe. |
+| 2026-10-08 | visor | §17.2 (comportamiento nuevo del visor; la web no cambia): «Abrir muro» y «Monitor N» del panel, que piden una ventana nueva `vms-wall-N`, no hacían nada dentro del visor porque rechazaba toda ventana nueva. Ahora, desde el panel y con la dirección `/wall/N` del servidor de ese muro, abren o traen delante el muro N del visor (lo mismo que la bandeja); lo demás se sigue rechazando. |
+| 2026-10-08 | visor | §17 (sin cambio de formato): la versión del visor es la de su carpeta `versions\<X>` (la misma que `installed` de `public-status.json`), no la del Cargo.toml (`2.0.0-dev.0` en todas las versiones publicadas), y las versiones se comparan con precedencia SemVer (`vms_common::state::compare_versions`; antes `beta.4` y `beta.5` eran iguales). En el PC del usuario decía «Se volvió a 2.0.0-beta.5: reiniciar el visor» con el visor de la beta.5; ahora solo pide reiniciar si la instalada es de verdad más nueva (actualización) o más antigua (vuelta atrás), nunca con la misma versión ni con una que no se puede comparar. |
+| 2026-10-08 | visor | §6.8 (misma forma, otro valor): `version` de `GET /api/health` y `/api/status` es la del producto (`release.json` de la versión instalada, leído una vez por proceso; sin instalar, `vms.__version__`). Antes era siempre `0.1.0`: «Diagnóstico» del visor enseñaba «Versión 0.1.0» del servicio, y el aviso de versión nueva de la web y la recarga de los muros comparaban contra un valor que nunca cambiaba con una actualización. |
 
 ---
 
@@ -1213,7 +1217,10 @@ versión salvo `/ALLOWDOWNGRADE`. Cerrojo compartido por la tubería (§15.2, or
 ### 13.9 Secretos
 
 DPAPI de máquina (`CryptProtectData` + `CRYPTPROTECT_LOCAL_MACHINE`) + ACL al SID del servicio que lo usa,
-SYSTEM y Administradores. Código en `vms/core/winsec.py` (B1, `ctypes`). Archivos en `secrets\`:
+SYSTEM y Administradores. Código en `vms/core/winsec.py` (B1, `ctypes`) y su gemelo en Rust
+`vms_common::secret` (lo usan `vmsctl` y el visor). En disco, una línea ASCII `vms-dpapi-v1:<base64 del blob>`
+creada con la entropía fija `VMSMultimarca/secret/v1`: quien lo lea tiene que quitar el prefijo y descifrar
+con esa misma entropía. Archivos en `secrets\`:
 `secret.key`, `credentials.enc`, `internal.token`, `kiosk.token` (§17.1), `site.token`, y la clave de
 firma de evidencias `evidence-ed25519.key` (§18.7). Migración automática desde el `secret.key` en claro de
 la v1. En SSD el borrado seguro no está garantizado (se documenta).
@@ -1449,7 +1456,10 @@ Respuesta: `[DriverPublic]` (sin funciones). La interfaz construye el formulario
 127.0.0.1; router `local`), sin pasarlo por la línea de órdenes ni por la URL. `vmsctl kiosk rotate` lo
 cambia. Un usuario fuera del grupo ve «Sin permiso para abrir los muros». El backend usa ese archivo (DPAPI de
 máquina en Windows) con preferencia sobre `VMS_KIOSK_TOKEN` y lo vuelve a leer si cambia: al rotarlo, la firma
-de las cookies de kiosco cambia y las anteriores dejan de valer sin reiniciar el backend.
+de las cookies de kiosco cambia y las anteriores dejan de valer sin reiniciar el backend. Formato: el de §13.9
+(`vms-dpapi-v1:<base64>`, DPAPI de máquina con la entropía fija del producto) o el token en claro de la v1; el
+visor lo lee con `vms_common::secret`, igual que lo escribe `vmsctl`, y una línea con el prefijo que no se
+puede descifrar es «clave no válida»: nunca se manda como token.
 
 ### 17.2 Ventanas y datos
 
@@ -1459,7 +1469,10 @@ Dos carpetas de datos de WebView2 en `%LOCALAPPDATA%\VMSMultimarca\WebView2\`: `
 muro: un solo proceso de GPU y un SharedWorker con UNA conexión de eventos para todas) y `panel` (panel y
 páginas locales). Así la sesión de kiosco y la del operador no comparten almacén de cookies (revisión v2,
 crítico 1). Páginas remotas sin IPC (capacidades de Tauri solo para `tauri://localhost`). Fijación del
-certificado del servidor remoto: **pendiente de S5**.
+certificado del servidor remoto: **pendiente de S5**. El visor no abre ventanas de navegador sueltas: si el panel
+pide una ventana nueva hacia `/wall/N` (1-4) del servidor asignado a ese muro (los enlaces «Abrir muro» y
+«Monitor N» de la web, con `target="vms-wall-N"`), abre o trae delante el muro N del propio visor, como
+«Muros → Muro N» de la bandeja; cualquier otra ventana nueva se rechaza. En un navegador son enlaces normales.
 
 ### 17.3 Eventos SSE nuevos (`vms/api/events.py`: dueño el arquitecto hasta que B2 arranque; después B2)
 

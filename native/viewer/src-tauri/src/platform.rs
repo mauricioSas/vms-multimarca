@@ -1,5 +1,6 @@
-//! Lo que depende de Windows: DPAPI, elevación (UAC), inicio con la sesión (`HKCU\…\Run`), inactividad y
-//! espera a que termine otro proceso. En macOS y Linux (solo desarrollo) son equivalentes mínimos.
+//! Lo que depende de Windows: elevación (UAC), inicio con la sesión (`HKCU\…\Run`), inactividad y espera a que
+//! termine otro proceso. En macOS y Linux (solo desarrollo) son equivalentes mínimos. DPAPI (la clave de los
+//! muros) va por `vms_common::secret`, la misma que la escribe.
 
 use std::path::Path;
 use std::time::Duration;
@@ -38,13 +39,10 @@ mod imp {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WAIT_OBJECT_0,
-    };
-    use windows_sys::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        CloseHandle, GetLastError, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Registry::{
         RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ,
@@ -64,25 +62,6 @@ mod imp {
 
     fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
         s.as_ref().encode_wide().chain(std::iter::once(0)).collect()
-    }
-
-    pub fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
-        let input = CRYPT_INTEGER_BLOB { cbData: blob.len() as u32, pbData: blob.as_ptr() as *mut u8 };
-        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: null_mut() };
-        // SAFETY: punteros válidos durante la llamada; la salida la reserva Windows y se libera con LocalFree.
-        let ok = unsafe {
-            CryptUnprotectData(&input, null_mut(), null(), null(), null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output)
-        };
-        if ok == 0 {
-            return Err(format!("DPAPI no pudo descifrarlo (error {})", unsafe { GetLastError() }));
-        }
-        // SAFETY: Windows garantiza cbData bytes en pbData.
-        let out = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
-        unsafe {
-            std::ptr::write_bytes(output.pbData, 0, output.cbData as usize);
-            LocalFree(output.pbData as _);
-        }
-        Ok(out)
     }
 
     pub fn run_elevated(exe: &Path, args: &str, timeout: Duration) -> Result<(), ElevateError> {
@@ -240,10 +219,6 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-
-    pub fn dpapi_unprotect(_blob: &[u8]) -> Result<Vec<u8>, String> {
-        Err("un archivo cifrado con DPAPI solo se puede leer en Windows".into())
-    }
 
     pub fn run_elevated(_exe: &Path, _args: &str, _timeout: Duration) -> Result<(), ElevateError> {
         Err(ElevateError::Unsupported)

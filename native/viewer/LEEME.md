@@ -20,14 +20,17 @@ misma versión.
 | Muros sin contraseña | Ver «Entrada de los muros» |
 | Lista de servidores con huella | Ver «Servidores remotos y certificado» |
 | «Conectando…» y diagnóstico | Si el servicio no responde, la ventana muestra «Conectando con el servicio…» y reintenta cada 2 s; «Ver diagnóstico» enseña el estado del servicio, de la clave de los muros y de `updater\public-status.json` |
-| Aviso de actualización | Cada 10 s lee `<datos>\updater\public-status.json` (CONTRATO §15.6). Si la versión instalada ya no es la suya y su `VMS.exe` es distinto (si solo cambió la aplicación web, es el mismo archivo y no se reinicia), se reinicia desde `versions\<instalada>\viewer\VMS.exe`: de inmediato si hay muros abiertos o nadie usa el panel; si alguien está usando el panel, le muestra el aviso «Hay una versión nueva del visor…» y espera a 60 s sin actividad |
+| Aviso de actualización | Cada 10 s lee `<datos>\updater\public-status.json` (CONTRATO §15.6). «La suya» es la de la carpeta `versions\<X>` de la que arranca (la del Cargo.toml no cambia entre versiones), y se compara con precedencia SemVer. Si la instalada es más nueva o más antigua (vuelta atrás) y su `VMS.exe` es distinto (si solo cambió la aplicación web, es el mismo archivo y no se reinicia), se reinicia desde `versions\<instalada>\viewer\VMS.exe`: de inmediato si hay muros abiertos o nadie usa el panel; si alguien está usando el panel, le muestra el aviso «Hay una versión nueva del visor…» y espera a 60 s sin actividad |
 | Versión nueva desde GitHub | `github_update.rs`: al minuto y medio de arrancar y cada 6 h consulta las versiones publicadas en GitHub Releases (con `curl.exe` de Windows: certificados del sistema). Si hay una más nueva que la instalada (una beta recibe betas; una final, solo finales), la bandeja dice «Versión nueva X: descargar e instalar…» y, si se está usando el panel, se abre «Actualizaciones» una vez. «Descargar e instalar» baja el instalador, comprueba su SHA-256 con el `SHA256SUMS.txt` de esa versión y lo lanza con elevación (UAC) en modo `/SILENT` con el tipo de puesto instalado: se instala encima y se conservan configuración y grabaciones. Solo descarga de `github.com/mauricioSas/vms-multimarca/releases/download/` |
 | Vuelta atrás | «Volver a la versión anterior…» abre `actualizaciones.html` y lanza `vmsctl update rollback --json --reason "…"` **con elevación** (UAC). Sin credenciales de administrador no se puede. «Buscar ahora» hace lo mismo con `vmsctl update check` |
 
 ## Entrada de los muros (CONTRATO §17.1)
 
 1. El visor lee `ProgramData\VMSMultimarca\secrets\kiosk.token` (ACL: SYSTEM, Administradores, el servicio y el grupo
-   `VMS Operadores`). Admite el token en texto o un blob DPAPI de máquina (se reconoce por su cabecera).
+   `VMS Operadores`) con `vms_common::secret`, el mismo código con el que lo escribe `vmsctl`: una línea
+   `vms-dpapi-v1:<base64>` (DPAPI de máquina con la entropía del producto) o el token en claro de la v1. Una línea
+   cifrada que no se puede descifrar es «clave no válida» y nunca se manda como token. «Diagnóstico» solo dice
+   «Lista para usar» si se descifró en un token válido.
 2. Lleva la ventana del muro a `GET /api/local/kiosk` del backend local (una página mínima, sin scripts).
 3. Al terminar de cargar, ejecuta en esa página un `fetch` a `POST /api/local/kiosk-session`
    (`{"token", "next": "/wall/N"}`, cabecera `X-Requested-With: vms`). La respuesta 204 deja la cookie de kiosco
@@ -70,7 +73,9 @@ arrancar.
   los plugins del núcleo (`core:*`). Lo prueban `tests/ipc_acl.rs` (con el runtime simulado y las capacidades reales)
   y la prueba de humo (desde la página real del backend). `tauri.conf.json` no tiene `devUrl` (lo haría «local»).
 - **Navegación limitada** a las páginas locales y a los orígenes de los servidores configurados. Una página del backend
-  no puede abrir una página local por su cuenta (solo el visor lleva una ventana a `ui/`), ni ventanas nuevas.
+  no puede abrir una página local por su cuenta (solo el visor lleva una ventana a `ui/`), ni ventanas nuevas. La
+  única excepción es «Abrir muro» del panel (`/wall/N` del servidor de ese muro, `target="vms-wall-N"`): no abre una
+  ventana de navegador, sino que abre o trae delante el muro N del propio visor (`state::new_window_decision`).
 - **Comandos que actúan sobre la ventana que llama**, nunca sobre lo que diga la URL de la página.
 - **CSP** estricta en las páginas locales (`script-src 'self'`, sin estilos ni scripts en línea).
 - **Sin herramientas de desarrollo** en la versión publicada: no se compila la característica `devtools`, y al arrancar
@@ -81,11 +86,12 @@ arrancar.
 ## Compilar y probar
 
 Toolchain fijado en `src-tauri/rust-toolchain.toml` (Rust 1.99.0). Espacio de trabajo propio (no entra en el
-`cargo test --workspace` de `native/`); usa `vms-common` (escritura atómica y ocultación de credenciales) por ruta.
+`cargo test --workspace` de `native/`); usa `vms-common` (escritura atómica, ocultación de credenciales, la clave de
+los muros con DPAPI y la comparación de versiones) por ruta.
 
 ```bash
 cd native/viewer/src-tauri
-cargo test                         # 62 pruebas: monitores, huella TLS, kiosco, viewer.json, IPC/ACL…
+cargo test                         # 74 pruebas: monitores, huella TLS, kiosco, viewer.json, IPC/ACL…
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 cargo deny --manifest-path Cargo.toml --config ../../deny.toml check licenses bans sources
 npx --yes @tauri-apps/cli@2.12.1 build --no-bundle                   # publicada → target/release/VMS(.exe)

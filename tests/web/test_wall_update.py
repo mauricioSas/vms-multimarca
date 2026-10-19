@@ -108,7 +108,7 @@ def test_panel_banner_announces_new_version(real: Any, make_context: Any, monkey
     page.wait_for_function("() => window.__vmsUpdateBanner && window.__vmsUpdateBanner.initial", timeout=10000)
     assert page.locator("#vms-update-banner").count() == 0
     import vms.api.routes.system as system_routes
-    monkeypatch.setattr(system_routes, "__version__", "9.9.9")
+    monkeypatch.setattr(system_routes, "running_version", lambda: "9.9.9")
     page.evaluate("() => window.__vmsUpdateBanner.check()")
     banner = page.locator("#vms-update-banner")
     banner.wait_for(timeout=5000)

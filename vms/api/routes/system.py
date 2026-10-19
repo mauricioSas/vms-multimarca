@@ -8,7 +8,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends
 from starlette.responses import Response
 
-from vms import __version__
 from vms.core.errors import ValidationFailed
 from vms.core.models import AppConfig, RetentionSettings, SystemSettings, known_fields_only
 from vms.ops import power as pc_power
@@ -18,6 +17,7 @@ from ..errors import json_response
 from ..permissions import filter_by_camera
 from ..state import AppState
 from .analytics import scoped_analytics_status
+from .updates import running_version
 
 log = logging.getLogger("vms.api.system")
 router = APIRouter(prefix="/api", tags=["system"])
@@ -35,9 +35,10 @@ def deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/health")
 async def health(state: AppState = Depends(get_state)) -> Response:
+    """`version` es la del producto (`release.json` de la versión instalada; en desarrollo, `vms.__version__`)."""
     ov = await state.overview()
     engine = ov["engine"]
-    return json_response({"status": ov["status"], "version": __version__, "uptime_s": state.uptime_s(),
+    return json_response({"status": ov["status"], "version": running_version(), "uptime_s": state.uptime_s(),
                           "engine": {"running": engine.running, "api_ok": engine.api_ok}})
 
 
@@ -46,7 +47,7 @@ async def status(p: Principal = Depends(require_operator), state: AppState = Dep
     ov = await state.overview()
     power = await asyncio.to_thread(pc_power.power_status)   # batería, suspensión y tapa (solo Windows)
     return json_response({
-        "status": ov["status"], "problems": ov["problems"], "version": __version__, "uptime_s": state.uptime_s(),
+        "status": ov["status"], "problems": ov["problems"], "version": running_version(), "uptime_s": state.uptime_s(),
         "engine": ov["engine"], "disk": ov["disk"], "cameras": filter_by_camera(state, p, ov["cameras"], "live"),
         "analytics": scoped_analytics_status(state, p, ov["analytics"]),
         "credential_backend": state.creds.backend_name, "config_warning": state.repo.load_warning,

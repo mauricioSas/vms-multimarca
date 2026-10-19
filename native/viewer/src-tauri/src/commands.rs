@@ -46,7 +46,10 @@ pub struct Diagnostico {
     visor_json: String,
     instalacion: Option<String>,
     servidor: Option<ServidorPanel>,
+    /// Código de [`ClaveMuros`] (`lista`, `rechazado` o el de [`TokenError`]).
     clave_muros: String,
+    clave_muros_usable: bool,
+    clave_muros_texto: String,
     actualizaciones: Option<updates::PublicStatus>,
     estado_actualizaciones: String,
 }
@@ -85,10 +88,10 @@ pub async fn diagnostico(state: State<'_, Arc<Viewer>>) -> Res<Diagnostico> {
                 },
             }
         });
-        let clave_muros = match kiosk::read_token(&v.kiosk_token_path()) {
-            Ok(_) => "legible".to_string(),
-            Err(e) => e.code().to_string(),
-        };
+        let rechazada_en = v.denied.lock().ok().and_then(|d| {
+            d.iter().filter(|(_, motivo)| motivo.as_str() == "rechazado").filter_map(|(l, _)| wall_of(l)).min()
+        });
+        let clave = clave_muros(&kiosk::read_token(&v.kiosk_token_path()), rechazada_en);
         let st = app::read_public_status(&v);
         Diagnostico {
             version_visor: v.version.clone(),
@@ -96,7 +99,9 @@ pub async fn diagnostico(state: State<'_, Arc<Viewer>>) -> Res<Diagnostico> {
             visor_json: v.cfg_path.display().to_string(),
             instalacion: v.layout.as_ref().map(|l| format!("{} (versión {})", l.root.display(), l.version)),
             servidor,
-            clave_muros,
+            clave_muros: clave.codigo,
+            clave_muros_usable: clave.usable,
+            clave_muros_texto: clave.texto,
             estado_actualizaciones: updates::view(&v.version, st.as_ref()).label,
             actualizaciones: st,
         }
@@ -621,33 +626,80 @@ pub struct SinPermiso {
     muro: Option<u8>,
 }
 
+/// Título y explicación (con su «Qué hacer:») de cada motivo por el que un muro no entra.
 pub fn sin_permiso_texto(codigo: &str) -> (&'static str, &'static str) {
     match codigo {
         "sin_permiso" => (
             "Sin permiso para abrir los muros",
-            "Tu usuario de Windows no está en el grupo «VMS Operadores». Pide a un administrador que te añada \
-             (o que abra los muros con la cuenta de muros) y vuelve a iniciar sesión en Windows.",
+            "Tu usuario de Windows no está en el grupo «VMS Operadores». Qué hacer: pide a un administrador que te \
+             añada (o que abra los muros con la cuenta de muros) y vuelve a iniciar sesión en Windows.",
         ),
         "sin_token" => (
             "Este equipo no tiene la clave de los muros",
-            "Falta el archivo de la clave. Un administrador puede crearla con «vmsctl kiosk rotate» o reinstalando el programa.",
+            "Falta el archivo de la clave. Qué hacer: un administrador puede crearla con «vmsctl kiosk rotate» o \
+             reinstalando el programa.",
         ),
         "token_invalido" | "error_lectura" => (
             "No se pudo leer la clave de los muros",
-            "El archivo de la clave está dañado. Un administrador puede regenerarla con «vmsctl kiosk rotate».",
+            "El archivo de la clave está dañado o no se puede descifrar en este equipo. Qué hacer: un administrador \
+             puede crear una nueva con «vmsctl kiosk rotate».",
         ),
         "rechazado" => (
             "El servicio no acepta la clave de los muros",
-            "La clave cambió o el modo kiosco está desactivado. Un administrador puede rotarla con «vmsctl kiosk rotate». \
-             Se reintenta cada 30 segundos.",
+            "La clave cambió o el modo kiosco está desactivado. Qué hacer: un administrador puede cambiarla con \
+             «vmsctl kiosk rotate». Se reintenta cada 30 segundos.",
         ),
         "no_local" => (
             "Los muros solo se abren en el propio equipo",
-            "La entrada sin contraseña de los muros solo funciona contra el servicio de este mismo PC.",
+            "La entrada sin contraseña de los muros solo funciona contra el servicio de este mismo PC. Qué hacer: \
+             asigna este muro al servidor «local» en «Servidores…», o ábrelo en el PC del servicio de vídeo.",
         ),
-        "espera" => ("Demasiados intentos", "Se reintenta en unos segundos."),
-        _ => ("No se pudo abrir el muro", "Se reintenta automáticamente."),
+        "espera" => ("Demasiados intentos", "Qué hacer: nada, se reintenta solo en unos segundos."),
+        _ => (
+            "No se pudo abrir el muro",
+            "Se reintenta automáticamente. Qué hacer: si sigue así más de un minuto, pulsa «Ver diagnóstico».",
+        ),
     }
+}
+
+/// «Clave de los muros» en «Diagnóstico».
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ClaveMuros {
+    /// `lista`, `rechazado` o el código de [`TokenError`].
+    pub codigo: String,
+    /// Solo `true` si se descifró en un token con formato válido y el servicio no lo ha rechazado.
+    pub usable: bool,
+    pub texto: String,
+}
+
+/// Dice que la clave se puede usar solo si se descifró en un token válido (es lo único que se manda al
+/// servicio); si no, explica por qué y qué hacer. `rechazada_en`: muro en el que el servicio la rechazó (401)
+/// desde la última vez que un muro entró bien. Nunca incluye el token.
+pub fn clave_muros(lectura: &Result<kiosk::Token, TokenError>, rechazada_en: Option<u8>) -> ClaveMuros {
+    let (codigo, usable, texto) = match (lectura, rechazada_en) {
+        (Ok(_), None) => (
+            "lista".to_string(),
+            true,
+            "Lista para usar: se descifró y es válida (los muros entran sin contraseña).".into(),
+        ),
+        (Ok(_), Some(n)) => (
+            "rechazado".to_string(),
+            false,
+            format!(
+                "Se descifró bien, pero el servicio de vídeo la rechazó al abrir el muro {n}. {}",
+                sin_permiso_texto("rechazado").1
+            ),
+        ),
+        (Err(e), _) => {
+            let estado = match e {
+                TokenError::PermissionDenied | TokenError::NotFound => "No se puede usar.".to_string(),
+                TokenError::Invalid(m) => format!("No se puede usar: {m}."),
+                TokenError::Io(m) => format!("No se pudo leer: {m}."),
+            };
+            (e.code().to_string(), false, format!("{estado} {}", sin_permiso_texto(e.code()).1))
+        }
+    };
+    ClaveMuros { codigo, usable, texto }
 }
 
 #[tauri::command]
@@ -687,7 +739,31 @@ mod tests {
         {
             let (t, m) = sin_permiso_texto(c);
             assert!(!t.is_empty() && !m.is_empty());
+            assert!(m.contains("Qué hacer:"), "{c}: {m}");
         }
         assert_eq!(sin_permiso_texto("sin_permiso").0, "Sin permiso para abrir los muros");
+    }
+
+    /// «Diagnóstico» decía «Se puede leer» de una clave que el visor no sabía descifrar y que el servicio
+    /// rechazaba. Ahora solo dice que está lista si se descifró en un token válido.
+    #[test]
+    fn wall_key_is_usable_only_when_it_decodes_into_a_valid_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kiosk.token");
+        let check = |want: &str, usable: bool, rejected: Option<u8>| {
+            let c = clave_muros(&kiosk::read_token(&p), rejected);
+            assert_eq!((c.codigo.as_str(), c.usable), (want, usable), "{}", c.texto);
+            assert_eq!(c.texto.contains("Qué hacer:"), !usable, "{}", c.texto);
+            assert!(!c.texto.contains("token-de-kiosco") && !c.texto.contains("AQID"), "{}", c.texto);
+            c.texto
+        };
+        check("sin_token", false, None);
+        std::fs::write(&p, "vms-dpapi-v1:AQIDBAUGBwgJCgsMDQ4PEBESExQ=\n").unwrap();
+        assert!(check("token_invalido", false, None).starts_with("No se puede usar: "));
+        std::fs::write(&p, "corto").unwrap();
+        check("token_invalido", false, None);
+        std::fs::write(&p, "token-de-kiosco-1234567890\n").unwrap();
+        assert!(check("lista", true, None).starts_with("Lista para usar"));
+        assert!(check("rechazado", false, Some(2)).contains("muro 2"));
     }
 }

@@ -19,7 +19,7 @@ use crate::monitors::{self, MonitorInfo};
 use crate::paths::{self, WebProfile};
 use crate::pinning::{self, PinCheck};
 use crate::servers::{self, origin_of};
-use crate::state::{self, wall_label, wall_of, CertView, PendingKiosk, Viewer, PANEL};
+use crate::state::{self, wall_label, wall_of, CertView, NewWindow, PendingKiosk, Viewer, PANEL};
 use crate::{http, kiosk, log, platform, tray_icons, updates};
 
 /// Comandos IPC (deben coincidir con `build.rs`; lo comprueba `tests/ipc_acl.rs`).
@@ -159,6 +159,8 @@ pub fn ensure_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> tauri::Resu
     let nav_label = label.to_string();
     let nav_app = app.clone();
     let load_app = app.clone();
+    let opener_app = app.clone();
+    let opener = label.to_string();
     let (data_dir, args) = webview_options(label);
     let mut b = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title(title)
@@ -166,7 +168,7 @@ pub fn ensure_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> tauri::Resu
         .additional_browser_args(&args)
         .on_navigation(move |url| on_navigation(&nav_app, &nav, &nav_label, url))
         .on_page_load(move |w, p| on_page_load(&load_app, &w, &p))
-        .on_new_window(|_, _| NewWindowResponse::Deny);
+        .on_new_window(move |url, _| on_new_window(&opener_app, &opener, &url));
     b = match (wall, local) {
         (Some(_), _) => b.decorations(false).visible(false).skip_taskbar(true).inner_size(960.0, 540.0),
         (None, Some(_)) => b.inner_size(760.0, 640.0).min_inner_size(520.0, 420.0).center(),
@@ -225,6 +227,20 @@ fn on_navigation<R: Runtime>(
     true
 }
 
+/// Una página pide una ventana nueva. El visor nunca abre ventanas de navegador sueltas: «Abrir muro» del panel
+/// (`/wall/N` con `target="vms-wall-N"`) abre o trae delante el muro N del propio visor; lo demás se ignora.
+/// Llega en el hilo de la interfaz: el muro se abre en otro hilo.
+fn on_new_window<R: Runtime>(app: &AppHandle<R>, opener: &str, url: &Url) -> NewWindowResponse<R> {
+    match state::new_window_decision(opener, url, &viewer(app).config()) {
+        NewWindow::Wall(n) => {
+            log::info(format!("«{opener}» pide abrir el muro {n}: se abre la ventana del muro {n}"));
+            off_ui(app, move |app| show_wall(app, n));
+        }
+        NewWindow::Deny => log::warn(format!("Ventana nueva bloqueada en «{opener}»: {}", strip_query(url))),
+    }
+    NewWindowResponse::Deny
+}
+
 fn strip_query(url: &Url) -> String {
     let mut u = url.clone();
     u.set_query(None);
@@ -244,6 +260,12 @@ fn on_page_load<R: Runtime>(app: &AppHandle<R>, w: &WebviewWindow<R>, p: &PageLo
         nav.on_local.insert(label.clone(), local);
         if local {
             nav.expect_local.insert(label.clone(), false);
+        }
+    }
+    // Un muro que llega a su página del servicio entró bien: «Diagnóstico» deja de contar el último rechazo.
+    if wall_of(&label).is_some() && !servers::is_local_url(&url) && url.path().starts_with("/wall/") {
+        if let Ok(mut d) = v.denied.lock() {
+            d.remove(&label);
         }
     }
     if url.path() != kiosk::EXCHANGE_PAGE {
@@ -547,6 +569,24 @@ pub fn toggle_all_walls<R: Runtime>(app: &AppHandle<R>) {
     } else {
         let n = current_monitors(app).len();
         set_walls_open(app, default_walls(&v.config(), n));
+    }
+}
+
+/// Abre el muro `n` si no lo estaba (lo mismo que «Muros → Muro N» en la bandeja) y lo trae delante.
+pub fn show_wall<R: Runtime>(app: &AppHandle<R>, n: u8) {
+    let v = viewer(app);
+    let mut open = v.walls_open.lock().map(|o| o.clone()).unwrap_or_default();
+    if open.insert(n) {
+        set_walls_open(app, open);
+    }
+    match app.get_webview_window(&wall_label(n)) {
+        Some(w) if w.is_visible().unwrap_or(false) => {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+        _ => log::warn(format!(
+            "Muro {n}: no hay ningún monitor libre para mostrarlo; se asigna en «Muros → Reasignar monitores…»"
+        )),
     }
 }
 
@@ -1051,9 +1091,10 @@ pub fn run() {
         platform::wait_pid_exit(pid, Duration::from_secs(15));
     }
     log::init(crate::paths::log_file());
-    let version = env!("CARGO_PKG_VERSION");
-    let (v, outcome) = Viewer::for_current_user(version);
-    log::info(format!("Visor {version} arrancado ({opts:?}); configuración: {outcome:?}"));
+    // La versión del producto sale de la carpeta de instalación; la del Cargo.toml no cambia entre versiones.
+    let build = env!("CARGO_PKG_VERSION");
+    let (v, outcome) = Viewer::for_current_user(build);
+    log::info(format!("Visor {} arrancado (compilación {build}; {opts:?}); configuración: {outcome:?}", v.version));
     let v = Arc::new(v);
     let first = opts.clone();
     let app = tauri::Builder::default()

@@ -56,6 +56,9 @@ pub struct CertView {
 }
 
 pub struct Viewer {
+    /// Versión del producto con la que se instaló este visor: la de su carpeta `versions\<X>`, la misma que usan el
+    /// puntero, el actualizador y `installed` de `public-status.json`. Solo una copia sin instalar (desarrollo) usa
+    /// la del Cargo.toml, que en todas las versiones publicadas es `2.0.0-dev.0` y no dice nada del producto.
     pub version: String,
     pub data_dir: PathBuf,
     pub cfg_path: PathBuf,
@@ -88,15 +91,17 @@ pub struct Viewer {
 }
 
 impl Viewer {
+    /// `build_version`: la del Cargo.toml (`CARGO_PKG_VERSION`); solo se usa si el visor no está instalado.
     pub fn new(
-        version: &str,
+        build_version: &str,
         data_dir: PathBuf,
         cfg_path: PathBuf,
         layout: Option<InstallLayout>,
     ) -> (Self, LoadOutcome) {
         let (cfg, outcome) = ViewerConfig::load(&cfg_path);
+        let version = layout.as_ref().map(|l| l.version.clone()).unwrap_or_else(|| build_version.to_string());
         let v = Self {
-            version: version.to_string(),
+            version: version.clone(),
             data_dir,
             cfg_path,
             cfg: Mutex::new(cfg),
@@ -123,9 +128,9 @@ impl Viewer {
         (v, outcome)
     }
 
-    pub fn for_current_user(version: &str) -> (Self, LoadOutcome) {
+    pub fn for_current_user(build_version: &str) -> (Self, LoadOutcome) {
         let layout = std::env::current_exe().ok().and_then(|e| InstallLayout::from_exe(&e));
-        Self::new(version, paths::data_dir(), paths::viewer_config_file(), layout)
+        Self::new(build_version, paths::data_dir(), paths::viewer_config_file(), layout)
     }
 
     pub fn config(&self) -> ViewerConfig {
@@ -190,6 +195,42 @@ pub fn navigation_decision(nav: &NavState, label: &str, url: &tauri::Url) -> boo
     crate::servers::navigation_allowed(url, &nav.allowed_origins)
 }
 
+/// Qué hace el visor cuando una página pide una ventana nueva (`<a target="…">`, `window.open`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewWindow {
+    /// Abrir (o traer delante) la ventana del muro N del propio visor, como «Muros → Muro N» de la bandeja.
+    Wall(u8),
+    /// Nada: el visor no abre ventanas de navegador sueltas.
+    Deny,
+}
+
+/// «Abrir muro» y «Monitor N» del panel son enlaces a `/wall/N` con `target="vms-wall-N"`. En un navegador abren
+/// una pestaña; dentro del visor, el muro N del propio visor. Solo desde el panel y solo si la dirección es la
+/// del servidor de ese muro (si no, la ventana del visor enseñaría otro muro). Todo lo demás se rechaza.
+pub fn new_window_decision(opener: &str, url: &tauri::Url, cfg: &ViewerConfig) -> NewWindow {
+    if opener != PANEL {
+        return NewWindow::Deny;
+    }
+    let Some(n) = wall_path(url.path()) else { return NewWindow::Deny };
+    let server = cfg.wall(n).map(|w| w.server.as_str()).unwrap_or(crate::servers::LOCAL_SERVER);
+    match (cfg.resolve(server), crate::servers::origin_of(url)) {
+        (Ok(s), Some(origin)) if s.url.origin() == origin => NewWindow::Wall(n),
+        _ => NewWindow::Deny,
+    }
+}
+
+/// `/wall/N` (1-4, con o sin barra final) → N.
+fn wall_path(path: &str) -> Option<u8> {
+    let rest = path.strip_prefix("/wall/")?;
+    match rest.strip_suffix('/').unwrap_or(rest) {
+        "1" => Some(1),
+        "2" => Some(2),
+        "3" => Some(3),
+        "4" => Some(4),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +239,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (v, _) = Viewer::new("2.0.0", dir.path().join("datos"), dir.path().join("cfg/viewer.json"), None);
         (dir, v)
+    }
+
+    /// En el PC del usuario, «Diagnóstico» decía «Versión del visor 2.0.0-dev.0» y «Se volvió a 2.0.0-beta.5:
+    /// reiniciar el visor» con el visor de la beta.5: comparaba la versión del Cargo.toml con la instalada.
+    #[test]
+    fn the_viewer_reports_the_product_version_it_was_installed_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("versions").join("2.0.0-beta.5").join("viewer").join("VMS.exe");
+        let layout = InstallLayout::from_exe(&exe).expect("disposición instalada");
+        let (v, _) = Viewer::new("2.0.0-dev.0", dir.path().join("datos"), dir.path().join("viewer.json"), Some(layout));
+        assert_eq!(v.version, "2.0.0-beta.5");
+        let st = crate::updates::parse(
+            br#"{"installed": "2.0.0-beta.5", "channel": "stable", "state": "idle", "last_result": "error"}"#,
+        )
+        .unwrap();
+        let view = crate::updates::view(&v.version, Some(&st));
+        assert_eq!(view.restart_into, None);
+        assert!(!view.label.contains("reiniciar"), "{}", view.label);
+        // una copia sin instalar (desarrollo) sigue con la del Cargo.toml
+        let (dev, _) = Viewer::new("2.0.0-dev.0", dir.path().join("datos"), dir.path().join("viewer.json"), None);
+        assert_eq!(dev.version, "2.0.0-dev.0");
     }
 
     #[test]
@@ -221,6 +283,49 @@ mod tests {
         v.expect_local("muro-1");
         assert!(navigation_decision(&v.nav.read().unwrap(), "muro-1", &local));
         assert!(!navigation_decision(&v.nav.read().unwrap(), "muro-2", &local));
+    }
+
+    /// «Abrir muro» del panel no hacía nada dentro del visor (toda ventana nueva se rechazaba): ahora abre el
+    /// muro N del propio visor, y solo eso.
+    #[test]
+    fn open_wall_from_the_panel_opens_the_viewers_own_wall() {
+        let decide = |opener: &str, url: &str, cfg: &ViewerConfig| {
+            new_window_decision(opener, &tauri::Url::parse(url).unwrap(), cfg)
+        };
+        let mut cfg = ViewerConfig::default();
+        for n in 1..=4u8 {
+            let url = format!("http://127.0.0.1:8600/wall/{n}");
+            assert_eq!(decide(PANEL, &url, &cfg), NewWindow::Wall(n), "{url}");
+        }
+        assert_eq!(decide(PANEL, "http://127.0.0.1:8600/wall/2/", &cfg), NewWindow::Wall(2));
+        assert_eq!(decide(PANEL, "http://127.0.0.1:8600/wall/2?x=1#y", &cfg), NewWindow::Wall(2));
+        for other in [
+            "http://127.0.0.1:8600/wall/0",
+            "http://127.0.0.1:8600/wall/5",
+            "http://127.0.0.1:8600/wall/01",
+            "http://127.0.0.1:8600/wall/+1",
+            "http://127.0.0.1:8600/wall/1/x",
+            "http://127.0.0.1:8600/wall",
+            "http://127.0.0.1:8600/status",
+            "http://127.0.0.1:8601/wall/1",
+            "https://127.0.0.1:8600/wall/1",
+            "https://evil.example/wall/1",
+            "http://tauri.localhost/wall/1",
+            "javascript:alert(1)",
+            "about:blank",
+        ] {
+            assert_eq!(decide(PANEL, other, &cfg), NewWindow::Deny, "{other}");
+        }
+        // solo desde el panel: un muro o una página local no abren ventanas
+        for opener in ["muro-1", "servidores", "diagnostico"] {
+            assert_eq!(decide(opener, "http://127.0.0.1:8600/wall/1", &cfg), NewWindow::Deny, "{opener}");
+        }
+        // un muro asignado a otro servidor solo se abre con la dirección de ese servidor
+        cfg.upsert_server("Central", "https://central:8643", Some(&"c".repeat(64))).unwrap();
+        cfg.wall_mut(3).server = "Central".into();
+        assert_eq!(decide(PANEL, "https://central:8643/wall/3", &cfg), NewWindow::Wall(3));
+        assert_eq!(decide(PANEL, "http://127.0.0.1:8600/wall/3", &cfg), NewWindow::Deny);
+        assert_eq!(decide(PANEL, "https://central:8643/wall/1", &cfg), NewWindow::Deny);
     }
 
     #[test]

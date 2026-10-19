@@ -3,9 +3,13 @@
 //! El visor vigila `<datos>\updater\public-status.json` (CONTRATO §15.6, legible por Usuarios). Cuando la
 //! versión instalada deja de ser la suya (actualización o vuelta atrás), se reinicia desde
 //! `versions\<instalada>\viewer\VMS.exe`: los muros, de inmediato; si la persona está usando el panel, tras
-//! 60 s sin actividad.
+//! 60 s sin actividad. «La suya» es la versión del producto (la carpeta `versions\<X>` de la que arranca), no la
+//! del Cargo.toml del visor, que es `2.0.0-dev.0` en todas las versiones publicadas.
+
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
+use vms_common::state::compare_versions;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct PublicStatus {
@@ -47,19 +51,14 @@ pub struct UpdateView {
     pub restart_into: Option<String>,
 }
 
-/// Comparación de versiones `X.Y.Z[-pre]` lo bastante buena para elegir las palabras del aviso.
-fn version_key(v: &str) -> (Vec<u64>, bool) {
-    let (core, pre) = match v.split_once('-') {
-        Some((c, _)) => (c, true),
-        None => (v, false),
-    };
-    (core.split('.').map(|p| p.parse().unwrap_or(0)).collect(), !pre)
-}
-
+/// Precedencia SemVer (`2.0.0-beta.5` > `2.0.0-beta.4`, `2.0.0` > `2.0.0-rc.1`), la misma que el actualizador.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
-    version_key(candidate) > version_key(current)
+    compare_versions(candidate, current) == Some(Ordering::Greater)
 }
 
+/// `own`: la versión del producto de este visor ([`crate::state::Viewer::version`]). Solo pide reiniciar el visor
+/// si la instalada es de verdad otra versión: más nueva (actualización) o más antigua (vuelta atrás). Con la misma
+/// versión, o si alguna no se puede comparar, no se reinicia por una duda.
 pub fn view(own: &str, st: Option<&PublicStatus>) -> UpdateView {
     let Some(st) = st else {
         return UpdateView {
@@ -69,12 +68,12 @@ pub fn view(own: &str, st: Option<&PublicStatus>) -> UpdateView {
     };
     let installed = st.installed.as_deref().filter(|v| crate::paths::safe_version(v));
     if let Some(inst) = installed {
-        if inst != own {
-            let label = if is_newer(inst, own) {
-                format!("Instalada {inst}: reiniciar el visor")
-            } else {
-                format!("Se volvió a {inst}: reiniciar el visor")
-            };
+        let label = match compare_versions(inst, own) {
+            Some(Ordering::Greater) => Some(format!("Instalada {inst}: reiniciar el visor")),
+            Some(Ordering::Less) => Some(format!("Se volvió a {inst}: reiniciar el visor")),
+            Some(Ordering::Equal) | None => None,
+        };
+        if let Some(label) = label {
             return UpdateView { label, restart_into: Some(inst.to_string()) };
         }
     }
@@ -149,6 +148,36 @@ mod tests {
             ),
             ("2.1.0", r#"{"installed": "2.1.0", "hold": true}"#, "Al día 2.1.0 (actualizaciones retenidas)", None),
             ("2.1.0", r#"{"installed": "../../x"}"#, "Al día 2.1.0", None),
+            // betas: antes «beta.5» y «beta.4» eran iguales y una actualización salía como «Se volvió a…»
+            (
+                "2.0.0-beta.4",
+                r#"{"installed": "2.0.0-beta.5"}"#,
+                "Instalada 2.0.0-beta.5: reiniciar el visor",
+                Some("2.0.0-beta.5"),
+            ),
+            (
+                "2.0.0-beta.5",
+                r#"{"installed": "2.0.0-beta.4"}"#,
+                "Se volvió a 2.0.0-beta.4: reiniciar el visor",
+                Some("2.0.0-beta.4"),
+            ),
+            (
+                "2.0.0-beta.4",
+                r#"{"installed": "2.0.0-beta.4", "available": "2.0.0-beta.5"}"#,
+                "Disponible 2.0.0-beta.5: se instalará en la ventana de mantenimiento",
+                None,
+            ),
+            // el estado real del PC del usuario (8/10/2026) con el visor de esa misma versión: nada que reiniciar
+            (
+                "2.0.0-beta.5",
+                r#"{"installed": "2.0.0-beta.5", "channel": "stable", "state": "idle", "last_result": "error",
+                    "message_es": "No hay fuente de actualizaciones configurada (VMS_UPDATE_SOURCE)"}"#,
+                "Al día 2.0.0-beta.5",
+                None,
+            ),
+            // la misma versión escrita de otra forma, o una que no es SemVer: no se reinicia por una duda
+            ("2.0.0", r#"{"installed": "2.0.0+build.7"}"#, "Al día 2.0.0+build.7", None),
+            ("2.0.0", r#"{"installed": "manual"}"#, "Al día manual", None),
         ];
         for (own, json, label, restart) in cases {
             let v = view(own, Some(&st(json)));
@@ -165,5 +194,11 @@ mod tests {
         assert!(is_newer("2.0.0", "2.0.0-dev.0"));
         assert!(!is_newer("2.0.0", "2.0.0"));
         assert!(!is_newer("1.9.0", "2.0.0"));
+        assert!(is_newer("2.0.0-beta.5", "2.0.0-beta.4"));
+        assert!(is_newer("2.0.0-beta.10", "2.0.0-beta.9"));
+        assert!(!is_newer("2.0.0-beta.4", "2.0.0-beta.5"));
+        assert!(is_newer("2.0.0", "2.0.0-rc.1"));
+        assert!(!is_newer("2.0.0+build.7", "2.0.0"));
+        assert!(!is_newer("manual", "2.0.0") && !is_newer("2.0.0", "manual"));
     }
 }

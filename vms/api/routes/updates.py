@@ -13,6 +13,7 @@ elevada (`vmsctl update …`) o por el panel central.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -63,6 +64,15 @@ def release_version() -> str:
     except (OSError, ValueError, AttributeError, IndexError):
         pass
     return __version__
+
+
+@functools.lru_cache(maxsize=1)
+def running_version() -> str:
+    """`release_version()` leída una sola vez: la carpeta de una versión instalada no cambia mientras el proceso
+    corre (una actualización arranca otro backend desde otra carpeta). La dan `/api/health` y `/api/status`, que se
+    consultan cada pocos segundos. `vms.__version__` es `0.1.0` en todas las versiones publicadas: con ella el visor
+    y la web no podían saber qué versión tienen delante ni notar una actualización."""
+    return release_version()
 
 
 def read_public_status(base: Path) -> dict[str, Any] | None:

@@ -1,13 +1,5 @@
 import { $, el, invocar, mostrarError, parametro, texto } from "./comun.js";
 
-const CLAVE = {
-  legible: "Se puede leer (los muros entran sin contraseña)",
-  sin_permiso: "Sin permiso: tu usuario no está en el grupo «VMS Operadores»",
-  sin_token: "No existe en este equipo",
-  token_invalido: "Está dañada",
-  error_lectura: "No se pudo leer",
-};
-
 const RESULTADO = {
   update_ok: "La última actualización terminó bien",
   update_failed: "La última actualización falló y se volvió a la versión anterior",
@@ -35,7 +27,9 @@ async function cargar() {
     texto("instalacion", d.instalacion || "Copia de desarrollo (sin instalar)");
     texto("datos", d.carpeta_datos);
     texto("visor-json", d.visor_json);
-    texto("clave", CLAVE[d.clave_muros] || d.clave_muros);
+    // «Lista para usar» solo si el visor la descifró en un token válido; si no, el motivo y «Qué hacer:»
+    texto("clave", d.clave_muros_texto || d.clave_muros);
+    $("clave").className = d.clave_muros_usable ? "ok" : "error";
     const s = d.servidor;
     const punto = $("punto");
     if (!s) {
