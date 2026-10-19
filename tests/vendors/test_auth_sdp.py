@@ -1,6 +1,9 @@
 """Digest RFC 7616 (vectores del RFC), elección del reto más fuerte y lectura tolerante del SDP."""
 from __future__ import annotations
 
+import hashlib
+import re
+
 import pytest
 
 from vms.vendors import auth as vauth
@@ -48,6 +51,64 @@ def test_choose_strongest_and_basic_only_when_allowed() -> None:
     assert vauth.choose(basic) is None and vauth.only_basic(basic)
     assert vauth.choose(basic, allow_basic=True).scheme == "basic"  # type: ignore[union-attr]
     assert vauth.choose(vauth.parse_challenges(['Digest realm="x", nonce="1", algorithm=SHA-512-256'])) is None
+
+
+def _md5(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _param_names(header: str) -> set[str]:
+    return {m.lower() for m in re.findall(r'(?:^|,)\s*([\w-]+)\s*=', header.partition(" ")[2])}
+
+
+# Reto RTSP de la cámara del usuario (Hikvision DS-2CD1741FWD-IZ, firmware V5.5.0), con otro número en el realm y
+# otro nonce: Digest de RFC 2069 sin qop ni algorithm, con `stale`, y un Basic aparte.
+HIK_V55_REALM = "IP Camera(00000)"
+HIK_V55_NONCE = "4e6a46434d7a49324e3045354f444e6a"
+HIK_V55 = [f'Digest realm="{HIK_V55_REALM}", nonce="{HIK_V55_NONCE}", stale="FALSE"', f'Basic realm="{HIK_V55_REALM}"']
+
+
+def test_challenge_without_algorithm_nor_qop_gets_a_rfc2069_answer() -> None:
+    """8/10, cámara del usuario: «Probar conexión» decía «Usuario o contraseña RTSP incorrectos» con la contraseña
+    buena. Su RTSP reta sin `algorithm` y la respuesta llevaba siempre `algorithm=MD5`: con eso la cámara da 401;
+    la misma petición sin él, 200. Como curl y ffmpeg, `algorithm` solo va si el reto lo trae."""
+    ch = vauth.choose(vauth.parse_challenges(HIK_V55))
+    assert ch is not None and ch.scheme == "digest-md5" and ch.qop == () and not ch.stale
+    assert ch.algorithm == "" and ch.hash_algorithm == "MD5"
+    uri = "rtsp://192.0.2.10:554/Streaming/Channels/101"
+    header = vauth.authorization(ch, "DESCRIBE", uri, "admin", "Sim#Pass:1@/x")
+    assert "algorithm" not in header
+    assert _param_names(header) == {"username", "realm", "nonce", "uri", "response"}
+    ha1, ha2 = _md5(f"admin:{HIK_V55_REALM}:Sim#Pass:1@/x"), _md5(f"DESCRIBE:{uri}")
+    assert f'response="{_md5(f"{ha1}:{HIK_V55_NONCE}:{ha2}")}"' in header
+    assert vauth.verify_digest(header, "DESCRIBE", "admin", "Sim#Pass:1@/x", HIK_V55_REALM)
+    assert not vauth.verify_digest(header, "DESCRIBE", "admin", "otra", HIK_V55_REALM)
+
+
+def test_qop_without_algorithm_matches_rfc2617_example() -> None:
+    """RFC 2617 §3.5: reto con qop y sin algorithm. La respuesta del RFC no lleva algorithm."""
+    ch = vauth.parse_challenge('Digest realm="testrealm@host.com", qop="auth,auth-int", '
+                               'nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41"')
+    header = vauth.authorization(ch, "GET", "/dir/index.html", "Mufasa", "Circle Of Life", cnonce="0a4f113b")
+    assert 'response="6629fae49393a05397450978507c4ef1"' in header
+    assert "qop=auth" in header and "nc=00000001" in header and 'cnonce="0a4f113b"' in header
+    assert "algorithm" not in _param_names(header)
+    assert vauth.verify_digest(header, "GET", "Mufasa", "Circle Of Life", "testrealm@host.com")
+
+
+@pytest.mark.parametrize(("challenge", "sent"), [
+    ('Digest realm="r", nonce="n", algorithm=MD5', "algorithm=MD5"),
+    ('Digest realm="r", nonce="n", algorithm="MD5", qop="auth"', "algorithm=MD5"),
+    ('Digest realm="r", nonce="n", algorithm=SHA-256, qop="auth"', "algorithm=SHA-256"),
+    ('Digest realm="r", nonce="n", algorithm=MD5-sess, qop="auth"', "algorithm=MD5-sess"),
+    ('Digest realm="r", nonce="n", algorithm=SHA-256, qop="auth", userhash=true', "algorithm=SHA-256"),
+])
+def test_algorithm_is_echoed_when_the_challenge_has_it(challenge: str, sent: str) -> None:
+    """Con `algorithm` en el reto se sigue mandando (SHA-256, -sess y userhash como antes): los equipos y los
+    simuladores que lo exigen no cambian."""
+    header = vauth.authorization(vauth.parse_challenge(challenge), "GET", "/a", "u", "p")
+    assert header.count("algorithm=") == 1 and sent in header
+    assert vauth.verify_digest(header, "GET", "u", "p", "r")
 
 
 def test_nonce_count_grows_with_state() -> None:

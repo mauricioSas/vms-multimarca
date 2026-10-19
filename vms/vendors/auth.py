@@ -5,6 +5,10 @@ Reglas (PLAN-V2 §3.2 puntos 1 y 3):
   fuerte que se soporta: Digest SHA-256 > Digest MD5 > Basic.
 - Basic solo si el equipo tiene `allow_basic=true` (envía la contraseña sin cifrar por la red).
 - `qop=auth` (con `nc` y `cnonce`), `opaque`, `userhash` y el `-sess` de RFC 7616.
+- `algorithm` va en la respuesta **solo si el equipo lo mandó en el reto**, como hacen curl y ffmpeg. Sin él,
+  el reto es Digest de RFC 2069/2617 y se calcula con MD5. Hay firmwares que rechazan con 401 una respuesta
+  correcta si lleva un `algorithm=MD5` que su reto no traía: lo hace el RTSP de la Hikvision DS-2CD1741FWD-IZ
+  con firmware V5.5.0, cuyo reto es `Digest realm=…, nonce=…, stale="FALSE"` sin `qop` ni `algorithm`.
 - Una sola ronda: el que llama manda las credenciales una vez; si el equipo responde 401 otra vez,
   no se reintenta (muchos equipos bloquean el usuario tras 3-5 fallos).
 
@@ -36,7 +40,7 @@ class Challenge:
     nonce: str = ""
     opaque: str = ""
     qop: tuple[str, ...] = ()
-    algorithm: str = ""
+    algorithm: str = ""          # tal como vino en el reto; vacío si el equipo no lo mandó (entonces es MD5)
     userhash: bool = False
     stale: bool = False
     raw: str = field(default="", repr=False)
@@ -44,6 +48,11 @@ class Challenge:
     @property
     def strength(self) -> int:
         return STRENGTH.get(self.scheme, 0)
+
+    @property
+    def hash_algorithm(self) -> str:
+        """Algoritmo con el que se calcula la respuesta: el del reto o MD5 si el reto no lo dice (RFC 7616 §3.3)."""
+        return self.algorithm or "MD5"
 
 
 def _params(text: str) -> dict[str, str]:
@@ -74,8 +83,8 @@ def parse_challenge(text: str) -> Challenge:
         return Challenge("basic", realm=p.get("realm", ""), raw=text)
     if sw != "digest":
         return Challenge("unsupported", raw=text)
-    algorithm = p.get("algorithm", "MD5")
-    alg = algorithm.upper()
+    algorithm = p.get("algorithm", "")   # sin él: MD5, pero la respuesta tampoco lo lleva (ver el docstring)
+    alg = (algorithm or "MD5").upper()
     scheme: Scheme | Literal["unsupported"]
     if alg in ("MD5", "MD5-SESS"):
         scheme = "digest-md5"
@@ -133,7 +142,7 @@ def authorization(challenge: Challenge, method: str, uri: str, username: str, pa
         return f"Basic {token}"
     if challenge.scheme == "unsupported":
         raise ValueError("reto de autenticación no soportado")
-    alg = challenge.algorithm or "MD5"
+    alg = challenge.hash_algorithm
     if state is not None:
         state.nc += 1
         nc_value = state.nc
@@ -155,7 +164,9 @@ def authorization(challenge: Challenge, method: str, uri: str, username: str, pa
         parts.append(f'response="{_h(alg, f"{ha1}:{challenge.nonce}:{ha2}")}"')
     if challenge.opaque:
         parts.append(f'opaque="{challenge.opaque}"')
-    parts.append(f"algorithm={alg}")
+    if challenge.algorithm:
+        # solo si el reto lo traía: hay cámaras que dan 401 a una respuesta buena con un algorithm que no pidieron
+        parts.append(f"algorithm={challenge.algorithm}")
     if challenge.userhash:
         parts.append("userhash=true")
     return "Digest " + ", ".join(parts)

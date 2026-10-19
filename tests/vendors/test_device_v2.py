@@ -13,6 +13,7 @@ import pytest
 from tests.vendors.conftest import TEST_PASSWORD, asgi, make_device
 from tools.mocks.dahua import DahuaMock
 from tools.mocks.hikvision import HikChannel, HikvisionMock
+from tools.mocks.onvif import OnvifMock
 from tools.mocks.rtsp_chaos import RtspChaosServer
 from vms.core.models import DeviceTestRequest
 from vms.vendors import test_device as run_test
@@ -30,6 +31,7 @@ async def test_hikvision_nvr_ok_with_warnings(chaos: RtspChaosServer, caplog: py
     r = await run_test(make_device("hikvision", kind="nvr", rtsp_port=chaos.port), TEST_PASSWORD,
                        transport=asgi(mock.app))
     assert r.ok and r.auth_ok and r.rtsp_ok and r.info and r.info.kind == "nvr" and len(r.channels) == 4
+    assert r.message.startswith("Grabador DS-7608NI-K2/8P encontrado con 4 canales.")
     assert r.info.firmware_date == "2021-08-12"
     assert r.first_frame_ms is not None and not r.gop_slow
     assert r.bandwidth_kbps == 3 * (4096 + 512)          # el canal sin vídeo no suma
@@ -47,6 +49,75 @@ async def test_wrong_password_sends_credentials_exactly_once(chaos: RtspChaosSer
     assert mock.auth.credentialed == 1                   # una petición con credenciales a la API…
     assert chaos.stats.credentialed == 0                 # …y ninguna al RTSP
     assert "Te quedan 4 intentos" in r.message
+
+
+async def test_user_camera_with_rfc2069_rtsp_challenge_connects() -> None:
+    """8/10, cámara del usuario (Hikvision DS-2CD1741FWD-IZ, firmware V5.5.0), con la contraseña buena: «Cámara
+    DS-2CD1741FWD-IZ encontrado. Prueba RTSP del canal 1: Usuario o contraseña RTSP incorrectos.» Su RTSP reta sin
+    qop ni algorithm y daba 401 a nuestra respuesta, que llevaba «algorithm=MD5»."""
+    mock = HikvisionMock(password=TEST_PASSWORD, kind="camera", model="DS-2CD1741FWD-IZ", firmware="V5.5.0")
+    async with RtspChaosServer(password=TEST_PASSWORD, scenario="digest-no-algorithm") as srv:
+        r = await run_test(make_device("hikvision", rtsp_port=srv.port), TEST_PASSWORD, transport=asgi(mock.app))
+    assert r.ok and r.auth_ok is True and r.rtsp_ok is True, r.message
+    assert "Vídeo RTSP correcto en el canal 1" in r.message and "incorrect" not in r.message
+    assert srv.stats.rejected == 0 and mock.auth.rejected_credentials == 0
+
+
+async def test_found_header_agrees_with_the_kind(chaos: RtspChaosServer) -> None:
+    """El mismo 8/10 la cabecera decía «Cámara DS-2CD1741FWD-IZ encontrado»: «cámara» es femenino."""
+    mock = HikvisionMock(password=TEST_PASSWORD, kind="camera", model="DS-2CD1741FWD-IZ")
+    r = await run_test(make_device("hikvision", rtsp_port=chaos.port), TEST_PASSWORD, transport=asgi(mock.app))
+    assert r.ok and r.message.startswith("Cámara DS-2CD1741FWD-IZ encontrada."), r.message
+
+
+async def test_rtsp_rejecting_what_the_api_accepted_does_not_blame_the_password() -> None:
+    """Si la API acaba de aceptar el usuario y la contraseña y el RTSP los rechaza, la contraseña es buena: decía
+    «Usuario o contraseña RTSP incorrectos» y ponía «Usuario y contraseña» en rojo, así que el usuario la cambiaba y
+    volvía a probar, gastando intentos del bloqueo. Ahora dice que es el vídeo el que la rechaza y qué hacer."""
+    mock = HikvisionMock(password=TEST_PASSWORD, kind="camera")
+    async with RtspChaosServer(password="Otra#Pass:2") as srv:     # el RTSP no acepta la misma contraseña
+        r = await run_test(make_device("hikvision", rtsp_port=srv.port), TEST_PASSWORD, transport=asgi(mock.app))
+    assert not r.ok and r.auth_ok is True and r.rtsp_ok is False and not r.locked
+    assert "incorrect" not in r.message and "Qué hacer:" in r.message
+    assert "acepta el usuario y la contraseña, pero el vídeo (RTSP) del canal 1 los rechaza" in r.message
+    assert "no cambies la contraseña" in r.message and "permiso para ver el vídeo en directo" in r.message
+    assert "una sola vez" in r.message                                  # igual que «¿Por qué no conecta?»
+    assert srv.stats.credentialed == 1 and srv.stats.rejected == 1     # un solo intento por RTSP
+
+
+@pytest.mark.parametrize("vendor", ["onvif", "uniview"])
+async def test_onvif_answering_any_password_does_not_vouch_for_rtsp(vendor: str) -> None:
+    """Muchas cámaras ONVIF genéricas tienen la autenticación ONVIF desactivada: contestan con cualquier
+    contraseña. Que ONVIF «acepte» una contraseña MALA no dice nada del RTSP, que la rechaza: «Usuario y
+    contraseña» tiene que seguir en rojo (`auth_ok` False, así la web guarda el equipo sin cámaras y el motor no
+    manda esa contraseña por RTSP) y el mensaje no puede decir que es correcta ni que no se cambie."""
+    async with RtspChaosServer(password="Otra#Pass:2") as srv:     # la contraseña de verdad es otra
+        onv = OnvifMock(password=TEST_PASSWORD, auth_disabled=True, rtsp_base=f"rtsp://127.0.0.1:{srv.port}")
+        r = await run_test(make_device(vendor, rtsp_port=srv.port), "Mala#1", transport=asgi(onv.app))
+    assert onv.credentialed >= 1 and onv.rejected == 0 and r.info is not None   # ONVIF contestó a todo
+    assert not r.ok and r.auth_ok is False and r.rtsp_ok is False and not r.locked, r.message
+    assert "es correcta" not in r.message and "no cambies la contraseña" not in r.message
+    assert "rechaza el usuario o la contraseña" in r.message and "Qué hacer:" in r.message
+    assert srv.stats.credentialed == 1 and srv.stats.rejected == 1     # un solo intento por RTSP
+
+
+async def test_rtsp_rejection_without_api_says_what_to_do() -> None:
+    """Sin API, el RTSP es la única prueba de la contraseña: su rechazo sí es «usuario o contraseña» y ahora lleva
+    «Qué hacer:» (antes solo «Prueba RTSP del canal 1: Usuario o contraseña RTSP incorrectos.»)."""
+    async with RtspChaosServer(password=TEST_PASSWORD) as srv:
+        r = await run_test(make_device("reolink", rtsp_port=srv.port), "Mala#1")
+    assert not r.ok and r.auth_ok is False and "rechaza el usuario o la contraseña" in r.message
+    assert "Qué hacer:" in r.message and "una sola vez" in r.message and srv.stats.credentialed == 1
+
+
+async def test_rtsp_lock_after_api_accepted_still_marks_the_user_locked() -> None:
+    """Un bloqueo que dice el RTSP sí cuenta aunque la API haya aceptado: el alta no debe volver a mandar nada."""
+    mock = HikvisionMock(password=TEST_PASSWORD, kind="camera")
+    async with RtspChaosServer(password=TEST_PASSWORD, scenario="lockout-after-3", lock_after=1) as srv:
+        srv.locked = True
+        r = await run_test(make_device("hikvision", rtsp_port=srv.port), TEST_PASSWORD, transport=asgi(mock.app))
+    assert not r.ok and r.locked and r.auth_ok is False and r.lockout_minutes == 30
+    assert "bloqueado" in r.message and srv.stats.credentialed == 1
 
 
 async def test_locked_user_is_reported_with_minutes(chaos: RtspChaosServer) -> None:

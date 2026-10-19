@@ -83,8 +83,9 @@ async def _http_status(host: str, port: int, https: bool, timeout: float) -> int
 
 
 async def _rtsp(host: str, port: int, path: str, username: str = "", password: str = "", *,
-                timeout: float = 5.0) -> Any:
-    return await dynamic("vms.vendors.rtsp_probe", "probe_rtsp")(host, port, path, username, password, timeout=timeout)
+                timeout: float = 5.0, allow_basic: bool = False) -> Any:
+    return await dynamic("vms.vendors.rtsp_probe", "probe_rtsp")(host, port, path, username, password, timeout=timeout,
+                                                                  allow_basic=allow_basic)
 
 
 @dataclass
@@ -225,14 +226,51 @@ class Diagnoser:
             add("codec", None, "Sin ruta RTSP no se puede saber el códec.")
         else:
             t0 = time.perf_counter()
-            r = await self.rtsp_probe(d.host, d.rtsp_port, main_path, d.username, inp.password, timeout=self.timeout + 2)
+            # Basic solo si el equipo lo permite, como en «Probar conexión» (sin el argumento si no, para que valga
+            # cualquier sonda que no lo conozca)
+            basic: dict[str, bool] = {"allow_basic": True} if getattr(d, "allow_basic", False) else {}
+            r = await self.rtsp_probe(d.host, d.rtsp_port, main_path, d.username, inp.password, timeout=self.timeout + 2,
+                                      **basic)
             if r.status == 200:
                 codec_main = r.video_codec
                 add("rtsp_describe", True, f"El vídeo responde ({codec_main or 'códec desconocido'}).", "", t0)
+            elif r.status in (401, 403) and getattr(r, "locked", False):
+                minutes = getattr(r, "lockout_minutes", None) or (policy[1] if policy else None)
+                add("rtsp_describe", False, "El vídeo (RTSP) dice que el usuario está bloqueado por demasiados "
+                                            "intentos fallidos.",
+                    (f"Espera {minutes} minutos" if minutes else "Espera un rato") + " o reinicia el equipo, y no "
+                    "vuelvas a probar mientras tanto.", t0)
+            elif r.status == 401 and getattr(r, "basic_only", False):
+                # no se mandó la contraseña: el equipo solo ofrece Basic y este equipo no lo permite
+                add("rtsp_describe", False, "El vídeo (RTSP) solo admite autenticación Basic, que envía la contraseña "
+                                            "sin cifrar, y este equipo no la tiene permitida.",
+                    "En la web del equipo, pon la autenticación RTSP en «digest». Si no tiene esa opción y la red de "
+                    "cámaras está separada, en «Equipos y monitores» pulsa «Editar» en la fila del equipo y marca "
+                    "«Permitir autenticación Basic».", t0)
+            elif r.status == 401 and getattr(r, "credentialed_requests", 1) == 0:
+                # no se llegó a mandar la contraseña (alta sin usuario, o el equipo pide una autenticación que no se
+                # sabe responder): no es que el vídeo la rechace
+                add("rtsp_describe", False, (redact(getattr(r, "error", "")) or "El vídeo (RTSP) pide una autenticación "
+                                             "que no se pudo usar").rstrip(".") + ".",
+                    "Comprueba que el alta tenga el usuario del equipo y, en la web del equipo, pon la autenticación "
+                    "RTSP en «digest».", t0)
+            elif r.status == 401 and auth_ok and drivers.brand_api(d.vendor):
+                # la API de la marca (mismas cuentas que el RTSP) acaba de aceptar la contraseña y el RTSP la rechazó:
+                # no es mala, y decirlo haría que la cambiaran. Con ONVIF no se sabe: puede aceptar cualquier contraseña
+                add("rtsp_describe", False, "El equipo acepta el usuario y la contraseña, pero el vídeo (RTSP) los "
+                                            "rechaza.",
+                    "No cambies la contraseña, que el equipo acaba de aceptarla. En la web del equipo, comprueba que "
+                    "este usuario tenga permiso para ver el vídeo en directo y, si el equipo tiene la opción, pon la "
+                    "autenticación RTSP en «digest». Después vuelve a pulsar «¿Por qué no conecta?» una sola vez: "
+                    "cada rechazo puede contar para el bloqueo del usuario.", t0)
             elif r.status == 401:
                 add("rtsp_describe", False, "El vídeo (RTSP) rechaza el usuario o la contraseña.",
                     "Usa el mismo usuario y contraseña que en la web del equipo; revisa que el usuario tenga "
                     "permiso de vídeo en directo.", t0)
+            elif r.status == 403:
+                add("rtsp_describe", False, "El vídeo (RTSP) no deja entrar a este usuario: no tiene permiso para "
+                                            "verlo.",
+                    "En la web del equipo (apartado de usuarios), dale permiso para ver el vídeo en directo.", t0)
             elif r.status == 404:
                 add("rtsp_describe", False, "El equipo no tiene vídeo en esa ruta RTSP.",
                     "Revisa el canal o escribe la ruta correcta del flujo principal.", t0)
@@ -243,7 +281,7 @@ class Diagnoser:
                     "", t0)
             if r.status == 200 and sub_path:
                 rs = await self.rtsp_probe(d.host, d.rtsp_port, sub_path, d.username, inp.password,
-                                           timeout=self.timeout + 2)
+                                           timeout=self.timeout + 2, **basic)
                 codec_sub = rs.video_codec if rs.status == 200 else None
             wall_codec = codec_sub or codec_main
             if r.status != 200:

@@ -54,6 +54,19 @@ def has_api(vendor: str) -> bool:
         return False
 
 
+def brand_api(vendor: str) -> bool:
+    """¿La API del driver es la propia de la marca (ISAPI, Dahua), con las mismas cuentas que el vídeo RTSP? Con
+    ONVIF no: puede contestar con cualquier contraseña o tener usuarios propios. Si no se sabe, False."""
+    spec = spec_of(vendor)
+    if spec is None:
+        return False
+    try:
+        return bool(dynamic("vms.vendors", "brand_api")(spec))
+    except Exception:  # noqa: BLE001
+        log.debug("brand_api no disponible", exc_info=True)
+        return False
+
+
 def driver_name(vendor: str) -> str:
     spec = spec_of(vendor)
     return str(spec.name) if spec is not None else vendor
@@ -82,5 +95,5 @@ def brand_from(vendor: str, manufacturer: str = "", model: str = "") -> str | No
     return None
 
 
-__all__ = ["GENERIC_DRIVERS", "SECURITY_READ", "TIME_READ", "TIME_WRITE", "brand_from", "capabilities",
+__all__ = ["GENERIC_DRIVERS", "SECURITY_READ", "TIME_READ", "TIME_WRITE", "brand_api", "brand_from", "capabilities",
            "driver_name", "has_api", "spec_of"]

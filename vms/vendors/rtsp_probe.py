@@ -5,8 +5,10 @@ SDP. Implementación propia de RFC 2326 con la autenticación de `vms.vendors.au
 RFC 7616 y Basic solo con `allow_basic`).
 
 **Un solo intento con credenciales** (PLAN-V2 §3.2 punto 2): las credenciales se mandan una vez; si el
-equipo vuelve a responder 401, no se reintenta (los equipos bloquean el usuario tras 3-5 fallos). Con la
-contraseña ya aceptada sí se pueden pedir rutas alternativas del driver si la primera da 404.
+equipo vuelve a responder 401, no se reintenta (los equipos bloquean el usuario tras 3-5 fallos), ni siquiera
+con otra forma de la respuesta Digest: cada intento rechazado cuenta para el bloqueo. Por eso la respuesta tiene
+que valer a la primera (`auth.authorization` solo manda `algorithm` si el reto lo trae). Con la contraseña ya
+aceptada sí se pueden pedir rutas alternativas del driver si la primera da 404.
 
 Medidas para los avisos de GOP largo (PLAN-V2 §3.2 punto 7): lo que tarda el SDP y, con `first_frame=True`,
 lo que tarda el primer fotograma clave por RTP entrelazado en TCP. Esa medida abre una sesión de vídeo
@@ -64,6 +66,15 @@ class RtspProbeResult:
     @property
     def slow(self) -> bool:
         return any(v is not None and v > SLOW_SECONDS * 1000 for v in (self.sdp_ms, self.first_frame_ms))
+
+    @property
+    def credentials_rejected(self) -> bool:
+        """El equipo contestó 401 a la única petición con credenciales y no dice que el usuario esté bloqueado.
+
+        Solo dice que el RTSP no las aceptó: si la API del equipo acaba de aceptarlas, la contraseña es buena y el
+        problema es otro (permisos de vídeo, tipo de autenticación RTSP o una respuesta Digest que el equipo no
+        entiende), así que quien llama no debe decir sin más que la contraseña es incorrecta."""
+        return self.status == 401 and self.credentialed_requests > 0 and not self.locked
 
 
 class _Conn:

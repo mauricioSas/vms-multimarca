@@ -8,8 +8,9 @@ espacios de nombres reales.
 
 Casos de la matriz §4.2: perfil único (`profiles` con uno), reloj desfasado (`clock_offset_s`: la hora del
 equipo y la validación del `Created` del token usan ese reloj; ±`max_skew_s`), ONVIF desactivado
-(`enabled=False`: 404 sin SOAP), usuario ONVIF distinto del de la web (`username`/`password` propios) y
-H.265 solo bien descrito por Media2.
+(`enabled=False`: 404 sin SOAP), usuario ONVIF distinto del de la web (`username`/`password` propios),
+autenticación ONVIF desactivada (`auth_disabled=True`: contesta con cualquier contraseña) y H.265 solo bien
+descrito por Media2.
 
 Autenticación HTTP (`http_auth`, PLAN-V2 §3.2 punto 1): con «digest»/«digest-sha256»/«basic» el equipo acepta
 también Digest/Basic HTTP y responde **401 con el reto** (no un Fault) a toda petición sin credenciales válidas,
@@ -94,6 +95,9 @@ class OnvifMock:
     media2: bool = False
     enabled: bool = True
     anonymous: bool = False                 # responde sin credenciales (auditoría de seguridad)
+    # autenticación ONVIF desactivada (muchas cámaras genéricas): acepta cualquier UsernameToken, con cualquier
+    # contraseña, y también ninguno; `anonymous` sí comprueba el token que llegue
+    auth_disabled: bool = False
     clock_offset_s: float = 0.0
     max_skew_s: float = 300.0
     date_time_type: str = "NTP"
@@ -134,6 +138,8 @@ class OnvifMock:
         has_token = re.search(r"<(?:[\w.\-]+:)?Username[^>]*>", xml) is not None
         if has_header or has_token:
             self.credentialed += 1
+        if self.auth_disabled:
+            return None
         if self.http_auth != "none" and has_header:
             before = self.http.credentialed
             ok = self.http.check(request)

@@ -7,11 +7,14 @@ import re
 from datetime import timedelta
 from typing import Any
 
+import httpx
 import pytest
 
 from tests.ops.doubles import ClockDevice, DiagBehavior, DiagClient, IsapiClock, RtspDouble, isapi_app
 from tests.ops.test_netroute import WIFI, cable_in, cable_out
 from tools.mocks.hikvision import HikvisionMock
+from tools.mocks.onvif import OnvifMock
+from tools.mocks.rtsp_chaos import RtspChaosServer
 from tools.mocks.server import MockHttpServer
 from vms.core.interfaces import PathStatus
 from vms.core.models import Camera, Device
@@ -33,9 +36,13 @@ def _cam(**over: Any) -> Camera:
 
 
 class Rtsp:
-    def __init__(self, status: int = 200, codecs: dict[str, str] | None = None) -> None:
+    def __init__(self, status: int = 200, codecs: dict[str, str] | None = None, *,
+                 locked_minutes: int | None = None, credentialed: int | None = None, error: str = "") -> None:
         self.status = status
         self.codecs = codecs or {}
+        self.locked_minutes = locked_minutes      # el equipo dice que el usuario está bloqueado (0 = sin minutos)
+        self.credentialed = credentialed          # peticiones con credenciales (None: el doble no lo dice)
+        self.error = error
         self.calls: list[tuple[str, str]] = []
 
     async def __call__(self, host: str, port: int, path: str, username: str = "", password: str = "", *,
@@ -46,8 +53,12 @@ class Rtsp:
         class R:
             pass
         r = R()
-        r.status, r.reachable, r.error = self.status, True, ""   # type: ignore[attr-defined]
+        r.status, r.reachable, r.error = self.status, True, self.error   # type: ignore[attr-defined]
         r.video_codec = codec if self.status == 200 else None   # type: ignore[attr-defined]
+        if self.locked_minutes is not None:
+            r.locked, r.lockout_minutes = True, self.locked_minutes or None   # type: ignore[attr-defined]
+        if self.credentialed is not None:
+            r.credentialed_requests = self.credentialed   # type: ignore[attr-defined]
         return r
 
 
@@ -226,6 +237,95 @@ async def test_restricted_user_clock_read_says_what_to_do() -> None:
     assert res.probable_cause_es == "No se ha encontrado ningún problema.", "no es la causa"
 
 
+async def test_rtsp_rejecting_what_the_api_accepted_does_not_blame_the_password() -> None:
+    """8/10, cámara del usuario: la API aceptó la contraseña y el vídeo (RTSP) la rechazó. El paso decía «El vídeo
+    (RTSP) rechaza el usuario o la contraseña» justo debajo de «Sin riesgo de bloqueo: la contraseña es correcta», y
+    el usuario la cambiaba. Si la API la acaba de aceptar, es correcta: lo que falla es el vídeo."""
+    rtsp = Rtsp(status=401)
+    b = DiagBehavior()
+    res = await _diag(b, rtsp=rtsp).run(DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    st = _steps(res)
+    assert st["auth"] is True and st["lockout"] is True and st["rtsp_describe"] is False
+    step = _step(res, "rtsp_describe")
+    assert step.detail_es == "El equipo acepta el usuario y la contraseña, pero el vídeo (RTSP) los rechaza."
+    assert step.action_es.startswith("No cambies la contraseña") and "permiso para ver el vídeo" in step.action_es
+    assert "una sola vez" in step.action_es and res.probable_cause_es == step.detail_es
+    assert b.attempts == 1 and len(rtsp.calls) == 1, "un intento por la API y uno por RTSP, sin el subflujo"
+
+
+async def test_rtsp_lock_and_permission_say_what_to_do() -> None:
+    """Un bloqueo que dice el RTSP no es «contraseña mala», y un 403 (sin permiso) salía con el código y sin qué hacer."""
+    res = await _diag(DiagBehavior(), rtsp=Rtsp(status=401, locked_minutes=0)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    step = _step(res, "rtsp_describe")
+    assert step.ok is False and "bloqueado" in step.detail_es and step.action_es.startswith("Espera 30 minutos")
+    res = await _diag(DiagBehavior(), rtsp=Rtsp(status=403)).run(
+        DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    step = _step(res, "rtsp_describe")
+    assert step.ok is False and "no tiene permiso" in step.detail_es and "403" not in step.detail_es
+    assert "apartado de usuarios" in step.action_es
+
+
+async def test_onvif_answering_any_password_does_not_vouch_for_rtsp() -> None:
+    """Muchas cámaras ONVIF genéricas tienen la autenticación ONVIF desactivada: contestan con cualquier contraseña.
+    Con una MALA, el paso del vídeo no puede decir que la contraseña es correcta ni que no se cambie: solo la API de
+    la marca (ISAPI, Dahua) usa las mismas cuentas que el RTSP. Con el cliente ONVIF y la prueba RTSP de verdad."""
+    async with RtspChaosServer(password="Otra#Pass:2") as rtsp:      # la contraseña de verdad es otra
+        onv = OnvifMock(password=PW, auth_disabled=True, rtsp_base=f"rtsp://127.0.0.1:{rtsp.port}")
+
+        async def tcp(host: str, port: int, timeout: float) -> bool:
+            return port in (80, rtsp.port)
+
+        async def http_probe(host: str, port: int, https: bool, timeout: float) -> int | None:
+            return 401
+
+        diag = Diagnoser(lambda d, p: client_for(d, p, timeout=3.0, transport=httpx.ASGITransport(app=onv.app)),
+                         tcp_check=tcp, http_probe=http_probe)
+        dev = _dev(vendor="onvif", kind="camera", host="127.0.0.1", rtsp_port=rtsp.port)
+        res = await diag.run(DiagnoseInput(dev, "Mala#1", "dev-00000001",
+                                           [_cam(main_path="/Streaming/Channels/101", has_sub=False)]))
+    st = _steps(res)
+    assert st["auth"] is True and st["rtsp_describe"] is False and onv.rejected == 0   # ONVIF contestó a todo
+    step = _step(res, "rtsp_describe")
+    assert step.detail_es == "El vídeo (RTSP) rechaza el usuario o la contraseña."
+    text = f"{step.detail_es} {step.action_es} {res.summary_es}"
+    assert "es correcta" not in text and "No cambies la contraseña" not in text and "acaba de aceptarla" not in text
+    assert rtsp.stats.credentialed == 1 and rtsp.stats.rejected == 1
+
+
+async def test_rtsp_401_without_sending_the_password_is_not_a_rejection() -> None:
+    """Con la contraseña aceptada por la API, un 401 del RTSP sin haber mandado credenciales (el equipo pide una
+    autenticación que no se sabe responder) decía que el vídeo «los rechaza» y que no se cambiara la contraseña."""
+    rtsp = Rtsp(status=401, credentialed=0, error="El equipo pide una autenticación RTSP que no se reconoce")
+    res = await _diag(DiagBehavior(), rtsp=rtsp).run(DiagnoseInput(_dev(kind="camera"), PW, "dev-00000001", [_cam()]))
+    step = _step(res, "rtsp_describe")
+    assert step.ok is False and step.detail_es == "El equipo pide una autenticación RTSP que no se reconoce."
+    assert "rechaza" not in step.detail_es and "«digest»" in step.action_es
+    assert "No cambies la contraseña" not in step.action_es
+
+
+@pytest.mark.parametrize("allow_basic", [False, True])
+async def test_basic_only_rtsp_is_not_a_wrong_password_and_honours_allow_basic(allow_basic: bool) -> None:
+    """Un RTSP que solo ofrece Basic daba «El vídeo (RTSP) rechaza el usuario o la contraseña» sin haberla mandado,
+    y fallaba aunque el equipo tuviera «Permitir autenticación Basic»: el diagnóstico no pasaba ese permiso a la
+    prueba RTSP, al revés que «Probar conexión»."""
+    async with RtspChaosServer(password=PW, scenario="basic-only") as rtsp:
+        async def tcp(host: str, port: int, timeout: float) -> bool:
+            return port == rtsp.port
+
+        dev = _dev(vendor="generic", kind="camera", host="127.0.0.1", rtsp_port=rtsp.port, allow_basic=allow_basic)
+        res = await Diagnoser(lambda d, p: DiagClient(DiagBehavior(), p), tcp_check=tcp).run(
+            DiagnoseInput(dev, PW, "dev-00000001", [_cam(main_path="/stream", has_sub=False)]))
+    step = _step(res, "rtsp_describe")
+    if allow_basic:
+        assert step.ok is True and _steps(res)["codec"] is True, step
+        assert rtsp.stats.schemes == ["basic"] and rtsp.stats.rejected == 0
+    else:
+        assert step.ok is False and "solo admite autenticación Basic" in step.detail_es
+        assert "rechaza" not in step.detail_es and "«Permitir autenticación Basic»" in step.action_es
+        assert rtsp.stats.credentialed == 0, "la contraseña no se manda en claro sin permiso"
+
+
 async def test_generic_rtsp_device_tries_credentials_once_via_rtsp() -> None:
     rtsp = Rtsp(status=401)
     b = DiagBehavior()
@@ -286,6 +386,25 @@ async def test_real_isapi_client_against_mock_counts_one_credentialed_attempt(hi
     res = await diag.run(DiagnoseInput(dev, PW, "dev-00000001", [_cam()]))
     st = _steps(res)
     assert st["ping"] and st["auth"] and st["rtsp_describe"] and st["codec"], res.steps
+
+
+async def test_user_camera_rfc2069_rtsp_challenge_passes_the_video_step() -> None:
+    """8/10, cámara del usuario (Hikvision DS-2CD1741FWD-IZ, firmware V5.5.0): con la contraseña buena, el paso del
+    vídeo decía que RTSP rechazaba el usuario o la contraseña. Su RTSP reta sin qop ni algorithm y daba 401 a una
+    respuesta con «algorithm=MD5». Con el cliente ISAPI y la prueba RTSP de verdad, contra un doble que hace lo
+    mismo que esa cámara."""
+    mock = HikvisionMock(kind="camera", password=PW, model="DS-2CD1741FWD-IZ", firmware="V5.5.0")
+    srv = MockHttpServer(mock.app).start()
+    try:
+        async with RtspChaosServer(password=PW, scenario="digest-no-algorithm") as rtsp:
+            dev = _dev(host="127.0.0.1", http_port=srv.port, rtsp_port=rtsp.port, kind="camera")
+            res = await Diagnoser(lambda d, p: client_for(d, p, timeout=3.0)).run(
+                DiagnoseInput(dev, PW, "dev-00000001", [_cam()]))
+    finally:
+        srv.stop()
+    st = _steps(res)
+    assert st["auth"] and st["lockout"] and st["rtsp_describe"] and st["codec"], res.steps
+    assert rtsp.stats.rejected == 0 and mock.auth.rejected_credentials == 0
 
 
 async def test_device_without_time_1970_does_not_break_the_diagnosis(monkeypatch: pytest.MonkeyPatch) -> None:

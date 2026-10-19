@@ -31,6 +31,7 @@ async def chaos() -> AsyncIterator[RtspChaosServer]:
     ("sdp-no-sprop", "digest-md5", "H.264"),
     ("sdp-lf-only", "digest-md5", "H.264"),
     ("h265+sdp-no-rtpmap", "digest-md5", "H.265"),
+    ("digest-no-algorithm", "digest-md5", "H.264"),   # reto sin qop ni algorithm (Hikvision V5.5.0)
 ])
 async def test_auth_and_sdp_scenarios(chaos: RtspChaosServer, scenario: str, scheme: str, codec: str) -> None:
     r = await probe_rtsp("127.0.0.1", chaos.port, f"/{scenario}/stream", "admin", PW, first_frame=True,
@@ -39,6 +40,54 @@ async def test_auth_and_sdp_scenarios(chaos: RtspChaosServer, scenario: str, sch
     assert r.auth_scheme == scheme and r.video_codec == codec
     assert r.credentialed_requests == 1 and r.auth_ok is True
     assert r.first_frame_ms is not None and r.first_frame_ms < 3000 and not r.slow
+
+
+async def _describe(port: int, url: str, authorization: str = "", cseq: int = 1,
+                    conn: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
+                    ) -> tuple[int, list[str]]:
+    """Un DESCRIBE a mano: (estado, cabeceras WWW-Authenticate)."""
+    reader, writer = conn or await asyncio.open_connection("127.0.0.1", port)
+    auth = f"Authorization: {authorization}\r\n" if authorization else ""
+    writer.write(f"DESCRIBE {url} RTSP/1.0\r\nCSeq: {cseq}\r\n{auth}\r\n".encode())
+    await writer.drain()
+    head = (await reader.readuntil(b"\r\n\r\n")).decode()
+    lines = head.split("\r\n")
+    length = next((int(x.split(":")[1]) for x in lines if x.lower().startswith("content-length")), 0)
+    if length:
+        await reader.readexactly(length)
+    return int(lines[0].split(" ")[1]), [x.split(":", 1)[1].strip() for x in lines
+                                         if x.lower().startswith("www-authenticate")]
+
+
+async def test_digest_no_algorithm_double_behaves_like_the_camera(chaos: RtspChaosServer) -> None:
+    """El doble hace lo que hizo la cámara del usuario el 8/10: la MISMA respuesta Digest correcta da 401 con
+    «, algorithm=MD5» al final y 200 sin él."""
+    from vms.vendors import auth as vauth
+
+    url = chaos.url("digest-no-algorithm")
+    conn = await asyncio.open_connection("127.0.0.1", chaos.port)
+    status, challenges = await _describe(chaos.port, url, conn=conn)
+    assert status == 401 and len(challenges) == 2 and challenges[1].startswith("Basic")
+    assert "algorithm" not in challenges[0] and "qop" not in challenges[0] and 'stale="FALSE"' in challenges[0]
+    ch = vauth.choose(vauth.parse_challenges(challenges))
+    assert ch is not None
+    good = vauth.authorization(ch, "DESCRIBE", url, "admin", PW)
+    assert (await _describe(chaos.port, url, good + ", algorithm=MD5", 2, conn))[0] == 401
+    assert (await _describe(chaos.port, url, good, 3, conn))[0] == 200
+    conn[1].close()
+
+
+async def test_digest_no_algorithm_probe_succeeds_with_one_attempt(chaos: RtspChaosServer) -> None:
+    """La prueba RTSP contra ese reto: vídeo a la primera, sin ningún rechazo; con la contraseña mala, un solo
+    intento (nada de reintentar con o sin algorithm, que gastaría intentos del bloqueo)."""
+    r = await probe_rtsp("127.0.0.1", chaos.port, "/digest-no-algorithm/stream", "admin", PW, first_frame=True,
+                         frame_timeout=3)
+    assert r.ok and r.auth_ok is True and r.error == "", r.error
+    assert r.credentialed_requests == 1 and chaos.stats.rejected == 0
+    assert set(chaos.stats.schemes) == {"digest-md5"}        # DESCRIBE y SETUP por Digest, no por Basic
+    bad = await probe_rtsp("127.0.0.1", chaos.port, "/digest-no-algorithm/stream", "admin", "Mala#1")
+    assert bad.status == 401 and bad.auth_ok is False and bad.credentialed_requests == 1
+    assert chaos.stats.rejected == 1
 
 
 async def test_basic_only_needs_allow_basic(chaos: RtspChaosServer) -> None:

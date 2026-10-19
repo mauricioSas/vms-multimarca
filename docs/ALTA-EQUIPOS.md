@@ -147,6 +147,12 @@ Hikvision y Dahua bloquean el usuario 30 minutos tras 5 intentos fallidos (otras
 rutas alternativas). Si el equipo dice que el usuario está **bloqueado**, el mensaje lo distingue de una
 contraseña mala y dice cuántos minutos esperar: no vuelvas a probar antes, o el bloqueo se alarga.
 
+Si la web del equipo (Hikvision o Dahua) **acepta** la contraseña pero el vídeo (RTSP) la rechaza, el mensaje
+dice eso y no que sea incorrecta: no la cambies. Revisa en la web del equipo que ese usuario pueda ver el vídeo en
+directo y, si tiene la opción, pon la autenticación RTSP en «digest»; después prueba **una sola vez**. Con
+ONVIF no se puede saber: muchas cámaras contestan por ONVIF con cualquier contraseña, así que ahí un rechazo del
+vídeo sí se trata como usuario o contraseña incorrectos.
+
 ## Autenticación Basic
 
 El VMS usa Digest (SHA-256 si el equipo lo ofrece; si no, MD5). **Basic** envía la contraseña sin cifrar, así

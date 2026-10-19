@@ -5,7 +5,9 @@ como escenario por defecto del servidor. Se pueden combinar con «+» (`/digest-
 
   Autenticación   digest-md5 (por defecto), digest-sha256, multi-challenge (Basic + MD5 + SHA-256 en tres
                   cabeceras), basic-only, no-auth (RTSP anónimo), lockout-after-3 (tras 3 fallos, 401 «Locked»
-                  aunque la contraseña sea buena)
+                  aunque la contraseña sea buena), digest-no-algorithm (como el RTSP del firmware V5.5.0 de
+                  Hikvision: reto Digest sin qop ni algorithm más un Basic; solo acepta la respuesta de RFC 2069 y
+                  da 401 si trae algorithm, qop, nc o cnonce, aunque la contraseña sea buena)
   SDP             sdp-no-control, sdp-absolute-control, sdp-no-rtpmap, sdp-no-sprop, sdp-lf-only
   Códec           h264 (por defecto), h265, mjpeg
   Rutas           double-slash (solo existe la ruta con «//»; el resto da 404)
@@ -43,11 +45,13 @@ log = logging.getLogger("tools.mocks.rtsp_chaos")
 ASSETS = json.loads((Path(__file__).parent / "assets" / "chaos_streams.json").read_text(encoding="utf-8"))
 SCENARIOS = {
     "digest-md5", "digest-sha256", "multi-challenge", "basic-only", "no-auth", "lockout-after-3",
-    "sdp-no-control", "sdp-absolute-control", "sdp-no-rtpmap", "sdp-no-sprop", "sdp-lf-only",
+    "digest-no-algorithm", "sdp-no-control", "sdp-absolute-control", "sdp-no-rtpmap", "sdp-no-sprop", "sdp-lf-only",
     "h264", "h265", "mjpeg", "double-slash", "limit-2-sessions", "busy-503", "drop-without-keepalive",
     "slow-first-frame-10s", "slow-sdp",
 }
 MAX_FRAGMENT = 1200
+# parámetros de una respuesta Digest que no existen en RFC 2069 (el escenario digest-no-algorithm la rechaza si los trae)
+_RFC2617_EXTRAS = re.compile(r"(?:^|,)\s*(?:algorithm|qop|nc|cnonce)\s*=", re.IGNORECASE)
 
 
 @dataclass
@@ -159,6 +163,10 @@ class RtspChaosServer:
             return f'Digest realm="{self.realm}", nonce="{nonce}", algorithm={alg}, qop="auth"'
         if "basic-only" in sc:
             return [f'Basic realm="{self.realm}"']
+        if "digest-no-algorithm" in sc:
+            nonce = secrets.token_hex(16)
+            self._nonces.add(nonce)
+            return [f'Digest realm="{self.realm}", nonce="{nonce}", stale="FALSE"', f'Basic realm="{self.realm}"']
         if "multi-challenge" in sc:
             return [f'Basic realm="{self.realm}"', digest("MD5"), digest("SHA-256")]
         if "digest-sha256" in sc:
@@ -173,7 +181,7 @@ class RtspChaosServer:
         self.stats.credentialed += 1
         scheme, _, value = header.partition(" ")
         ok = False
-        if scheme.lower() == "basic" and ("basic-only" in sc or "multi-challenge" in sc):
+        if scheme.lower() == "basic" and ("basic-only" in sc or "multi-challenge" in sc or "digest-no-algorithm" in sc):
             try:
                 user, _, pw = base64.b64decode(value).decode("utf-8").partition(":")
                 ok = user == self.username and pw == self.password
@@ -185,6 +193,10 @@ class RtspChaosServer:
             # «algorithm» puede venir con o sin comillas (MediaMTX/gortsplib lo manda entre comillas)
             sha = re.search(r'algorithm="?SHA-256', header, re.IGNORECASE) is not None
             if "digest-sha256" in sc and not sha:
+                ok = False
+            elif "digest-no-algorithm" in sc and _RFC2617_EXTRAS.search(value):
+                # su reto no traía algorithm ni qop: con algorithm=MD5 la cámara real da 401 (comprobado el 8/10);
+                # qop, nc y cnonce tampoco son de RFC 2069 y el doble los rechaza igual
                 ok = False
             else:
                 ok = verify_digest(header, method, self.username, self.password, self.realm, self._nonces)

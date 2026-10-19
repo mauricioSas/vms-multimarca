@@ -319,6 +319,18 @@ async def discover(timeout: float = 3.0, *, targets: list[tuple[str, int]] | Non
   (mensajes en español). Ojo: muchas cámaras bloquean el usuario tras varios fallos; no reintentar
   credenciales malas en bucle.
 - `test_device` nunca lanza: devuelve `DeviceTestResult{ok, reachable, auth_ok, rtsp_ok, info, channels, message}`.
+  `auth_ok` es lo que dijo la API del equipo; si no tiene API (o no contestó), lo que dijo RTSP. Si la API **de la
+  marca** (`brand_api(spec)`, aditivo en `vms.vendors`: cliente propio que no es ONVIF, o sea ISAPI de Hikvision y
+  Dahua, con las mismas cuentas que el RTSP) acepta la contraseña y RTSP responde 401 a su único intento,
+  `auth_ok` sigue en `true`, `rtsp_ok` es `false` y `message` dice que es el vídeo el que la rechaza (no que sea
+  incorrecta), con «Qué hacer:». Si la que la acepta es ONVIF (driver «onvif» y perfiles con ONVIF: Uniview, VIGI,
+  Tapo…), el 401 de RTSP sí da `auth_ok: false`, como antes: muchas cámaras tienen ONVIF sin autenticación (contesta
+  con cualquier contraseña) o con usuarios propios. Un rechazo de RTSP sin esa garantía dice que el vídeo rechaza el
+  usuario o la contraseña, con «Qué hacer:». Un usuario bloqueado (`locked`) da siempre `auth_ok: false`.
+- Digest, por HTTP y por RTSP (`vms/vendors/auth.py`): la respuesta lleva `algorithm` **solo si el reto lo trae**;
+  sin él se calcula con MD5 (RFC 2069/2617). Hay firmwares, como el RTSP de Hikvision V5.5.0, que dan 401 a una
+  respuesta correcta con un `algorithm` que su reto no traía. `RtspProbeResult.credentials_rejected` (aditivo): el
+  equipo respondió 401 a la petición con credenciales y no dice que el usuario esté bloqueado.
 
 ### 5.2 Motor — `vms.engine` [vendors-engine]
 
@@ -994,6 +1006,7 @@ los textos LGPL (FFmpeg incluido en OpenCV y psycopg) con la oferta de código f
 | 2026-10-08 | hora de las cámaras | §16.2 nueva capacidad `time_write` (`DeviceClockWriter`; Hikvision y todos los perfiles con `OnvifClient`). §18.3 nueva ruta `POST /api/clock/devices/{device_id}/set` («Poner en hora con este PC», A, auditada), relectura de la hora al volver el vídeo, textos de hora con causa y acción separadas, `useAbsoluteTimestamp: false` fijado en `pathDefaults` y servidor SNTP sin sincronizar descartado. Compatibles: `ClockCheck` no cambia; `DeviceAuthFailed` de un 403 lleva `details.status = 403`; `not_supported()` ya no toma `lowPrivilege` por «recurso que no existe»: ahora es `DevicePermissionDenied`, subclase de `DeviceUnsupported` con el mismo código, así las lecturas se comportan como antes. Revisión del mismo día: la relectura al volver el vídeo solo avisa si la hora empeora (y espera 3 min si la pone otro sistema); `audit.log` también anota las negativas sin hablar con el equipo; ONVIF expresa la hora en su `LocalDateTime`; el botón de la web solo sale con hora manual. Segunda revisión: 422 `validation_error` si llega solo el usuario o solo la contraseña del administrador temporal (antes se descartaban y se probaba el usuario guardado); `DeviceWriteDenied` lleva `details.auth_rejection`/`remaining_attempts` y un rechazo así no se reintenta con la misma contraseña guardada en 30 min; ONVIF comprueba la contraseña con credenciales aunque el equipo conteste sin ellas; un 200 con `lowPrivilege` también es `DevicePermissionDenied`; hora escrita sin poder comprobarla = 200 con `ok: false` (`DeviceTimeUnverified`, `written_unverified`); al arrancar no se relee la hora antes de la primera comprobación horaria. |
 | 2026-10-08 | integración | §18.11 (sin cambios de forma): el paso `clock` de «¿Por qué no conecta?» solo es fallo con la hora `critical`; `warning` (hora a mano, desfase pequeño o zona distinta) pasa a `ok: true` con `warning: true`. Antes, una cámara en hora tras «Poner en hora con este PC» (queda en manual) salía «Falla», era la causa probable y nunca salía «Todo correcto». Misma revisión: §18.3 por ONVIF, sin `DateTimeType` (modo desconocido) «Poner en hora» responde 409 `device_clock_managed` (`time_mode` «sin informar») sin escribir; §6.1 la longitud de un `SecretStr` da «Texto demasiado largo/corto» en `details.fields` (antes «Demasiados elementos»); §6.8 con avisos de energía el resumen de la web ya no dice «Todo funciona con normalidad» (el servidor no cambia). |
 | 2026-10-08 | pruebas-puertos | §9 (solo pruebas): `FakeEngine` deja de dar los puertos por defecto del motor (8889, 8554 y 9996) y usa puertos libres cerrados (`rtsp_port`, `webrtc_port`, `playback_port`); `settings` e `isolated_settings()` (nuevo; lo usa `tests/web/real_backend.py`) dan libres también el HTTPS y todas las direcciones de MediaMTX; vigilante `ProductPortGuard` y marca `product_ports` (§9.1); `python -m tests.web.stub_backend` usa un puerto libre si no se le da `--port`. Motivo: mientras pasaban las pruebas en el PC del usuario, el MediaMTX del programa instalado recibía peticiones RTSP y WebRTC de cámaras inventadas («path 'cam-xxxxxxxx/sub' is not configured»): el proxy WHEP, la reproducción y la instantánea por OpenCV de las pruebas iban a sus puertos. |
+| 2026-10-08 | digest-rtsp | §5.1: la respuesta Digest (HTTP y RTSP) lleva `algorithm` solo si el reto lo trae; antes iba siempre `algorithm=MD5` y el RTSP de la cámara del usuario (Hikvision, firmware V5.5.0, reto sin `qop` ni `algorithm`) daba 401 con la contraseña buena. `Challenge.algorithm` queda vacío si el equipo no lo manda (nueva propiedad `hash_algorithm`, MD5 en ese caso). `test_device` (**cambio de comportamiento**, sin cambios de forma): si la API **de la marca** (Hikvision, Dahua; nuevo `vms.vendors.brand_api(spec)`, aditivo) acepta la contraseña y RTSP responde 401, `auth_ok` sigue en `true` (antes `false`) y el mensaje no la da por mala, así que la web marca «Usuario y contraseña» como correctos y al guardar sí importa los canales por la API; con ONVIF (driver «onvif» y perfiles Uniview, VIGI, Tapo…) sigue en `false` como antes, porque muchas cámaras contestan por ONVIF con cualquier contraseña; el rechazo de RTSP que no tiene esa garantía lleva ahora «Qué hacer:»; la cabecera dice «Cámara … encontrada». `RtspProbeResult.credentials_rejected` (aditivo). §16.2: `vms.ops.drivers.brand_api(vendor)` (aditivo). §18.11 (sin cambios de forma): `rtsp_describe` distingue el 401 con la contraseña ya aceptada por la API de la marca (no por ONVIF), el usuario bloqueado que dice el RTSP, el 403 sin permiso, el RTSP que solo ofrece Basic y el 401 sin credenciales mandadas, cada uno con su acción; la prueba RTSP del diagnóstico usa Basic si el equipo tiene `allow_basic` (antes nunca). |
 
 ---
 
@@ -1371,7 +1384,8 @@ Las capacidades se cumplen en los dos sentidos (`tests/vendors/test_capabilities
 declara tiene un cliente que las implementa, y el cliente que las implementa las declara (los perfiles «+ ONVIF»
 reciben `OnvifClient` y declaran `time_read`, `time_write` y `security_read`). B6 **pregunta al registro** (`vms/ops/drivers.py`:
 capacidad y `has_api`) antes de pedir un cliente: a un equipo sin API (Ezviz, Reolink, RTSP manual) no se le
-pide, porque `client_for()` lanza `DeviceUnsupported`.
+pide, porque `client_for()` lanza `DeviceUnsupported`. `drivers.brand_api(vendor)` (aditivo) dice si su API es la
+de la marca (no ONVIF), la única cuya aceptación de la contraseña vale también para el RTSP.
 
 ### 16.3 Madurez e identidad
 
@@ -1681,6 +1695,14 @@ puertos); el detalle solo va al registro de depuración.
 `route` → `ping` → `tcp_http` → `tcp_rtsp` → `http_response` → `auth` → `lockout` → `rtsp_describe` →
 `codec` → `clock` → `engine` → `path_ready`. **Un solo intento con credenciales** (respeta `LockoutPolicy`).
 Cada paso trae la causa probable y la acción en lenguaje claro.
+Si `auth` acepta la contraseña por la API de la marca (`drivers.brand_api`: Hikvision, Dahua; **no ONVIF**, que
+puede contestar con cualquier contraseña) y el vídeo responde 401 a la petición con credenciales, `rtsp_describe`
+falla diciendo que el equipo acepta el usuario y la contraseña pero el vídeo (RTSP) los rechaza, nunca que sean
+incorrectos, con qué revisar en el equipo; con ONVIF o sin API es «el vídeo rechaza el usuario o la contraseña».
+El usuario bloqueado que dice el RTSP, el 403 sin permiso, el RTSP que solo ofrece Basic y el 401 sin haber
+llegado a mandar la contraseña (alta sin usuario o autenticación que no se sabe responder) llevan su propia
+acción. La prueba RTSP usa Basic solo si el equipo tiene `allow_basic`, como «Probar conexión» (antes nunca, y un
+equipo así fallaba siempre en este paso).
 `route` (`vms/ops/netroute.py`) solo aparece con una IPv4 de red local (privada o 169.254): dice por qué
 tarjeta de red sale este PC hacia el equipo, **sin tráfico nuevo** (IP de origen con `connect()` UDP, que no
 envía nada; tarjetas y enlace con psutil; si contesta, por las pruebas TCP de `ping`). Falla (y es la causa

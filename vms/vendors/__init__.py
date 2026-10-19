@@ -30,9 +30,10 @@ log = logging.getLogger("vms.vendors")
 
 __all__ = ["client_for", "test_device", "discover", "guess_vendor", "parse_probe_matches", "probe_rtsp",
            "tcp_reachable", "RtspProbeResult", "HikvisionClient", "DahuaClient", "OnvifClient", "rtsp_path_of",
-           "REGISTRY", "best_match", "get_driver", "onvif_port_for", "has_api"]
+           "REGISTRY", "best_match", "get_driver", "onvif_port_for", "has_api", "brand_api"]
 
 KIND_ES = {"nvr": "Grabador", "dvr": "Grabador DVR", "xvr": "Grabador XVR", "camera": "Cámara"}
+FOUND_ES = {"camera": "encontrada"}     # «Cámara … encontrada»; el resto, «encontrado»
 
 
 def onvif_port_for(device: DeviceBase, spec: DriverSpec | None) -> int:
@@ -50,6 +51,15 @@ def has_api(spec: DriverSpec | None) -> bool:
 
 def _uses_onvif(spec: DriverSpec) -> bool:
     return spec.client is OnvifClient or (spec.client is None and Capability.ONVIF in spec.capabilities)
+
+
+def brand_api(spec: DriverSpec | None) -> bool:
+    """¿La API del driver es la propia de la marca (ISAPI de Hikvision, la de Dahua), con las mismas cuentas que
+    el vídeo RTSP? Solo entonces que la API acepte la contraseña dice que es buena también para el RTSP.
+
+    ONVIF no cuenta: muchas cámaras lo tienen sin autenticación (contesta con cualquier contraseña) o con usuarios
+    propios, distintos de los de la web y del RTSP."""
+    return spec is not None and spec.client is not None and not _uses_onvif(spec)
 
 
 def client_for(device: DeviceBase, password: str, *, timeout: float = 5.0,
@@ -117,7 +127,12 @@ async def test_device(device: DeviceBase, password: str, *, timeout: float = 5.0
     """Prueba de conexión completa. Nunca lanza: el diagnóstico va en el resultado (en español).
 
     **Un solo intento con credenciales:** si la API rechaza la contraseña (o dice que el usuario está
-    bloqueado) no se prueba RTSP; si la API no rechaza nada, RTSP manda las credenciales una vez."""
+    bloqueado) no se prueba RTSP; si la API no rechaza nada, RTSP manda las credenciales una vez.
+
+    Si la API propia de la marca (`brand_api`: ISAPI, Dahua) acepta la contraseña y RTSP la rechaza, `auth_ok` se
+    queda en True (esas cuentas son las mismas que las del RTSP) y `rtsp_ok` en False, con un mensaje que no la da
+    por mala; solo un bloqueo del usuario pone `auth_ok` en False. Con ONVIF, sin API o sin respuesta de ella, un
+    rechazo de RTSP sí es `auth_ok` False: ONVIF puede contestar con cualquier contraseña o tener usuarios propios."""
     result = DeviceTestResult(ok=False)
     host = device.host
     spec = get_driver(device.vendor)
@@ -210,14 +225,34 @@ async def test_device(device: DeviceBase, password: str, *, timeout: float = 5.0
                 if result.auth_ok is None and probe.auth_ok:
                     result.auth_ok = True
             else:
+                # la API de la marca acaba de aceptar este usuario y esta contraseña, que son los mismos del RTSP;
+                # que ONVIF los acepte no prueba nada (puede no pedir contraseña o tener usuarios propios)
+                api_accepted = result.auth_ok is True and brand_api(spec)
                 if probe.locked:
                     result.locked, result.lockout_minutes = True, probe.lockout_minutes
-                if probe.auth_ok is False:
+                if probe.auth_ok is False and (probe.locked or not api_accepted):
                     result.auth_ok = False
                 if probe.basic_only:
                     result.warnings.append(probe.error)
                 result.session_limit = probe.session_limit
-                notes.append(f"Prueba RTSP del canal {ch}: {probe.error or 'sin vídeo'}.")
+                if api_accepted and probe.credentials_rejected:
+                    # la contraseña es buena: decir «incorrecta» haría que la cambiaran y gastaran intentos
+                    notes.append(f"El equipo acepta el usuario y la contraseña, pero el vídeo (RTSP) del canal {ch} los "
+                                 "rechaza. Qué hacer: no cambies la contraseña, que el equipo acaba de aceptarla. En la "
+                                 "web del equipo, comprueba que este usuario tenga permiso para ver el vídeo en directo "
+                                 "y, si el equipo tiene la opción, pon la autenticación RTSP en «digest». Después vuelve "
+                                 "a probar una sola vez: cada rechazo puede contar para el bloqueo del usuario.")
+                elif api_accepted and probe.status == 403 and not probe.locked:
+                    notes.append(f"El vídeo (RTSP) del canal {ch} no deja entrar a este usuario: no tiene permiso para "
+                                 "verlo. Qué hacer: en la web del equipo (apartado de usuarios), dale permiso para ver "
+                                 "el vídeo en directo.")
+                elif probe.credentials_rejected:
+                    notes.append(f"El vídeo (RTSP) del canal {ch} rechaza el usuario o la contraseña. Qué hacer: usa el "
+                                 "mismo usuario y la misma contraseña con los que entras en la web del equipo y "
+                                 "comprueba que ese usuario pueda ver el vídeo en directo. Después vuelve a probar una "
+                                 "sola vez: cada intento fallido cuenta para el bloqueo del usuario.")
+                else:
+                    notes.append(f"Prueba RTSP del canal {ch}: {probe.error or 'sin vídeo'}.")
 
         # avisos: códec, GOP largo, Basic, madurez y ancho de banda
         result.warnings.extend(_codec_warnings(spec, result.channels, probe))
@@ -251,7 +286,7 @@ async def test_device(device: DeviceBase, password: str, *, timeout: float = 5.0
         if result.info is not None:
             kind_es = KIND_ES.get(result.info.kind, "Equipo")
             multi = result.info.kind in ("nvr", "dvr", "xvr")
-            head = (f"{kind_es} {result.info.model or spec.name} encontrado"
+            head = (f"{kind_es} {result.info.model or spec.name} {FOUND_ES.get(result.info.kind, 'encontrado')}"
                     + (f" con {len(result.channels)} canales." if multi else "."))
         elif api_error and api_required:
             head = "El equipo responde, pero su API dio error."
