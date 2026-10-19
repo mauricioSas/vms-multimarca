@@ -61,9 +61,10 @@ El script hace lo siguiente:
 Se puede repetir sin miedo. Si dice que falta algo después de instalarlo, cierra la ventana y abre otra: Windows
 tiene que releer el PATH.
 
-**Ojo: este PC tiene el producto instalado de verdad** (servicios `VMS*` en marcha y datos en
-`C:\ProgramData\VMSMultimarca`). El modo desarrollo usa `.tmp\dev\` y el puerto 8600, el mismo que el producto
-instalado. Antes de `tools.dev_run`, para los servicios instalados (como administrador):
+**Ojo: el PC de la cámara del usuario tiene el producto instalado de verdad** (servicios `VMS*` en marcha y datos
+en `C:\ProgramData\VMSMultimarca`). Desde el 19/10/2026 el usuario desarrolla también desde otro PC con Windows:
+antes de nada mira `Get-Service VMS*` para saber en cuál estás. Si hay servicios `VMS*`, sigue estas
+precauciones. El modo desarrollo usa `.tmp\dev\` y el puerto 8600, el mismo que el producto instalado. Antes de `tools.dev_run`, para los servicios instalados (como administrador):
 `Get-Service VMS* | Stop-Service`. Después, para volver a dejarlos como estaban: `Get-Service VMS* | Start-Service`.
 **Nunca ejecutes el e2e del instalador** (`tests.windows.run_e2e`) en este PC: instala y desinstala de verdad.
 Ese e2e es solo para GitHub Actions o una máquina virtual.
@@ -164,121 +165,104 @@ dudas de si un fallo es tuyo, pasa esa misma prueba en `v2` sin tu cambio.
   locks.
 - Cada arreglo lleva su prueba. Mejor si la prueba reproduce el fallo real y comprobaste que falla sin el arreglo.
 
-## Estado a 8 de octubre de 2026
+## Estado a 19 de octubre de 2026 (traspaso a otro PC)
 
-Versiones publicadas: `v2.0.0-beta.1` a `v2.0.0-beta.4`.
-- **beta.3:** búsqueda por todas las tarjetas de red, firewall UDP 37020 para SADP y aviso de «cámara en otra red».
-- **beta.4:** «¿Por qué no conecta?» ya no da error interno con cámaras sin hora (01-01-1970). En Windows,
-  `astimezone()` falla antes de 1970.
+Versiones publicadas en GitHub: `v2.0.0-beta.1` a `v2.0.0-beta.4`. **En el PC de la cámara está instalada una
+`2.0.0-beta.5` compilada en local** (el 8/10, desde el código de `v2` de ese día menos los últimos arreglos). No
+existe en GitHub: la siguiente que se publique debe ser **`v2.0.0-beta.6`** o mayor.
 
-**Cambios en `v2` sin publicar todavía** (para las notas de la próxima beta; aún no hay archivo en
-`docs/versiones/`):
-- La sección «Actualizaciones» de Estado del sistema muestra la versión nueva de GitHub
-  (`vms/api/github_releases.py`). Antes decía en rojo «No hay fuente de actualizaciones configurada».
-- El e2e exige que el motor de vídeo responda.
-- **Motor de vídeo:** arranca aunque HikCentral use el puerto 9998 (métricas y pprof de MediaMTX apagados
-  siempre), y si no arranca por otro motivo, Estado del sistema dice por qué y qué hacer.
-- **Paradas:** al apagar, reiniciar o actualizar, los servicios paran solos y en orden en uno o dos segundos; antes
-  `vmsctl` los cerraba a la fuerza a los 10 s. El plazo nuevo de VMSBackend (12 s) solo vale con el `vmsctl` nuevo.
-- **Reproducción:** dice por qué no hay vídeo y «Grabando» solo sale si de verdad se guarda. **Cambio que hay que
-  contar:** lo grabado de cámaras borradas, desactivadas o en pausa por contraseña ya no se queda para siempre: se
-  borra al cumplir los días de retención (RGPD; CONTRATO §4.3).
-- **Energía:** Estado del sistema avisa si Windows va a suspender el PC (batería, tiempo sin usar, tapa) y dejar de
-  grabar.
-- **Diagnóstico:** «¿Por qué no conecta?» marca como fallo un equipo guardado sin su vídeo (qué hacer: «Canales»)
-  y dice por qué tarjeta de red sale el PC hacia la cámara.
-- **Búsqueda:** «Buscar en la red» explica por qué no encuentra cámaras: red «Pública» de Windows (con la línea
-  de PowerShell para copiar) o el puerto UDP 37020 de SADP ocupado.
-- **Hora de las cámaras:** botón «Poner en hora con este PC» (solo administradores, una sola escritura, sin
-  cambiar la zona) y aviso en segundos si la cámara vuelve a 1970 tras un corte. En «¿Por qué no conecta?» la hora
-  puesta a mano es un aviso, no la causa.
-- **Pruebas en Windows:** las pruebas nunca leen ni tocan la instalación real y el PostgreSQL de pruebas tiene
-  zonas horarias. No cambia el programa instalado.
+### Qué se hizo los días 8 a 10 de octubre en el PC de la cámara
 
-Publícalos en la próxima beta.
+Diagnóstico con los registros reales del producto instalado (`vmsctl diag bundle`) y arreglos, cada uno con su
+prueba y revisado. Todo está en `v2` (este traspaso) salvo lo marcado como pendiente.
 
-### El PC del usuario (prueba real con una cámara)
+- **Causa del «Motor de vídeo: Detenido»:** el puerto 127.0.0.1:9998. Era el de las métricas de MediaMTX y
+  también el WebSocket del servicio `SYS` de **HikCentral Professional** (instalado en ese PC y que el usuario
+  usa: no se toca). Quien arrancaba primero se lo quedaba. Arreglo: métricas y pprof apagados siempre. Comprobado
+  en real con la beta.5: el motor arranca y ya no abre el 9998.
+- **Estado del sistema** dice por qué no arranca el motor (puerto y programa que lo ocupa, configuración mala…),
+  avisa de la suspensión del portátil (batería, tapa, tiempo sin usar) y «Grabando» solo sale si se guarda vídeo.
+- **Paradas ordenadas** del backend y del actualizador (antes se cerraban a la fuerza a los 10 s).
+- **Reproducción**: dice por qué no hay vídeo; lo grabado de cámaras borradas también caduca por retención.
+- **«¿Por qué no conecta?»**: equipo sin su vídeo dado de alta = fallo con «Qué hacer:»; paso nuevo con la
+  tarjeta de red por la que sale el PC.
+- **«Buscar en la red»**: explica la red «Pública» de Windows y el UDP 37020 ocupado (SADPServer de Hikvision).
+- **Hora de las cámaras**: botón «Poner en hora con este PC» (Estado del sistema → Hora de los equipos) que
+  ofrece también la **zona horaria** del PC (la cámara del usuario tiene la de fábrica, CST-8 de China).
+- **Vídeo RTSP**: la cámara del usuario (Hikvision DS-2CD1741FWD-IZ, firmware V5.5.0) rechazaba la respuesta
+  Digest con `algorithm=MD5` de más; «Probar conexión» decía que la contraseña era incorrecta y no lo era.
+- **Visor de escritorio**: los muros daban «El servicio no acepta la clave de los muros» (401) porque el visor no
+  entendía `kiosk.token` en formato `vms-dpapi-v1:`; «Abrir muro» del panel no hacía nada dentro del visor; el
+  visor se creía la versión 2.0.0-dev.0 y pedía «reiniciar el visor» sin motivo; `/api/health` decía 0.1.0.
+- **Monitores**: una cámara borrada y vuelta a añadir recupera su celda; una nueva va al primer hueco del monitor 1.
+- **Pruebas en Windows**: nunca leen ni tocan la instalación real ni sus puertos; PostgreSQL de pruebas con zonas
+  horarias. `tools/windows/preparar-entorno.ps1` arreglado (se cortaba con otra versión de Python instalada).
 
-- Windows 11, sin router: la cámara y el PC van por un switch. El PC tiene IP fija **192.168.1.80/24**, puerta
-  192.168.1.1. Usa el WiFi para Internet, y el WiFi también tiene una IP de 192.168.1.x: con el cable de red
-  desconectado, Windows busca la cámara por el WiFi (lo dice el paso «Tarjeta de red de este PC» del diagnóstico).
-- La cámara es una **Hikvision DS-2CD1741FWD-IZ** (firmware V5.5.0) y tiene **la fecha en 1970**.
-  - Su IP de fábrica era 192.168.254.27. Se le dijo que la cambiara con SADP a 192.168.1.64, que es la que tiene
-    dada de alta en el programa.
-  - Usuario `admin`. En iVMS-4200 se ve bien.
-- En el mismo PC están **HikCentral Professional** (servicios de Windows que arrancan solos, como LocalSystem) e
-  **iVMS-4200** de Hikvision. Puertos de HikCentral que nos afectan:
-  - `SYS.exe`: 127.0.0.1:**9998** (WebSocket) y 9999. El 9998 era el de las métricas de MediaMTX y por eso el
-    motor no arrancaba (pendiente 1). El 8/10 HikCentral movió su WebSocket al 10001 por su cuenta y lo guardó.
-  - nginx en 0.0.0.0:80 y `stream.exe` en 0.0.0.0:554 (son de HikCentral, no de iVMS-4200).
-  - `SADPServer.exe`: **UDP 37020**, el puerto de nuestra búsqueda SADP.
-  - Como HikCentral corre con otra cuenta, abrir un puerto que él tiene en 0.0.0.0 da el error 10013, no el
-    10048. Aquí un 10013 no es un rango reservado de Hyper-V, aunque `vmsctl ports check` lo diga así.
-- En nuestro programa (tenía la beta.2 instalada y aún no había actualizado):
-  - **«¿Por qué no conecta?»**: red, puerto 80 y puerto 554 bien. La contraseña primero falló y luego la
-    corrigió. Con la contraseña buena salía «Error interno», que es lo que arregla la beta.4.
-  - La cámara se guardó con la contraseña mala, así que **no se importó su vídeo** (pendiente 5).
-  - **Estado del sistema → Motor de vídeo: «Detenido»**: «El motor de vídeo (servicio VMSEngine) no responde».
-    La causa era el puerto 9998 (pendiente 1).
+Lo que entró en la beta.5 instalada y lo que no: la beta.5 tiene todo lo anterior **excepto** la zona horaria
+del botón de hora, el arreglo de RTSP, el del visor (muros) y el de Monitores. Esos llegan con la beta.6.
 
-### Lo primero que hay que hacer (pendiente)
+### El PC de la cámara (estado real el 8/10)
 
-1. **Motor de vídeo «Detenido»: la causa está encontrada y arreglada en `v2`; falta comprobarlo tras instalar.**
-   - Causa: el `.env` de la v1 (copiado de `.env.example`) fijaba `VMS_MTX_METRICS_ADDRESS=127.0.0.1:9998`, el
-     WebSocket de HikCentral (servicio SYS). MediaMTX abre primero el puerto de métricas: si HikCentral lo tenía,
-     se cerraba al arrancar. `engine.log` tenía 1306 caídas seguidas con «listen tcp 127.0.0.1:9998: bind» (6 y
-     7/10, beta.1 y beta.2). El 8/10 el motor arrancó antes que HikCentral y funcionó; desde entonces HikCentral
-     usa el 10001.
-   - Arreglo (commit «Motor de vídeo: arranca aunque HikCentral use el 9998…»): métricas y pprof de MediaMTX
-     apagados siempre (`vms/engine/mtx_config.py`). Desaparece `VMS_MTX_METRICS_ADDRESS`; si el `.env` instalado
-     la trae, se ignora, también en `vmsctl ports check`. CONTRATO §4.1 y §4.3.
-   - Pendiente: tras instalar la próxima beta, comprobar en su PC que Estado del sistema → Motor de vídeo pone «En
-     marcha» y que `C:\ProgramData\VMSMultimarca\mediamtx\mediamtx.yml` tiene `metrics: false` y ningún 9998 (el
-     backend lo reescribe al arrancar). Si el motor vuelve a no arrancar, el motivo ya sale en Estado del sistema
-     (punto 2). Para mirarlo a mano, en PowerShell como administrador:
+- Windows 11 portátil (Modern Standby: se suspende con la tapa o a batería y entonces no graba). PC con IP fija
+  **192.168.1.80/24** en el cable; la cámara y el PC van por un switch PoE sin router. El WiFi de casa está en
+  la misma red 192.168.1.x (con el cable a 1 Gbps Windows prefiere el cable; con el cable quitado, el WiFi).
+- Cámara **Hikvision DS-2CD1741FWD-IZ** en **192.168.1.64**, usuario `admin` (la contraseña la sabe el usuario;
+  nunca la escribas en el repositorio). Fecha en 1970 y zona CST-8. **La imagen sale boca abajo** (montada en
+  el techo); el usuario pidió no girarla todavía (ISAPI `ImageFlip` o la web de la cámara).
+- Tras muchos intentos fallidos la cámara **bloquea unos 30 minutos a todo el PC** (también la contraseña buena).
+  Si el programa dice «Usuario o contraseña incorrectos» varias veces seguidas, espera antes de repetir.
+- El usuario borró y volvió a añadir el equipo varias veces: ahora es «Camara» (`dev-488091e1`, cámara
+  `cam-fc49d3e6`), en el monitor 1. Graba y se ve en Reproducción. El directo funciona en el navegador
+  (`http://127.0.0.1:8600` → Monitores → Abrir muro); en el visor de escritorio no hasta instalar la beta.6.
+- HikCentral: `SYS.exe` (9999, 10001…), nginx en 0.0.0.0:80, `stream.exe` en 0.0.0.0:554, `SADPServer.exe` en UDP
+  37020, PostgreSQL 5432. Corre como LocalSystem: abrir un puerto suyo da 10013, no 10048.
+- `kiosk.token` está protegido (`vms-dpapi-v1:`); el usuario de Windows está en «VMS Operadores».
+- Herramientas de ese PC: Inno Setup 7.1.0 sin administrador en `C:\src\tools\inno7` (`$env:VMS_ISCC`).
 
-     ```powershell
-     Get-Service VMS*
-     Get-Content C:\ProgramData\VMSMultimarca\logs\engine.log -Tail 50
-     $ctl = Get-ChildItem "C:\Program Files\VMSMultimarca\versions\*\bin\vmsctl.exe" | Select-Object -Last 1
-     & $ctl health wait --timeout 10 --deep --json
-     ```
-2. **Hecho: el error del motor se ve en la propia app.** `vms/engine/problem.py` interpreta `engine.log` y
-   `logs\status-VMSEngine.json`, y `EngineStatus.problem` (`{code, detail_es, action_es}`, CONTRATO §6.8 y
-   §13.10) sale como aviso en Estado del sistema con su «Qué hacer:». Si un puerto está ocupado, nombra el puerto
-   y, si se sabe con certeza, el programa. Vale aunque solo se actualice la app, sin un `vmsctl` nuevo. Falta
-   comprobar en su PC que `NT SERVICE\VMSBackend` puede leer `status-VMSEngine.json`; si no, `vms.log` lo dice
-   una vez y el aviso sale igual a partir de `engine.log`.
-3. Cuando el motor funcione y la cámara tenga su vídeo dado de alta (punto 5), comprobar con el usuario que se ve
-   en el muro y graba («Grabando» en Estado del sistema en un minuto). Después, poner la **hora de la cámara** con
-   el botón «Poner en hora con este PC» (Estado del sistema → Hora de los equipos; CONTRATO §18.3). El botón llega
-   con la próxima beta; la beta.2 instalada tampoco tiene el arreglo de la beta.4 para relojes de 1970. Las
-   grabaciones llevan siempre la hora de este PC: con la cámara en 1970 solo sale mal la fecha que ella escribe en
-   la imagen. Este PC no sirve la hora por NTP, así que no sirve «NTP apuntando al PC». El botón no cambia la zona
-   horaria de la cámara (la de fábrica es UTC+8): hay que ponerla en su web. Tras pulsarlo, la cámara queda con la
-   hora puesta a mano y «¿Por qué no conecta?» lo da como aviso, no como fallo. Falta probarlo con su cámara
-   (firmware V5.5.0).
-4. Comprobar que **actualizar desde el visor** funciona de verdad en su PC: de beta.2 a la siguiente. Es la
-   primera vez que se prueba en real.
-5. **La cámara no tiene su vídeo dado de alta.** «¿Por qué no conecta?» decía «Este equipo aún no tiene cámaras
-   dadas de alta» y era verdad: se guardó con la contraseña mala, así que no se importaron sus canales, y corregir
-   la contraseña en «Editar» no los importa (`vms.log` del 6/10). **Lo que tiene que hacer el usuario** (ya con
-   la beta.2): en «Equipos y monitores», pulsar «Canales» en la fila de la cámara y marcarla. Si la contraseña
-   guardada aún falla, que la corrija antes en «Editar». Desde la próxima beta, «¿Por qué no conecta?» lo da como
-   fallo con ese «Qué hacer:», y al guardar un equipo sin poder importar sus canales sale el mismo aviso.
+### Lo siguiente (en orden)
+
+1. **Publicar la beta.6** con todo lo de arriba: `docs/versiones/v2.0.0-beta.6.md` en español sencillo
+   (incluye los cambios de comportamiento: retención de lo grabado de cámaras borradas, `/api/health` con la
+   versión real, la suspensión del portátil) y `docs/versiones/ACTUAL`. Antes, comprobar que la CI de `v2` está en
+   verde. Ojo: la beta.5 local tiene el visor antiguo, que comparaba mal las betas: puede que **no ofrezca** la
+   beta.6. Si no la ofrece, el usuario la instala descargando el `.exe` de la release y ejecutándolo (pide
+   administrador) o con esta línea en PowerShell de administrador, cambiando la ruta:
+   `Start-Process <ruta>\VMSMultimarca-Setup-2.0.0-beta.6.exe -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/TYPE=control' -Wait`.
+2. **En el PC de la cámara, con el usuario delante**, tras instalar:
+   - Cerrar el visor (bandeja → «Salir (la grabación sigue)») y volver a abrirlo; abrir el Muro 1 desde la
+     bandeja y desde «Abrir muro»: debe verse en directo.
+   - «Probar conexión» de la cámara: debe dar el vídeo RTSP correcto (una sola vez).
+   - Estado del sistema → Hora de los equipos → «Poner en hora con este PC» con la zona de Madrid. Pedirá el
+     usuario administrador de la cámara si el guardado no vale.
+   - Comprobar «Grabando», la sección «Energía del PC» y que «Diagnóstico» del visor pone la clave de los muros
+     como «Lista para usar».
+3. Si el usuario quiere: girar la imagen 180°; decidir qué hacer con la suspensión del portátil.
+4. Comprobar que **actualizar desde el visor** funciona de verdad (de la beta.6 a la siguiente).
+
+### Lecciones de estas sesiones (para no repetir errores)
+
+- Para mirar el producto instalado sin ser administrador: `vmsctl version show`, `services status` y `health wait`
+  funcionan; los registros no. El usuario puede ejecutar un script de solo lectura que use `vmsctl diag bundle`
+  (tapa secretos y no incluye `mediamtx.yml`) y deje el zip en una carpeta que puedas leer.
+- `tools.build all` necesita el visor ya compilado (`npx --yes @tauri-apps/cli@2.12.1 build --no-bundle --ci` en
+  `native\viewer\src-tauri`) y no admite `CARGO_TARGET_DIR` cambiado (busca `native\target\release`).
+- Con varios agentes en worktrees: **no uses `git stash`** (es común a todos los worktrees y se mezclan
+  cambios); usa worktrees temporales. A un agente de un workflow en marcha no se le puede escribir: el mensaje
+  arranca un gemelo que trabaja en la misma carpeta.
+- PowerShell 5.1 quita las comillas dobles de los argumentos de `python -c`: escribe el script en un archivo.
+- Una prueba de `tests/ops/test_clock_forecast.py` llenaba el disco en Windows (113 GB): está arreglada; si una
+  prueba se cuelga, mira el espacio libre.
 
 ### Otras mejoras pendientes
 
-- La búsqueda en red (beta.3) no se ha probado con una cámara real. Si no encuentra nada, ya explica por qué
-  encima de la lista (`report` de `POST /api/discovery/scan`, CONTRATO §6.3): red de Windows «Pública», con
-  la línea `Set-NetConnectionProfile` para copiar, o el UDP 37020 ocupado por `SADPServer.exe`. Falta
-  comprobar en el PC del usuario que la cuenta `NT SERVICE\VMSBackend` puede leer el perfil de red (si no,
-  no sale el aviso de «Pública») y que SADP convive con HikCentral (`vms.log`: «se escucha por cada tarjeta»).
-- En Windows, el backend usa psycopg **asíncrono** en `vms/api/routes/counts.py` (CSV de conteos) y en
-  `vms/ops/service.py` (`_analytics_alerts`, avisos de la analítica en la línea de tiempo). El backend corre
-  con Proactor, así que con `VMS_PG_DSN` el CSV responde 503 y la línea de tiempo pierde esos avisos. Lo
-  reproduce `tests/ops/test_central_and_counts.py::test_store_counts_csv_needs_pg_and_uses_site_timezone`.
-  Arreglo: psycopg síncrono en `asyncio.to_thread`, como el latido.
+- La búsqueda en red no se ha probado con una cámara real: comprobar que `NT SERVICE\VMSBackend` puede leer el
+  perfil de red y que SADP convive con HikCentral.
+- En Windows, el backend usa psycopg **asíncrono** en `vms/api/routes/counts.py` y en `vms/ops/service.py`
+  (`_analytics_alerts`); con Proactor, con `VMS_PG_DSN` el CSV responde 503. Lo reproduce
+  `tests/ops/test_central_and_counts.py::test_store_counts_csv_needs_pg_and_uses_site_timezone`. Arreglo:
+  psycopg síncrono en `asyncio.to_thread`.
+- `migrate-from-v1` sin `--role` adivinó «tienda» y dejó en las ACL dos SID de servicios ya borrados
+  (VMSAnalytics, VMSHeartbeat): solo limpieza, prioridad baja.
 - El instalador no está firmado: Windows avisa con «Windows protegió tu PC». Firmarlo cuesta dinero; es decisión
   del usuario.
 - Pedirle al usuario que ponga `v2` como rama por defecto del repositorio en GitHub (Settings → Branches), para
